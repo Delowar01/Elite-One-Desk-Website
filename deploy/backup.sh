@@ -24,6 +24,14 @@ STAMP="$(date -u +%Y%m%d-%H%M%S)"
 # DATABASE_URL comes from the application's own .env so the two can never drift.
 if [[ -f "${APP_DIR}/.env" ]]; then
   DATABASE_URL="$(grep -E '^DATABASE_URL=' "${APP_DIR}/.env" | tail -n1 | cut -d= -f2-)"
+
+  # dotenv commonly stores values inside quotes. Strip one matching pair
+  # before passing the connection string to PostgreSQL tools.
+  if [[ "${DATABASE_URL}" == \"*\" && "${DATABASE_URL}" == *\" ]]; then
+    DATABASE_URL="${DATABASE_URL:1:${#DATABASE_URL}-2}"
+  elif [[ "${DATABASE_URL}" == \'*\' && "${DATABASE_URL}" == *\' ]]; then
+    DATABASE_URL="${DATABASE_URL:1:${#DATABASE_URL}-2}"
+  fi
 fi
 : "${DATABASE_URL:?DATABASE_URL is not set and was not found in ${APP_DIR}/.env}"
 
