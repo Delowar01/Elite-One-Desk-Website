@@ -119,7 +119,14 @@ export function middleware(request: NextRequest) {
     (pathname === `/${DEFAULT_LOCALE}` || pathname.startsWith(`/${DEFAULT_LOCALE}/`))
   ) {
     const target = pathname.slice(DEFAULT_LOCALE.length + 1) || "/";
-    return finish(NextResponse.redirect(new URL(`${target}${search}`, request.url), 301));
+    const publicOrigin =
+      process.env.NODE_ENV === "production" && process.env.NEXT_PUBLIC_SITE_URL
+        ? process.env.NEXT_PUBLIC_SITE_URL.replace(/\/+$/, "")
+        : request.nextUrl.origin;
+
+    return finish(
+      NextResponse.redirect(new URL(`${target}${search}`, publicOrigin), 301),
+    );
   }
 
   const hasLocale = LOCALES.some(
@@ -130,7 +137,15 @@ export function middleware(request: NextRequest) {
   }
 
   const url = request.nextUrl.clone();
+
+  // This rewrite is an internal hop back to the local Next.js server.
+  // The public request may arrive through Nginx as HTTPS, but port 3000
+  // itself serves plain HTTP only.
+  url.protocol = "http:";
+  url.hostname = "127.0.0.1";
+  url.port = process.env.PORT ?? "3000";
   url.pathname = `/${DEFAULT_LOCALE}${pathname === "/" ? "" : pathname}`;
+
   requestHeaders.set(REWRITE_MARKER, "1");
   return finish(NextResponse.rewrite(url, { request: { headers: requestHeaders } }));
 }
