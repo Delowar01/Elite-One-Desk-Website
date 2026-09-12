@@ -223,11 +223,11 @@ function ServiceList({
           as="li"
           key={service.id}
           delay={index * 40}
-          className="bg-[color-mix(in_oklab,var(--color-ink-700)_40%,transparent)]"
+          className="bg-[var(--surface)]"
         >
           <Link
             href={localeHref(lang, `/services/${categorySlug}/${service.slug}`)}
-            className="group flex h-full flex-col p-5 transition-colors hover:bg-[color-mix(in_oklab,var(--color-ink-600)_55%,transparent)]"
+            className="group flex h-full flex-col p-5 transition-colors hover:bg-[var(--surface-raised)]"
           >
             <span className="font-display text-[0.98rem] font-semibold leading-snug text-strong">
               {pick(lang, service.titleEn, service.titleAr)}

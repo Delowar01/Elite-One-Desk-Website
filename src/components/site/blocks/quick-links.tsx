@@ -33,7 +33,7 @@ export function QuickLinksBlock({ values, ctx }: BlockProps) {
             <Reveal as="li" key={`${link.href}-${index}`} delay={index * 45} variant="fade-up">
               <Link
                 href={localeHref(locale, link.href || "/services")}
-                className="group flex h-full items-center gap-3 rounded-[var(--radius-md)] border border-line bg-[color-mix(in_oklab,var(--color-ink-700)_45%,transparent)] p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-[color-mix(in_oklab,var(--color-orange)_55%,transparent)] hover:bg-[color-mix(in_oklab,var(--color-ink-600)_60%,transparent)]"
+                className="group flex h-full items-center gap-3 rounded-[var(--radius-md)] border border-line bg-[var(--surface)] p-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-[color-mix(in_oklab,var(--color-orange)_55%,transparent)] hover:bg-[var(--surface-raised)]"
               >
                 <span
                   className="flex size-9 shrink-0 items-center justify-center rounded-full border border-line transition-colors group-hover:border-[color-mix(in_oklab,var(--color-orange)_60%,transparent)]"

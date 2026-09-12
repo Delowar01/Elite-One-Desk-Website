@@ -11,7 +11,10 @@ export function PageHeroBlock({ values, ctx, index }: BlockProps) {
   const Heading = index === 0 ? "h1" : "h2";
 
   return (
-    <section className="relative overflow-clip pb-[clamp(2.5rem,4vw,4rem)] pt-[clamp(6.5rem,9vw,9rem)]">
+    <section
+      data-atmosphere="landing"
+      className="relative overflow-clip pb-[clamp(2.5rem,4vw,4rem)] pt-[clamp(6.5rem,9vw,9rem)]"
+    >
       {background ? (
         <div className="pointer-events-none absolute inset-0 -z-20">
           <MediaImage

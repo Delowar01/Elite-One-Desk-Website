@@ -24,7 +24,7 @@ export function PackageCard({
   return (
     <Link
       href={localeHref(locale, `/packages/${row.slug}`)}
-      className="group flex h-full flex-col overflow-hidden rounded-[var(--radius-lg)] border border-line bg-[color-mix(in_oklab,var(--color-ink-700)_45%,transparent)] transition-all duration-400 ease-[var(--ease-out-expo)] hover:-translate-y-1 hover:border-[color-mix(in_oklab,var(--color-peach)_45%,transparent)]"
+      className="group flex h-full flex-col overflow-hidden rounded-[var(--radius-lg)] border border-line bg-[var(--surface)] transition-all duration-400 ease-[var(--ease-out-expo)] hover:-translate-y-1 hover:border-[color-mix(in_oklab,var(--color-peach)_45%,transparent)]"
     >
       {image ? (
         <span className="block overflow-hidden">

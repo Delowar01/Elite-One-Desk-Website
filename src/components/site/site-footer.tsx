@@ -44,7 +44,7 @@ export async function SiteFooter({ locale }: { locale: Locale }) {
   ].filter((c) => c.items.length > 0);
 
   return (
-    <footer className="relative mt-auto border-t border-line bg-[var(--color-ink-900)]">
+    <footer className="relative mt-auto border-t border-line bg-[color-mix(in_oklab,var(--color-ink-900)_72%,transparent)]">
       <div className="shell shell-wide grid gap-12 pt-[clamp(3.5rem,5vw,5.5rem)] pb-10 lg:grid-cols-[1.35fr_repeat(3,minmax(0,1fr))] lg:gap-10">
         <div className="max-w-sm">
           <Logo height={46} />

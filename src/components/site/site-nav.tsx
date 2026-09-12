@@ -102,7 +102,7 @@ export function SiteNav({ locale, links, labels, ctaHref, searchEnabled, arabicE
     <>
       <header
         data-scrolled={scrolled}
-        className="fixed inset-x-0 top-0 z-50 transition-[background-color,border-color,backdrop-filter] duration-300 border-b border-transparent data-[scrolled=true]:border-line data-[scrolled=true]:bg-[color-mix(in_oklab,var(--color-ink-900)_86%,transparent)] data-[scrolled=true]:backdrop-blur-xl"
+        className="fixed inset-x-0 top-0 z-50 transition-[background-color,border-color,backdrop-filter] duration-300 border-b border-transparent data-[scrolled=true]:border-[rgb(255_255_255_/_0.09)] data-[scrolled=true]:bg-[color-mix(in_oklab,var(--color-ink-900)_78%,transparent)] data-[scrolled=true]:backdrop-blur-xl"
       >
         <div className="shell shell-wide flex items-center gap-4 py-3.5 data-[scrolled=true]:py-2.5 lg:gap-8">
           <Link

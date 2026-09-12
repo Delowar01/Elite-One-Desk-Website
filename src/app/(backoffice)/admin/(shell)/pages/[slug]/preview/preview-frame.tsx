@@ -76,7 +76,7 @@ export function PreviewFrame({ src, title }: { src: string; title: string }) {
             key={`${device}-${language}-${nonce}`}
             src={url}
             title={`Preview of ${title}`}
-            className="h-[75vh] w-full border-0 bg-[#0b0a26]"
+            className="h-[75vh] w-full border-0 bg-[var(--color-ink-800)]"
           />
         </div>
       </div>

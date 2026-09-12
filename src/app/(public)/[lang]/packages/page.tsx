@@ -45,7 +45,10 @@ export default async function PackagesPage({ params }: Params) {
 
   return (
     <>
-      <section className="relative overflow-clip pb-8 pt-[clamp(6.5rem,9vw,9rem)]">
+      <section
+        data-atmosphere="landing"
+        className="relative overflow-clip pb-8 pt-[clamp(6.5rem,9vw,9rem)]"
+      >
         <div className="grid-texture pointer-events-none absolute inset-0 -z-10" />
         <div className="shell shell-wide">
           <p className="eyebrow">{lang === "ar" ? "السفر والسياحة" : "Travel & tourism"}</p>

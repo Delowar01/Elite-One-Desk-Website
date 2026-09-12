@@ -13,18 +13,26 @@
   --color-orange: #e56c25;        /* brand orange — accents and CTAs only     */
   --color-peach: #ffa476;         /* secondary accent, hairlines, hovers      */
   --color-warm: #f8f7f4;          /* warm white                               */
+  /* What sits ON a filled orange. White on this orange measures 2.4-3.2:1 —
+     legible enough to ship and not legible enough to be right. Near-black
+     charcoal reads 6-8:1 against every stop of the gradient, and lets the
+     orange stay as bright as the brand wants it. */
+  --color-on-accent: #0d1017;
 
-  /* Ground tones derived from the navy. The page sits darker than the brand
-     colour so the navy itself can be used as a raised surface against it. */
-  --color-ink-900: #07061c;
-  --color-ink-800: #0b0a26;
-  --color-ink-700: #100e33;
-  --color-ink-600: #151348;
-  --color-ink-500: #1d1a58;
-  --color-ink-400: #262268;
+  /* Ground tones. Charcoal, then midnight navy, then a cool slate. The page
+     is deliberately *not* the brand navy: the navy has to read as a colour
+     where it is used, which it cannot do if it is also the whole website. */
+  --color-ink-900: #080a11;
+  --color-ink-800: #0b0d14;
+  --color-ink-700: #121725;
+  --color-ink-600: #1c2132;
+  --color-ink-500: #262c40;
+  --color-ink-400: #333a52;
 
-  --color-line: color-mix(in oklab, var(--color-warm) 12%, transparent);
-  --color-line-strong: color-mix(in oklab, var(--color-warm) 22%, transparent);
+  /* Hairlines are white at low alpha rather than a tinted mix — a line that
+     carries the ground's hue turns every card edge faintly purple. */
+  --color-line: rgb(255 255 255 / 0.11);
+  --color-line-strong: rgb(255 255 255 / 0.2);
 
   /* --- Type -------------------------------------------------------------- */
   --font-display: "Plus Jakarta Sans", "Inter", system-ui, sans-serif;
@@ -68,9 +76,9 @@
   --radius-lg: 22px;
   --radius-xl: 32px;
 
-  --shadow-soft: 0 10px 40px -12px rgb(3 2 14 / 0.55);
-  --shadow-lift: 0 28px 70px -28px rgb(3 2 14 / 0.75);
-  --shadow-ring: 0 0 0 1px color-mix(in oklab, var(--color-warm) 10%, transparent);
+  --shadow-soft: 0 10px 40px -12px rgb(2 4 9 / 0.6);
+  --shadow-lift: 0 28px 70px -28px rgb(2 4 9 / 0.78);
+  --shadow-ring: 0 0 0 1px rgb(255 255 255 / 0.08);
 
   /* --- Motion ------------------------------------------------------------ */
   --ease-out-soft: cubic-bezier(0.22, 0.61, 0.24, 1);
@@ -116,13 +124,58 @@
    -------------------------------------------------------------------------- */
 @layer base {
   :root {
-    --surface: color-mix(in oklab, var(--color-ink-600) 62%, transparent);
-    --surface-raised: color-mix(in oklab, var(--color-ink-500) 78%, transparent);
-    --text-strong: var(--color-warm);
-    --text-body-color: color-mix(in oklab, var(--color-warm) 74%, transparent);
-    --text-muted: color-mix(in oklab, var(--color-warm) 55%, transparent);
+    /* --- Atmosphere ---------------------------------------------------
+       Three ambient lights over a charcoal ground. Held as raw channels so
+       an alpha can be computed from --atm rather than written out per page.
+       Orange is the weakest of the three and sits low and to the leading
+       edge: it is warmth at the edge of the frame, never the colour of the
+       page. -------------------------------------------------------------- */
+    --ambient-orange: 235 94 35;
+    --ambient-indigo: 123 92 214;
+    --ambient-blue: 47 75 128;
+
+    --bg-base: #0d1017;
+    --bg-mid: #121725;
+    --bg-deep: #1c2132;
+
+    /* How lit this page is. 1 is the homepage; every other page opts down,
+       never up, and a page that says nothing sits in the middle. */
+    --atm: 0.62;
+
+    /* How big each light is, relative to the figures below. A radial sized
+       for a 1440px frame is a wash across a 390px one — the same light has to
+       shrink with the viewport to stay a light in a corner. */
+    --atm-size: 1;
+
+    /* Focal points of the ambient lights, mirrored for RTL below. */
+    --atm-warm-x: -8%;
+    --atm-indigo-x: 107%;
+    --atm-soft-warm-x: 14%;
+    --atm-soft-indigo-x: 78%;
+
+    /* --- Surfaces ------------------------------------------------------
+       A card is a film of light on the ground, not a navy rectangle laid
+       over it: white at a few per cent, so whatever the atmosphere is doing
+       behind the card carries through it. --surface-veil is the exception —
+       a surface that floats over *content* needs a ground of its own. */
+    --surface: rgb(255 255 255 / 0.042);
+    --surface-raised: rgb(255 255 255 / 0.06);
+    --surface-veil: rgb(9 11 18 / 0.95);
+
+    --text-strong: #f6f4ef;
+    --text-body-color: #d2d0da;
+    --text-muted: #b7b5c3;
     --border-color: var(--color-line);
     color-scheme: dark;
+  }
+
+  /* The lights mirror with the writing direction, so the composition reads
+     the same way round in Arabic as it does in English. */
+  [dir="rtl"] {
+    --atm-warm-x: 108%;
+    --atm-indigo-x: -7%;
+    --atm-soft-warm-x: 86%;
+    --atm-soft-indigo-x: 22%;
   }
 
   /* A warm-white island. Any component inside picks up the inverted tokens
@@ -130,6 +183,7 @@
   [data-tone="light"] {
     --surface: color-mix(in oklab, var(--color-navy) 4%, white);
     --surface-raised: #ffffff;
+    --surface-veil: #ffffff;
     --text-strong: #12102f;
     --text-body-color: color-mix(in oklab, #12102f 76%, transparent);
     --text-muted: color-mix(in oklab, #12102f 58%, transparent);
@@ -146,11 +200,17 @@
     scroll-behavior: smooth;
     /* Header height + a little air, so an in-page anchor is not hidden. */
     scroll-padding-top: 6.5rem;
+    /* Only ever seen in the overscroll gutter — the ground itself is painted
+       by `body::before`. */
+    background-color: var(--color-ink-800);
   }
 
   body {
     margin: 0;
-    background-color: var(--color-ink-800);
+    /* Transparent on purpose: the ground is painted by `body::before`, so the
+       lighting is one fixed layer for the whole site rather than a gradient
+       repeated down every page. */
+    background-color: transparent;
     color: var(--text-body-color);
     font-family: var(--font-sans);
     font-size: var(--text-body);
@@ -159,6 +219,47 @@
     text-rendering: optimizeLegibility;
     overflow-x: clip;
   }
+
+  /* --------------------------------------------------------------------
+     The atmosphere. One element, one static paint: five radial lights over a
+     charcoal-to-slate ground. Fixed rather than scrolling because a 620px
+     radial stretched down a 9,000px page is a smear, not a light. No blur
+     filter, no image, no animation — the compositor keeps this layer and
+     never repaints it. --------------------------------------------------- */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -2;
+    pointer-events: none;
+    background:
+      radial-gradient(calc(860px * var(--atm-size)) calc(620px * var(--atm-size)) at var(--atm-warm-x) 86%, rgb(var(--ambient-orange) / calc(0.13 * var(--atm))), transparent 68%),
+      radial-gradient(calc(780px * var(--atm-size)) calc(560px * var(--atm-size)) at var(--atm-indigo-x) 18%, rgb(var(--ambient-indigo) / calc(0.21 * var(--atm))), transparent 68%),
+      radial-gradient(calc(700px * var(--atm-size)) calc(560px * var(--atm-size)) at 58% 54%, rgb(var(--ambient-blue) / calc(0.15 * var(--atm))), transparent 72%),
+      radial-gradient(calc(620px * var(--atm-size)) calc(430px * var(--atm-size)) at var(--atm-soft-warm-x) 76%, rgb(var(--ambient-orange) / calc(0.045 * var(--atm))), transparent 70%),
+      radial-gradient(calc(720px * var(--atm-size)) calc(540px * var(--atm-size)) at var(--atm-soft-indigo-x) 30%, rgb(var(--ambient-indigo) / calc(0.08 * var(--atm))), transparent 72%),
+      linear-gradient(125deg, var(--bg-base) 0%, var(--bg-mid) 46%, var(--bg-deep) 100%);
+  }
+
+  /* Tablet and phone. The lights keep their corners instead of flooding the
+     frame — at 390px an unscaled indigo radial is most of the screen, which
+     is how a restrained accent turns into a purple page. */
+  @media (max-width: 1024px) {
+    :root { --atm-size: 0.72; }
+  }
+  @media (max-width: 640px) {
+    :root { --atm-size: 0.5; }
+  }
+
+  /* Page intensity. A hero declares how lit its page is; anything that
+     declares nothing is a content page and keeps the middle setting. Ordered
+     so the later rule wins where a page carries more than one marker — the
+     contact page has both a landing hero and a form, and should read as a
+     form. A browser without :has() gets the middle setting everywhere, which
+     is a flatter site rather than a broken one. */
+  body:has([data-atmosphere="landing"]) { --atm: 0.78; }
+  body:has([data-atmosphere="form"]) { --atm: 0.55; }
+  body:has([data-atmosphere="home"]) { --atm: 1; }
 
   [dir="rtl"] body { font-family: var(--font-arabic); }
   [dir="rtl"] { letter-spacing: 0 !important; }
@@ -269,24 +370,30 @@
   .btn:active { transform: translateY(0); }
   .btn[disabled], .btn[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
 
+  /* Orange is at full strength here and almost nowhere else: the call to
+     action is what the restraint in the background is paying for. */
   .btn-primary {
-    --btn-bg: var(--color-orange);
-    --btn-fg: #fff;
+    --btn-bg: linear-gradient(90deg, #eb6c23, #fb8643);
+    --btn-fg: var(--color-on-accent);
     --btn-border: transparent;
-    box-shadow: 0 12px 30px -14px color-mix(in oklab, var(--color-orange) 85%, transparent);
+    box-shadow: 0 14px 34px -12px rgb(244 122 42 / 0.42);
   }
   .btn-primary:hover {
-    --btn-bg: color-mix(in oklab, var(--color-orange) 88%, white);
-    box-shadow: 0 18px 40px -16px color-mix(in oklab, var(--color-orange) 90%, transparent);
+    --btn-bg: linear-gradient(90deg, #ef7429, #fd9050);
+    box-shadow: 0 18px 40px -14px rgb(244 122 42 / 0.5);
   }
 
   .btn-ghost {
     --btn-border: var(--border-color);
+    --btn-bg: rgb(255 255 255 / 0.038);
     backdrop-filter: blur(8px);
   }
   .btn-ghost:hover {
     --btn-border: color-mix(in oklab, var(--color-peach) 55%, transparent);
-    --btn-bg: color-mix(in oklab, var(--color-warm) 6%, transparent);
+    --btn-bg: rgb(255 255 255 / 0.075);
+  }
+  [data-tone="light"] .btn-ghost {
+    --btn-bg: transparent;
   }
   [data-tone="light"] .btn-ghost:hover {
     --btn-bg: color-mix(in oklab, var(--color-navy) 5%, transparent);
@@ -319,11 +426,19 @@
 
   /* --- Surfaces -------------------------------------------------------- */
   .panel {
-    background: var(--surface);
+    background-color: var(--surface);
+    background-image: linear-gradient(180deg, rgb(255 255 255 / 0.055), rgb(255 255 255 / 0.025));
     border: 1px solid var(--border-color);
     border-radius: var(--radius-lg);
-    backdrop-filter: blur(14px);
+    backdrop-filter: blur(10px);
+    box-shadow: inset 0 1px rgb(255 255 255 / 0.025);
   }
+  [data-tone="light"] .panel { background-image: none; box-shadow: none; }
+
+  /* A menu that floats out of the header is the one panel that needs a ground
+     of its own: a card's few per cent of white would let the page read
+     straight through the menu behind it. */
+  header .panel { background-color: var(--surface-veil); }
 
   .hairline { block-size: 1px; background: var(--border-color); border: 0; }
 
@@ -331,10 +446,12 @@
      texture rather than decoration. */
   .grid-texture {
     background-image:
-      linear-gradient(to right, color-mix(in oklab, var(--color-warm) 4%, transparent) 1px, transparent 1px),
-      linear-gradient(to bottom, color-mix(in oklab, var(--color-warm) 4%, transparent) 1px, transparent 1px);
+      linear-gradient(to right, rgb(255 255 255 / 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(255 255 255 / 0.045) 1px, transparent 1px);
     background-size: 72px 72px;
-    mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 20%, transparent 78%);
+    /* Strongest at the top of the block and gone well before the copy below
+       it — texture the eye finds only if it looks for it. */
+    mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.85), rgb(0 0 0 / 0.18) 70%, transparent);
   }
 
   /* --- Rich text from the CMS ------------------------------------------ */
@@ -449,7 +566,11 @@
 
 /* Printing a service page should give a client something readable. */
 @media print {
+  html { background: #fff; }
   body { background: #fff; color: #000; }
+  /* The atmosphere is a lit ground, not information — it has no business on
+     a sheet of paper. */
+  body::before { display: none !important; }
   .no-print { display: none !important; }
   /* Whatever had not been scrolled past yet is still part of the document. */
   .reveal { opacity: 1 !important; transform: none !important; }
@@ -509,18 +630,33 @@
    ========================================================================== */
 @layer components {
   .admin {
-    --admin-bg: #0a0921;
-    --admin-panel: #12102f;
-    --admin-panel-2: #171543;
-    --admin-line: color-mix(in oklab, var(--color-warm) 11%, transparent);
-    --admin-line-strong: color-mix(in oklab, var(--color-warm) 20%, transparent);
-    --text-strong: var(--color-warm);
-    --text-body-color: color-mix(in oklab, var(--color-warm) 76%, transparent);
-    --text-muted: color-mix(in oklab, var(--color-warm) 52%, transparent);
+    /* Same atmosphere as the site, turned well down. An operator reads tables
+       and forms here for an hour at a time; the lighting has to stay out of
+       the way of the data. The class sits on <body>, so `body::before` picks
+       these up and the panel gets the site's ground without a second
+       implementation of it. */
+    --bg-base: #0b0e16;
+    --bg-mid: #10141f;
+    --bg-deep: #171c2b;
+    --atm: 0.4;
+
+    --admin-bg: #0b0e16;
+    --admin-shell: rgb(9 12 20 / 0.86);
+    --admin-panel: rgb(255 255 255 / 0.038);
+    --admin-panel-2: rgb(255 255 255 / 0.058);
+    --admin-field: rgb(5 8 18 / 0.55);
+    --admin-line: rgb(255 255 255 / 0.1);
+    --admin-line-strong: rgb(255 255 255 / 0.2);
+
+    --surface: var(--admin-panel);
+    --surface-raised: var(--admin-panel-2);
+    --surface-veil: var(--admin-shell);
+    --text-strong: #f6f4ef;
+    --text-body-color: #d5d3dd;
+    --text-muted: #b2b0be;
     --border-color: var(--admin-line);
     font-size: 0.9rem;
     line-height: 1.55;
-    background: var(--admin-bg);
     color: var(--text-body-color);
   }
 
@@ -529,7 +665,8 @@
   .admin h3 { font-size: 0.95rem; letter-spacing: -0.006em; }
 
   .admin-card {
-    background: var(--admin-panel);
+    background-color: var(--admin-panel);
+    background-image: linear-gradient(180deg, rgb(255 255 255 / 0.022), rgb(255 255 255 / 0));
     border: 1px solid var(--admin-line);
     border-radius: var(--radius-md);
   }
@@ -538,7 +675,7 @@
     display: block;
     font-size: 0.76rem;
     font-weight: 600;
-    color: var(--text-muted);
+    color: var(--text-body-color);
     margin-block-end: 0.35rem;
   }
 
@@ -546,19 +683,27 @@
   .admin-select,
   .admin-textarea {
     inline-size: 100%;
-    background: color-mix(in oklab, #05041a 60%, transparent);
-    border: 1px solid var(--admin-line);
+    /* Darker than the card it sits on and with a visibly lighter edge: a
+       field an operator has to hunt for is a field they mistype into. */
+    background: var(--admin-field);
+    border: 1px solid rgb(255 255 255 / 0.12);
     border-radius: var(--radius-sm);
     padding: 0.55rem 0.7rem;
     font-size: 0.875rem;
     color: var(--text-strong);
-    transition: border-color var(--duration-fast) var(--ease-out-soft);
+    transition:
+      border-color var(--duration-fast) var(--ease-out-soft),
+      box-shadow var(--duration-fast) var(--ease-out-soft);
+  }
+  .admin-input:hover, .admin-select:hover, .admin-textarea:hover {
+    border-color: rgb(255 255 255 / 0.2);
   }
   .admin-input:focus, .admin-select:focus, .admin-textarea:focus {
     outline: none;
-    border-color: color-mix(in oklab, var(--color-peach) 65%, transparent);
+    border-color: var(--color-peach);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-orange) 22%, transparent);
   }
-  .admin-input::placeholder, .admin-textarea::placeholder { color: var(--text-muted); }
+  .admin-input::placeholder, .admin-textarea::placeholder { color: #9a98a8; }
   .admin-textarea { resize: vertical; min-block-size: 4.5rem; line-height: 1.6; }
   .admin-input[aria-invalid="true"] { border-color: #ef5350; }
 
@@ -581,16 +726,25 @@
       border-color var(--duration-fast) var(--ease-out-soft),
       opacity var(--duration-fast) var(--ease-out-soft);
   }
-  .admin-btn:hover { background: color-mix(in oklab, var(--color-warm) 7%, transparent); }
+  .admin-btn:hover {
+    background: rgb(255 255 255 / 0.075);
+    border-color: rgb(255 255 255 / 0.2);
+  }
   .admin-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .admin-btn-primary {
-    background: var(--color-orange);
+    background: linear-gradient(90deg, #eb6c23, #fb8643);
     border-color: transparent;
-    color: #fff;
+    color: var(--color-on-accent);
   }
-  .admin-btn-primary:hover { background: color-mix(in oklab, var(--color-orange) 88%, white); }
-  .admin-btn-danger { border-color: color-mix(in oklab, #ef5350 55%, transparent); color: #ff9a95; }
-  .admin-btn-danger:hover { background: color-mix(in oklab, #ef5350 14%, transparent); }
+  .admin-btn-primary:hover {
+    background: linear-gradient(90deg, #ef7429, #fd9050);
+    border-color: transparent;
+  }
+  .admin-btn-danger { border-color: color-mix(in oklab, #ef5350 55%, transparent); color: #ffa8a3; }
+  .admin-btn-danger:hover {
+    background: color-mix(in oklab, #ef5350 16%, transparent);
+    border-color: color-mix(in oklab, #ef5350 70%, transparent);
+  }
   .admin-btn-sm { padding: 0.34rem 0.6rem; font-size: 0.76rem; }
 
   .admin-table { inline-size: 100%; border-collapse: collapse; font-size: 0.84rem; }
@@ -600,9 +754,9 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.07em;
-    color: var(--text-muted);
+    color: var(--text-body-color);
     padding: 0.65rem 0.85rem;
-    border-block-end: 1px solid var(--admin-line);
+    border-block-end: 1px solid var(--admin-line-strong);
     white-space: nowrap;
   }
   .admin-table td {
@@ -610,7 +764,7 @@
     border-block-end: 1px solid var(--admin-line);
     vertical-align: middle;
   }
-  .admin-table tbody tr:hover { background: color-mix(in oklab, var(--color-warm) 3.5%, transparent); }
+  .admin-table tbody tr:hover { background: rgb(255 255 255 / 0.045); }
 
   .admin-badge {
     display: inline-flex;
@@ -634,10 +788,11 @@
     color: var(--text-body-color);
     transition: background-color var(--duration-fast), color var(--duration-fast);
   }
-  .admin-nav-link:hover { background: color-mix(in oklab, var(--color-warm) 6%, transparent); color: var(--text-strong); }
+  .admin-nav-link:hover { background: rgb(255 255 255 / 0.07); color: var(--text-strong); }
   .admin-nav-link[aria-current="page"] {
-    background: color-mix(in oklab, var(--color-orange) 16%, transparent);
-    color: var(--color-warm);
+    background: color-mix(in oklab, var(--color-orange) 22%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-orange) 34%, transparent);
+    color: #fff;
     font-weight: 600;
   }
 }

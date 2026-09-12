@@ -53,7 +53,7 @@ export function MediaPicker({
   return (
     <div>
       <div className="flex items-center gap-3">
-        <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] border border-[var(--admin-line)] bg-[color-mix(in_oklab,#05041a_45%,transparent)]">
+        <div className="flex size-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--radius-sm)] border border-[var(--admin-line)] bg-[var(--admin-field)]">
           {selected ? (
             <img
               src={`/media/${selected.filename}`}
@@ -131,7 +131,7 @@ export function MediaPicker({
                         }}
                         className="group w-full overflow-hidden rounded-[var(--radius-sm)] border border-[var(--admin-line)] text-start transition-colors hover:border-[var(--color-orange)]"
                       >
-                        <span className="block aspect-[4/3] overflow-hidden bg-[#05041a]">
+                        <span className="block aspect-[4/3] overflow-hidden bg-[var(--color-ink-900)]">
                           <img
                             src={`/media/${option.filename}`}
                             alt=""

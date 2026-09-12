@@ -15,7 +15,7 @@ import { getSettings, whatsappLink } from "@/lib/settings";
 import "@/styles/globals.css";
 
 export const viewport: Viewport = {
-  themeColor: "#0b0a26",
+  themeColor: "#0b0d14",
   colorScheme: "dark",
   width: "device-width",
   initialScale: 1,
@@ -61,7 +61,7 @@ export default async function PublicLayout({
       <body className="flex min-h-dvh flex-col">
         <a
           href="#main"
-          className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:start-4 focus-visible:top-4 focus-visible:z-100 focus-visible:rounded-full focus-visible:bg-[var(--color-orange)] focus-visible:px-5 focus-visible:py-2.5 focus-visible:text-sm focus-visible:font-semibold focus-visible:text-white"
+          className="sr-only focus-visible:not-sr-only focus-visible:fixed focus-visible:start-4 focus-visible:top-4 focus-visible:z-100 focus-visible:rounded-full focus-visible:bg-[var(--color-orange)] focus-visible:px-5 focus-visible:py-2.5 focus-visible:text-sm focus-visible:font-semibold focus-visible:text-on-accent"
         >
           {dict.nav.skipToContent}
         </a>

@@ -45,7 +45,7 @@ export function AdminSidebar({
 
       <aside
         data-open={open}
-        className="fixed inset-y-0 left-0 z-50 flex w-64 -translate-x-full flex-col border-r border-[var(--admin-line)] bg-[var(--admin-panel)] transition-transform duration-300 data-[open=true]:translate-x-0 lg:translate-x-0"
+        className="fixed inset-y-0 left-0 z-50 flex w-64 -translate-x-full flex-col border-r border-[var(--admin-line)] bg-[var(--admin-shell)] backdrop-blur-xl transition-transform duration-300 data-[open=true]:translate-x-0 lg:translate-x-0"
       >
         <div className="flex items-center justify-between border-b border-[var(--admin-line)] px-4 py-3.5">
           <Link href="/admin" aria-label="Elite One Desk admin">

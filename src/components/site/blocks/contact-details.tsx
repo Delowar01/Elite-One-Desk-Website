@@ -49,7 +49,7 @@ export function ContactDetailsBlock({ values, ctx }: BlockProps) {
   ].filter((row): row is NonNullable<typeof row> => Boolean(row));
 
   return (
-    <section className="section-tight">
+    <section data-atmosphere="form" className="section-tight">
       <div className="shell shell-wide grid gap-12 lg:grid-cols-[0.85fr_1.15fr] lg:gap-16">
         <div>
           <SectionHeading title={text(values, "title", locale)} intro={text(values, "intro", locale)} />

@@ -167,7 +167,7 @@ export function EnquiryForm({
   }
 
   const inputClass =
-    "w-full rounded-[var(--radius-sm)] border border-line bg-[color-mix(in_oklab,var(--color-ink-900)_35%,transparent)] px-3.5 py-3 text-[0.92rem] text-strong outline-none transition-colors placeholder:text-muted focus:border-[color-mix(in_oklab,var(--color-peach)_65%,transparent)] aria-[invalid=true]:border-[#ef5350]";
+    "w-full rounded-[var(--radius-sm)] border border-line bg-[rgb(6_8_18_/_0.52)] px-3.5 py-3 text-[0.92rem] text-strong outline-none transition-colors placeholder:text-[#9a98a8] focus:border-[var(--color-peach)] aria-[invalid=true]:border-[#ef5350]";
 
   const field = (name: string, label: string, node: React.ReactNode, hint?: string) => (
     <div className="flex flex-col gap-1.5">

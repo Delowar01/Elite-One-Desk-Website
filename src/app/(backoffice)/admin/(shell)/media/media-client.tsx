@@ -95,7 +95,7 @@ export function LibraryGrid({ csrf, items }: { csrf: string; items: LibraryItem[
     <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
       {items.map((item) => (
         <li key={item.id} className="admin-card overflow-hidden">
-          <div className="aspect-[4/3] bg-[#05041a]">
+          <div className="aspect-[4/3] bg-[var(--color-ink-900)]">
             <img
               src={`/media/${item.filename}`}
               alt={item.altEn || ""}

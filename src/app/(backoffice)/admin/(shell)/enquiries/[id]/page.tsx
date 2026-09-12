@@ -149,7 +149,7 @@ export default async function EnquiryDetailPage({ params }: { params: Promise<{ 
             {row.message ? (
               <div className="mt-4">
                 <p className="admin-label">Message</p>
-                <p className="whitespace-pre-wrap rounded-[var(--radius-sm)] border border-[var(--admin-line)] bg-[color-mix(in_oklab,#05041a_45%,transparent)] p-3.5 text-[0.86rem] leading-relaxed text-strong">
+                <p className="whitespace-pre-wrap rounded-[var(--radius-sm)] border border-[var(--admin-line)] bg-[var(--admin-field)] p-3.5 text-[0.86rem] leading-relaxed text-strong">
                   {row.message}
                 </p>
               </div>
