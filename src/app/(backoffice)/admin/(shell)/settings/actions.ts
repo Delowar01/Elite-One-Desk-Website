@@ -8,7 +8,7 @@ import {
   checkbox, fail, field, numberField, ok, optionalId, runAction, type ActionState,
 } from "@/lib/admin/actions";
 import { guardAction } from "@/lib/auth/guard";
-import { TAGS, revalidate } from "@/lib/cache";
+import { TAGS, revalidate, revalidateEverything } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { socialLinks } from "@/lib/db/schema";
 import { saveSettingsGroup, type SettingsKey } from "@/lib/settings";
@@ -207,6 +207,52 @@ export async function saveAnalytics(_prev: ActionState, form: FormData): Promise
     }
 
     return persist("analytics", { ga4Id, gtmId, metaPixelId }, form, "analytics.manage");
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/* Maintenance                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Drop every cached loader at once.
+ *
+ * Ordinary editing does not need this: each admin action already revalidates
+ * the tags it touched, so a saved package or a renamed category is live before
+ * the editor has finished reading the confirmation. This exists for the one
+ * case those actions cannot cover — a change made to the database from outside
+ * the running application, which is to say a migration or the taxonomy cutover
+ * (`npm run restructure`, DEPLOYMENT.md §9.1).
+ *
+ * A `tsx` script has no route handler, no request and no incremental cache, so
+ * `revalidateTag` there would be a no-op at best; the refresh has to be asked
+ * for from inside the server that holds the cache. That is what this is: an
+ * ordinary admin action behind `settings.manage`, the session cookie and the
+ * CSRF token, with no new permission and no unauthenticated purge address.
+ *
+ * `revalidateEverything` drops the tagged data cache — the loaders themselves.
+ * `revalidatePath("/", "layout")` drops the rendered route cache underneath it,
+ * because a page whose data is fresh is still stale if the render is not. Both,
+ * so that "refreshed" means refreshed rather than probably refreshed.
+ *
+ * The site runs as a single Node process (`instances: 1` in
+ * `deploy/ecosystem.config.js`, one `ExecStart` in the systemd unit), so the
+ * cache this empties is the only cache there is. Behind more than one instance
+ * it would have to be asked of each of them, which is why the deployment notes
+ * say to keep it at one.
+ */
+export async function refreshCaches(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("cache-refresh", async () => {
+    const session = await guardAction("settings.manage", form);
+    revalidateEverything();
+    revalidatePath("/", "layout");
+    await logActivity(session, {
+      action: "cache.refreshed",
+      entityType: "settings",
+      entityId: "cache",
+      summary: "Refreshed every site cache",
+    });
+    return ok("Every cache was dropped. The next visit to a page reads the database again.");
   });
 }
 

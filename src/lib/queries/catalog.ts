@@ -7,6 +7,7 @@ import { TAGS } from "@/lib/cache";
 import { db } from "@/lib/db";
 import {
   faqs,
+  packageDestinations,
   serviceCategories,
   serviceSubcategories,
   services,
@@ -19,6 +20,7 @@ export type CategoryRow = typeof serviceCategories.$inferSelect;
 export type ServiceRow = typeof services.$inferSelect;
 export type SubcategoryRow = typeof serviceSubcategories.$inferSelect;
 export type PackageRow = typeof travelPackages.$inferSelect;
+export type DestinationRow = typeof packageDestinations.$inferSelect;
 export type VideoRow = typeof videos.$inferSelect;
 export type TestimonialRow = typeof testimonials.$inferSelect;
 export type FaqRow = typeof faqs.$inferSelect;
@@ -87,6 +89,57 @@ export const getPackages = unstable_cache(
   { tags: [TAGS.packages], revalidate: 3600 },
 );
 
+export const getDestinations = unstable_cache(
+  async (): Promise<DestinationRow[]> =>
+    db
+      .select()
+      .from(packageDestinations)
+      .where(eq(packageDestinations.isPublished, true))
+      .orderBy(asc(packageDestinations.sortOrder), asc(packageDestinations.id)),
+  ["destinations"],
+  // Same tag as packages: a destination only ever matters in relation to the
+  // packages inside it, and one tag means one revalidation cannot miss the other.
+  { tags: [TAGS.packages], revalidate: 3600 },
+);
+
+/**
+ * The packages catalogue as the public pages need it, plus the single question
+ * every one of them asks first: is this site grouping by destination yet?
+ *
+ * It is deliberately not "does a destination row exist". An empty destination —
+ * one an admin created but has not filled — must not flip the catalogue out of
+ * its existing region grouping, because that would be a visible change made by
+ * a half-finished edit. Destination mode requires a published destination that
+ * actually holds a published package.
+ */
+export async function getPackageCatalog() {
+  const [rows, destinations] = await Promise.all([getPackages(), getDestinations()]);
+
+  const byDestination = new Map<number, PackageRow[]>();
+  for (const row of rows) {
+    if (row.destinationId == null) continue;
+    const list = byDestination.get(row.destinationId) ?? [];
+    list.push(row);
+    byDestination.set(row.destinationId, list);
+  }
+
+  const grouped = destinations
+    .map((destination) => ({ destination, packages: byDestination.get(destination.id) ?? [] }))
+    .filter((group) => group.packages.length > 0);
+
+  return {
+    packages: rows,
+    destinations,
+    grouped,
+    /** Packages belonging to no destination — "Anywhere" is not a place. */
+    ungrouped: rows.filter((row) => row.destinationId == null),
+    destinationMode: grouped.length > 0,
+  };
+}
+
+export const getDestinationBySlug = async (slug: string) =>
+  (await getDestinations()).find((d) => d.slug === slug) ?? null;
+
 export const getVideos = unstable_cache(
   async (): Promise<VideoRow[]> =>
     db
@@ -153,6 +206,15 @@ export const getCategoryBySlug = async (slug: string) =>
 
 export const getPackageBySlug = async (slug: string) =>
   (await getPackages()).find((p) => p.slug === slug) ?? null;
+
+/**
+ * Destinations that are worth an address of their own — the same test the
+ * public catalogue uses, so the sitemap can never advertise an empty page.
+ */
+export const publishedDestinations = async () => {
+  const { grouped } = await getPackageCatalog();
+  return grouped.map(({ destination }) => destination);
+};
 
 /** Only used by the sitemap, which wants unpublished rows excluded anyway. */
 export const publishedSlugs = async () => {

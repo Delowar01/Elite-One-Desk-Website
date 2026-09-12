@@ -1,13 +1,20 @@
 import { getDictionary } from "@/lib/i18n/dictionary";
 import type { Locale } from "@/lib/i18n/config";
-import { getCatalog, getFaqs, getPackages, getTestimonials, getVideos } from "@/lib/queries/catalog";
+import {
+  getCatalog,
+  getDestinations,
+  getFaqs,
+  getPackages,
+  getTestimonials,
+  getVideos,
+} from "@/lib/queries/catalog";
 import { getMediaMap } from "@/lib/queries/site";
 import type { RenderedSection } from "@/lib/queries/content";
 import { getSettings, whatsappLink } from "@/lib/settings";
 
 import { ContactDetailsBlock } from "./blocks/contact-details";
 import type { BlockContext, BlockProps } from "./blocks/context";
-import { EgyptFeatureBlock } from "./blocks/egypt-feature";
+import { DestinationFeatureBlock } from "./blocks/destination-feature";
 import { FaqBlock } from "./blocks/faq";
 import { FeaturedServiceBlock } from "./blocks/featured-service";
 import { FinalCtaBlock } from "./blocks/final-cta";
@@ -36,7 +43,11 @@ const RENDERERS: Record<string, BlockComponent> = {
   "service-grid": ServiceGridBlock,
   "featured-service": FeaturedServiceBlock,
   "travel-feature": TravelFeatureBlock,
-  "egypt-feature": EgyptFeatureBlock,
+  "destination-feature": DestinationFeatureBlock,
+  // The type this block carried before it was generalised. Mapped so a section
+  // stored either way renders the same, whichever order the code and the data
+  // arrive in.
+  "egypt-feature": DestinationFeatureBlock,
   "packages-grid": PackagesGridBlock,
   "video-showcase": VideoShowcaseBlock,
   process: ProcessBlock,
@@ -57,15 +68,17 @@ const RENDERERS: Record<string, BlockComponent> = {
  * still costs at most one round trip per dataset — and usually none.
  */
 export async function buildBlockContext(locale: Locale): Promise<BlockContext> {
-  const [settings, media, catalog, packages, videos, testimonials, faqs] = await Promise.all([
-    getSettings(),
-    getMediaMap(),
-    getCatalog(),
-    getPackages(),
-    getVideos(),
-    getTestimonials(),
-    getFaqs(),
-  ]);
+  const [settings, media, catalog, packages, destinations, videos, testimonials, faqs] =
+    await Promise.all([
+      getSettings(),
+      getMediaMap(),
+      getCatalog(),
+      getPackages(),
+      getDestinations(),
+      getVideos(),
+      getTestimonials(),
+      getFaqs(),
+    ]);
 
   return {
     locale,
@@ -74,6 +87,7 @@ export async function buildBlockContext(locale: Locale): Promise<BlockContext> {
     media,
     catalog,
     packages,
+    destinations,
     videos,
     testimonials,
     faqs,

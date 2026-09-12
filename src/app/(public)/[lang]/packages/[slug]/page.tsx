@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { Breadcrumbs } from "@/components/site/breadcrumbs";
+import { DestinationView } from "@/components/site/destination-view";
 import { EnquiryForm } from "@/components/site/enquiry-form";
 import { JsonLd } from "@/components/site/json-ld";
 import { MediaImage } from "@/components/site/media-image";
@@ -10,7 +11,14 @@ import { Icon } from "@/components/ui/icon";
 import { toPlainText } from "@/lib/cms/sanitize";
 import { isLocale, localeHref, pick } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n/dictionary";
-import { getCatalog, getPackageBySlug, getPackages } from "@/lib/queries/catalog";
+import {
+  getCatalog,
+  getDestinationBySlug,
+  getDestinations,
+  getPackageBySlug,
+  getPackageCatalog,
+  getPackages,
+} from "@/lib/queries/catalog";
 import { getMediaMap } from "@/lib/queries/site";
 import { breadcrumbJsonLd, buildMetadata } from "@/lib/seo";
 import { getSettings, whatsappLink } from "@/lib/settings";
@@ -20,6 +28,22 @@ type Params = { params: Promise<{ lang: string; slug: string }> };
 export async function generateMetadata({ params }: Params) {
   const { lang, slug } = await params;
   if (!isLocale(lang)) return {};
+
+  // Destination first, exactly as the page body resolves, so the two can never
+  // describe different pages at the same address.
+  const destination = await getDestinationBySlug(slug);
+  if (destination) {
+    return buildMetadata({
+      locale: lang,
+      path: `/packages/${slug}`,
+      entityType: "destination",
+      entityKey: slug,
+      title: pick(lang, destination.titleEn, destination.titleAr),
+      description: toPlainText(pick(lang, destination.summaryEn, destination.summaryAr), 300),
+      imageId: destination.imageId,
+    });
+  }
+
   const row = await getPackageBySlug(slug);
   if (!row) return {};
   return buildMetadata({
@@ -35,12 +59,33 @@ export async function generateMetadata({ params }: Params) {
 }
 
 export async function generateStaticParams() {
-  return (await getPackages()).map((p) => ({ slug: p.slug }));
+  // Both halves of the shared namespace, so a destination page is prerendered
+  // on the same terms as a package page.
+  const [packages, destinations] = await Promise.all([getPackages(), getDestinations()]);
+  return [...destinations.map((d) => ({ slug: d.slug })), ...packages.map((p) => ({ slug: p.slug }))];
 }
 
 export default async function PackagePage({ params }: Params) {
   const { lang, slug } = await params;
   if (!isLocale(lang)) notFound();
+
+  // `/packages/[slug]` is one segment shared by two tables. Destination wins,
+  // because a destination is the parent of the packages inside it; the admin
+  // refuses a slug that would shadow the other table, so the order only ever
+  // settles which page renders, never which content is reachable.
+  const destination = await getDestinationBySlug(slug);
+  if (destination) {
+    const [{ grouped }, destinationMedia] = await Promise.all([getPackageCatalog(), getMediaMap()]);
+    const group = grouped.find((g) => g.destination.id === destination.id);
+    return (
+      <DestinationView
+        destination={destination}
+        packages={group?.packages ?? []}
+        locale={lang}
+        media={destinationMedia}
+      />
+    );
+  }
 
   const row = await getPackageBySlug(slug);
   if (!row) notFound();

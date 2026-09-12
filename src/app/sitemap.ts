@@ -2,7 +2,7 @@ import type { MetadataRoute } from "next";
 
 import { siteUrl } from "@/lib/env";
 import { LOCALES, localeHref } from "@/lib/i18n/config";
-import { getPackages, publishedSlugs } from "@/lib/queries/catalog";
+import { getPackages, publishedDestinations, publishedSlugs } from "@/lib/queries/catalog";
 import { getPublishedPages } from "@/lib/queries/content";
 import { getSettings } from "@/lib/settings";
 
@@ -10,11 +10,12 @@ import { getSettings } from "@/lib/settings";
 const SKIP = new Set(["search"]);
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const [settings, pages, { categories, services }, packages] = await Promise.all([
+  const [settings, pages, { categories, services }, packages, destinations] = await Promise.all([
     getSettings(),
     getPublishedPages(),
     publishedSlugs(),
     getPackages(),
+    publishedDestinations(),
   ]);
 
   const locales = settings.features.arabicEnabled ? LOCALES : ["en" as const];
@@ -48,6 +49,16 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       lastModified: service.updatedAt,
       priority: 0.7,
       changeFrequency: "monthly",
+    });
+  }
+  // Destinations sit between the catalogue and a package: they are a real
+  // landing page, and only listed when they actually hold a published package.
+  for (const destination of destinations) {
+    entries.push({
+      path: `/packages/${destination.slug}`,
+      lastModified: destination.updatedAt,
+      priority: 0.65,
+      changeFrequency: "weekly",
     });
   }
   for (const row of packages) {

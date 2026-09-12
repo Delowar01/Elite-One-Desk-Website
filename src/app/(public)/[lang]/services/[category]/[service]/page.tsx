@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 
 import { Breadcrumbs } from "@/components/site/breadcrumbs";
 import { EnquiryForm } from "@/components/site/enquiry-form";
@@ -15,6 +15,7 @@ import { getCatalog, getFaqs } from "@/lib/queries/catalog";
 import { getMediaMap } from "@/lib/queries/site";
 import { breadcrumbJsonLd, buildMetadata, faqJsonLd } from "@/lib/seo";
 import { getSettings, whatsappLink } from "@/lib/settings";
+import { serviceMove } from "@/lib/taxonomy-moves";
 
 type Params = { params: Promise<{ lang: string; category: string; service: string }> };
 
@@ -63,7 +64,13 @@ export default async function ServicePage({ params }: Params) {
   if (!isLocale(lang)) notFound();
 
   const found = await load(categorySlug, serviceSlug);
-  if (!found) notFound();
+  if (!found) {
+    // Only a slug the database does not have reaches the move map, so this is
+    // inert until the restructure retires the address.
+    const moved = serviceMove(categorySlug, serviceSlug);
+    if (moved) permanentRedirect(localeHref(lang, moved));
+    notFound();
+  }
   const { catalog, category, service } = found;
 
   const [media, allFaqs, settings] = await Promise.all([getMediaMap(), getFaqs(), getSettings()]);

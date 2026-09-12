@@ -8,10 +8,16 @@ import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
 import type { BlockProps } from "./context";
 
-/** Discover Egypt — a destination feature on a warm-white ground for contrast. */
-export function EgyptFeatureBlock({ values, ctx }: BlockProps) {
+/**
+ * A destination feature on a warm-white ground for contrast.
+ *
+ * Every string it renders is an editable block value — it queries no packages
+ * and reads no region — so generalising it away from Egypt was a rename, not a
+ * rewrite, and the copy an editor already wrote stays exactly as they wrote it.
+ */
+export function DestinationFeatureBlock({ values, ctx }: BlockProps) {
   const { locale } = ctx;
-  const def = getBlock("egypt-feature")!;
+  const def = getBlock("destination-feature")!;
   const fields = def.fields.find((f) => f.name === "destinations")!.itemFields ?? [];
   const destinations = items(values, "destinations", locale, fields);
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;

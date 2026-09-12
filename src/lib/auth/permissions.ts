@@ -10,7 +10,7 @@ export const PERMISSIONS = [
   { key: "content.view", label: "View pages and sections", group: "Content" },
   { key: "content.manage", label: "Edit and publish pages and sections", group: "Content" },
   { key: "services.manage", label: "Manage service categories and services", group: "Content" },
-  { key: "packages.manage", label: "Manage travel and Egypt packages", group: "Content" },
+  { key: "packages.manage", label: "Manage tour packages and destinations", group: "Content" },
   { key: "videos.manage", label: "Manage the video showcase", group: "Content" },
   { key: "testimonials.manage", label: "Manage testimonials", group: "Content" },
   { key: "faqs.manage", label: "Manage FAQs", group: "Content" },

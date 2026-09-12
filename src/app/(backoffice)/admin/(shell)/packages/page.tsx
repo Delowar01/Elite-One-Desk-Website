@@ -1,11 +1,11 @@
 import Link from "next/link";
-import { asc, desc } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 
 import { AdminPageHeader, EmptyState } from "@/components/admin/page-header";
 import { Icon } from "@/components/ui/icon";
 import { requirePermission } from "@/lib/auth/guard";
 import { db } from "@/lib/db";
-import { travelPackages } from "@/lib/db/schema";
+import { packageDestinations, travelPackages } from "@/lib/db/schema";
 import { PackageRows } from "./package-rows";
 
 export const metadata = { title: "Travel packages" };
@@ -19,25 +19,32 @@ export default async function PackagesPage() {
       id: travelPackages.id,
       slug: travelPackages.slug,
       titleEn: travelPackages.titleEn,
-      region: travelPackages.region,
+      destination: packageDestinations.titleEn,
       destinationEn: travelPackages.destinationEn,
       durationEn: travelPackages.durationEn,
       isPublished: travelPackages.isPublished,
       isFeatured: travelPackages.isFeatured,
     })
     .from(travelPackages)
+    .leftJoin(packageDestinations, eq(packageDestinations.id, travelPackages.destinationId))
     .orderBy(desc(travelPackages.isFeatured), asc(travelPackages.sortOrder), asc(travelPackages.id));
 
   return (
     <>
       <AdminPageHeader
         title="Travel packages"
-        description="Egypt and international programmes. Each gets its own page with a travel request form attached."
+        description="Tour programmes. Each gets its own page with a travel request form attached, and is listed under the destination you file it in."
         actions={
-          <Link href="/admin/packages/new" className="admin-btn admin-btn-primary">
-            <Icon name="sparkle" size={14} />
-            New package
-          </Link>
+          <>
+            <Link href="/admin/packages/destinations" className="admin-btn">
+              <Icon name="mapPin" size={14} />
+              Destinations
+            </Link>
+            <Link href="/admin/packages/new" className="admin-btn admin-btn-primary">
+              <Icon name="sparkle" size={14} />
+              New package
+            </Link>
+          </>
         }
       />
       {rows.length === 0 ? (

@@ -264,6 +264,99 @@ complete, verified runtime exists on disk.
     its marker, the service state, all three health results, the backup
     filenames, the rollback runtime and the build worktree.
 
+### 9.1 The service restructure (one-off)
+
+The 2026 restructure — six service categories becoming five, Egypt becoming a
+package destination — is **not** part of a deployment. `deploy.sh` never runs
+it. The release that carries the code and the migration is an ordinary
+deployment and changes nothing a visitor sees; the catalogue moves only when
+somebody decides it should, by running one command.
+
+That separation is the safety: the code can be live and observed for as long as
+you like before the data moves, and if the cutover is wrong it can be rolled
+back to a backup taken minutes earlier without also rolling back a release.
+
+**Before you start.** The release containing `scripts/restructure.ts` must
+already be deployed, which means the migration adding `package_destinations`
+has already run (step 10). Check the runtime marker if you are unsure.
+
+```bash
+# 1. A fresh backup. This is the only way back once the transaction commits.
+sudo /usr/local/bin/elite-one-desk-backup
+
+# 2. A full rehearsal. It does every statement, checks every invariant, prints
+#    the before and after, and then rolls the whole thing back.
+cd /var/www/elite-one-desk/app
+sudo -u eliteonedesk npm run restructure -- --dry-run
+
+# 3. Read the output. The "after" block is what the site will hold:
+#    5 categories · 74 services · 1 destination · 4 packages inside it
+#    and the region values must be identical before and after.
+
+# 4. The real thing.
+sudo -u eliteonedesk npm run restructure
+```
+
+It is one PostgreSQL transaction. A transaction-scoped advisory lock stops two
+of them running at once, and `SHARE ROW EXCLUSIVE` on the seven tables it
+touches stops an editor saving into the middle of it — while leaving plain
+`SELECT` alone, so the website keeps serving and enquiries keep being written
+throughout. If any assertion fails, nothing is written at all and the message
+says which one. Running it a second time detects the finished state and does
+nothing.
+
+**5. Refresh the caches. This step is not optional.**
+
+Sign in to the panel and open:
+
+```
+https://eliteonedesk.com/admin/settings?tab=maintenance
+```
+
+Press **Refresh caches**. It needs the `settings.manage` permission, and it is
+recorded in the activity log like any other change.
+
+Until you do, the site keeps serving the old catalogue. The public pages read
+through cached loaders with a one-hour lifetime, and the cutover changed the
+database from outside the running application, so nothing told it to look
+again. Three things worth knowing about that cache:
+
+- **Restarting the service does not clear it.** It is written to
+  `.next/standalone/.next/cache`, on disk, and is read back on start. A
+  `systemctl restart` after the cutover leaves the site exactly as stale as it
+  was. (A *deployment* is different — step 13 swaps in a new runtime directory
+  with an empty cache — but the cutover happens after the deployment, against
+  a warm one.)
+- **It is one process.** `instances: 1` in `deploy/ecosystem.config.js`, one
+  `ExecStart` in the systemd unit. The refresh empties the only cache there is.
+  If the site is ever run behind more than one instance, this step has to be
+  asked of each of them.
+- **Nothing is lost.** The refresh stores nothing and deletes nothing; the next
+  visit to each page reads the database again.
+
+```bash
+# 6. Verify, in this order.
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' https://eliteonedesk.com/services/general-services
+#   expect: 308 https://eliteonedesk.com/services/iqama-services
+curl -s -o /dev/null -w '%{http_code}\n' https://eliteonedesk.com/services/iqama-services   # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://eliteonedesk.com/packages/egypt            # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://eliteonedesk.com/ar/packages/egypt         # 200
+```
+
+Then open the site: the menu should offer **Tour Packages**, `/services` should
+list five categories, and `/packages` should group by destination.
+
+**If it goes wrong.** Before the transaction commits there is nothing to undo —
+the database is byte-identical and you can simply not run it again. After it
+commits, the way back is the backup from step 1 (`§8`), followed by another
+cache refresh. There is no reverse script, deliberately: a second transaction
+that tried to reconstruct the old catalogue would be a second thing to get
+right, and a restore is a thing that already works.
+
+**Adding a destination afterwards.** Nepal, Turkey, Malaysia — none of them
+need any of this. Travel packages → Destinations → New, then file packages
+under it, then refresh the caches. No migration, no release.
+
 ### The release marker
 
 Every runtime the script builds carries the commit it came from, in

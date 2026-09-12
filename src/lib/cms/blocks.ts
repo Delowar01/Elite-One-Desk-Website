@@ -54,6 +54,12 @@ export type BlockDef = {
   /** `home` blocks are offered on the homepage; `any` on every page. */
   scope: "home" | "any";
   fields: FieldDef[];
+  /**
+   * Still renders and still edits, but is no longer offered when adding a
+   * block. Kept so that a section stored under an old type can be opened in
+   * the editor after the type was renamed — a stored row outlives a rename.
+   */
+  deprecated?: boolean;
 };
 
 const localisedText = (name: string, label: string, extra: Partial<FieldDef> = {}): FieldDef => ({
@@ -211,10 +217,39 @@ export const BLOCKS: BlockDef[] = [
     ],
   },
   {
-    type: "egypt-feature",
-    name: "Egypt destination feature",
-    description: "Discover Egypt — destinations, packages and the custom-package request.",
+    type: "destination-feature",
+    name: "Destination feature",
+    description: "One destination, its highlights, and the way into the package catalogue.",
     scope: "any",
+    fields: [
+      localisedText("eyebrow", "Eyebrow"),
+      localisedText("title", "Title"),
+      localisedArea("body", "Body", 3),
+      {
+        name: "destinations",
+        label: "Destinations",
+        type: "items",
+        maxItems: 12,
+        itemFields: [
+          { name: "label", label: "Name", localised: true },
+          { name: "note", label: "Short note", localised: true },
+        ],
+      },
+      ...ctaFields("primary", "Primary"),
+      ...ctaFields("secondary", "Secondary"),
+      { name: "image", label: "Image", type: "media" },
+    ],
+  },
+  {
+    // Compatibility alias for sections stored before the block was generalised
+    // away from Egypt. Identical fields, so an existing row edits exactly as it
+    // did; hidden from the picker so no new one can be created. The cleanup
+    // release removes it once no section carries this type.
+    type: "egypt-feature",
+    name: "Destination feature (legacy)",
+    description: "Superseded by Destination feature. Existing sections keep working.",
+    scope: "any",
+    deprecated: true,
     fields: [
       localisedText("eyebrow", "Eyebrow"),
       localisedText("title", "Title"),
@@ -237,23 +272,19 @@ export const BLOCKS: BlockDef[] = [
   {
     type: "packages-grid",
     name: "Package grid",
-    description: "Travel or Egypt packages drawn live from the Packages screen.",
+    description: "Tour packages drawn live from the Packages screen.",
     scope: "any",
     fields: [
       localisedText("eyebrow", "Eyebrow"),
       localisedText("title", "Title"),
       localisedArea("intro", "Intro", 2),
       {
-        name: "region",
-        label: "Which packages",
-        type: "select",
-        options: [
-          { value: "", label: "All regions" },
-          { value: "egypt", label: "Egypt" },
-          { value: "international", label: "International" },
-          { value: "holiday", label: "Holiday" },
-          { value: "corporate", label: "Corporate" },
-        ],
+        // A destination slug, or empty for every package. Free text rather than
+        // a fixed list, because the point of destinations is that an admin adds
+        // one without anybody editing this file.
+        name: "destination",
+        label: "Destination slug (blank for all)",
+        type: "text",
       },
       { name: "limit", label: "How many to show", type: "number" },
     ],
@@ -437,5 +468,6 @@ export const BLOCK_MAP = new Map(BLOCKS.map((b) => [b.type, b]));
 
 export const getBlock = (type: string): BlockDef | undefined => BLOCK_MAP.get(type);
 
+/** What the editor offers when adding a block — deprecated types are not on it. */
 export const blocksForPage = (slug: string): BlockDef[] =>
-  BLOCKS.filter((b) => b.scope === "any" || slug === "home");
+  BLOCKS.filter((b) => !b.deprecated && (b.scope === "any" || slug === "home"));

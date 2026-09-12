@@ -12,13 +12,44 @@ import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { sanitizeRichText } from "@/lib/cms/sanitize";
 import { db } from "@/lib/db";
-import { travelPackages } from "@/lib/db/schema";
+import { packageDestinations, travelPackages } from "@/lib/db/schema";
 import type { LocalisedItem } from "@/lib/db/schema";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * LEGACY. `region` is no longer how packages are grouped — `destinationId` is —
+ * but the column keeps the values it already holds, `egypt` among them, and
+ * nothing here rewrites one. A saved record therefore comes back with the
+ * region it went in with.
+ */
 const REGIONS = ["egypt", "international", "holiday", "corporate"] as const;
 type Region = (typeof REGIONS)[number];
 const isRegion = (value: string): value is Region => (REGIONS as readonly string[]).includes(value);
+
+/**
+ * `/packages/[slug]` is one route shared by packages and destinations, which is
+ * what keeps every existing package address working. The price is that the two
+ * tables must not collide, checked from both sides.
+ */
+async function slugTaken(slug: string, exceptPackageId?: number) {
+  const [destination] = await db
+    .select({ title: packageDestinations.titleEn })
+    .from(packageDestinations)
+    .where(eq(packageDestinations.slug, slug))
+    .limit(1);
+  if (destination) return `The destination “${destination.title}” already uses that address.`;
+
+  const [pkg] = await db
+    .select({ id: travelPackages.id, title: travelPackages.titleEn })
+    .from(travelPackages)
+    .where(eq(travelPackages.slug, slug))
+    .limit(1);
+  if (pkg && pkg.id !== exceptPackageId) {
+    return `The package “${pkg.title}” already uses that address.`;
+  }
+  return null;
+}
 
 const refresh = () => {
   revalidate(TAGS.packages);
@@ -48,6 +79,7 @@ function readPackage(form: FormData) {
   const region = field(form, "region", 32);
   return {
     region: isRegion(region) ? region : ("international" as Region),
+    destinationId: optionalId(form, "destinationId"),
     titleEn: field(form, "titleEn", 190),
     titleAr: field(form, "titleAr", 190),
     destinationEn: field(form, "destinationEn", 120),
@@ -76,12 +108,8 @@ export async function createPackage(_prev: ActionState, form: FormData): Promise
     if (!values.titleEn) return fail("Give the package a title.", { titleEn: "Required." });
     if (!SLUG.test(slug)) return fail("The address must be lower-case words joined by hyphens.", { slug: "Invalid." });
 
-    const [taken] = await db
-      .select({ id: travelPackages.id })
-      .from(travelPackages)
-      .where(eq(travelPackages.slug, slug))
-      .limit(1);
-    if (taken) return fail("A package already uses that address.", { slug: "Already taken." });
+    const clash = await slugTaken(slug);
+    if (clash) return fail(clash, { slug: "Already taken." });
 
     const [row] = await db
       .insert(travelPackages)
@@ -108,6 +136,18 @@ export async function updatePackage(_prev: ActionState, form: FormData): Promise
     const id = Number(form.get("id"));
     const values = readPackage(form);
     if (!values.titleEn) return fail("Give the package a title.", { titleEn: "Required." });
+
+    // The address is not editable from the update form, but the guard runs
+    // anyway: a destination created since this page loaded could have taken it.
+    const [current] = await db
+      .select({ slug: travelPackages.slug })
+      .from(travelPackages)
+      .where(eq(travelPackages.id, id))
+      .limit(1);
+    if (current) {
+      const clash = await slugTaken(current.slug, id);
+      if (clash) return fail(clash, { slug: "Already taken." });
+    }
 
     const [row] = await db
       .update(travelPackages)

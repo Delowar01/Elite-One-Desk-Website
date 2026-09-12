@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import type { SiteSettings } from "@/lib/settings-defaults";
 import {
   deleteSocialLink,
+  refreshCaches,
   saveBrand,
   saveContact,
   saveDisclaimers,
@@ -14,6 +15,7 @@ import {
   saveSocialLink,
   saveWhatsapp,
 } from "./actions";
+import { SETTINGS_TABS, type SettingsTab } from "./tabs";
 
 export type SocialRow = {
   id: number;
@@ -23,14 +25,7 @@ export type SocialRow = {
   isPublished: boolean;
 };
 
-const TABS = [
-  { key: "brand", label: "Brand" },
-  { key: "contact", label: "Contact" },
-  { key: "whatsapp", label: "WhatsApp" },
-  { key: "social", label: "Social links" },
-  { key: "disclaimers", label: "Disclaimers" },
-  { key: "features", label: "Features" },
-] as const;
+const TABS = SETTINGS_TABS;
 
 const text = (
   id: string,
@@ -66,12 +61,14 @@ export function SettingsClient({
   csrf,
   settings,
   social,
+  initialTab = "brand",
 }: {
   csrf: string;
   settings: SiteSettings;
   social: SocialRow[];
+  initialTab?: SettingsTab;
 }) {
-  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("brand");
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
 
   return (
     <>
@@ -299,7 +296,36 @@ export function SettingsClient({
           </div>
         </AdminForm>
       ) : null}
+
+      {tab === "maintenance" ? <MaintenancePanel csrf={csrf} /> : null}
     </>
+  );
+}
+
+/**
+ * The one control here is deliberately not a Save button: nothing is stored.
+ * It empties the caches the public pages read through, for the case editing
+ * cannot reach — a change made to the database from outside the application,
+ * such as `npm run restructure`.
+ */
+function MaintenancePanel({ csrf }: { csrf: string }) {
+  return (
+    <AdminForm
+      action={refreshCaches}
+      guardUnsaved={false}
+      className="admin-card max-w-3xl p-5"
+      successMessage="Caches refreshed."
+    >
+      <input type="hidden" name="_csrf" value={csrf} />
+      <h2 className="mb-1">Refresh the site caches</h2>
+      <p className="mb-4 text-[0.8rem] text-muted">
+        Editing in this panel already refreshes what it changes, so you should not normally need
+        this. Use it after something has changed the database from outside the website — a
+        migration, a restored backup, or the service restructure (<code>npm run restructure</code>).
+        It stores nothing and nothing is lost: the next visit to each page reads the database again.
+      </p>
+      <SubmitButton pendingLabel="Refreshing…">Refresh caches</SubmitButton>
+    </AdminForm>
   );
 }
 

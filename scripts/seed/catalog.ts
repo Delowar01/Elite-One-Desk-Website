@@ -72,11 +72,13 @@ export const CATALOG: SeedCategory[] = [
           { title: "Airport Transfer", titleAr: "التنقل من وإلى المطار", intro: "Private arrival and departure transfers arranged with your flight times, so nobody waits at the kerb." },
           { title: "Cruise Booking", titleAr: "حجز الرحلات البحرية", intro: "Cabin selection, sailing dates and the flights and hotel nights either side of the cruise." },
           { title: "Travel Insurance", titleAr: "تأمين السفر", intro: "Cover arranged to match the trip and, where the destination requires it, the visa application." },
-          { title: "Customized Travel Itinerary", titleAr: "برنامج سفر مخصص", intro: "A day-by-day plan built around your dates, pace and interests rather than a fixed departure." },
+          { title: "Customized Travel Itinerary", titleAr: "برنامج سفر مخصص", intro: "A day-by-day plan built around your dates, pace and interests rather than a fixed departure.", featured: true },
           { title: "Family Tour Packages", titleAr: "برامج سياحية عائلية", intro: "Programmes paced for children and older travellers, with room configurations and transfers to match." },
           { title: "Group Tour Packages", titleAr: "برامج سياحية للمجموعات", intro: "Co-ordinated travel for groups, with a single point of contact and one consolidated itinerary." },
           { title: "Corporate Travel Services", titleAr: "خدمات سفر الشركات", intro: "Business travel handled against your policy, with reporting and consistent handling across bookings." },
           { title: "Attraction & Activity Tickets", titleAr: "تذاكر المعالم والأنشطة", intro: "Entry tickets, tours and activities reserved ahead of arrival so the day is not spent queueing." },
+          { title: "Honeymoon Packages", titleAr: "باقات شهر العسل", intro: "A quieter itinerary built for two, with the pace, the rooms and the transfers chosen accordingly." },
+          { title: "Professional Tour Guide", titleAr: "مرشد سياحي محترف", intro: "Licensed Arabic and English speaking guides for individual days or a full programme." },
         ],
       },
       {
@@ -100,37 +102,14 @@ export const CATALOG: SeedCategory[] = [
           { title: "Travel Insurance for Visa", titleAr: "تأمين السفر لأغراض التأشيرة", intro: "Policies that meet the cover minimums consulates ask for, issued in the format they accept." },
         ],
       },
-      {
-        slug: "egypt-tours",
-        title: "Egypt Tour Packages",
-        titleAr: "برامج مصر السياحية",
-        summary: "Cairo, Giza, the Nile and the Red Sea — arranged end to end.",
-        preset: "travel",
-        services: [
-          { title: "Egypt Flight Booking", titleAr: "حجز رحلات مصر", intro: "Direct and connecting flights to Cairo, Sharm El Sheikh and Hurghada." },
-          { title: "Cairo Hotel Packages", titleAr: "باقات فنادق القاهرة", intro: "Hotel nights in Cairo and Giza, including pyramid-view options, with transfers included." },
-          { title: "Cairo City Tour", titleAr: "جولة مدينة القاهرة", intro: "A guided day through Islamic and Coptic Cairo, Khan el-Khalili and the city's older quarters." },
-          { title: "Giza Pyramid Tour", titleAr: "جولة أهرامات الجيزة", intro: "The Giza plateau and the Sphinx with a licensed guide, timed to avoid the worst of the heat." },
-          { title: "Egyptian Museum Visit", titleAr: "زيارة المتحف المصري", intro: "A guided visit to the museum collections, arranged with tickets and transfers." },
-          { title: "Nile River Cruise", titleAr: "رحلة نيلية", intro: "Luxor-to-Aswan sailings with excursions at each stop and the flights to join the boat." },
-          { title: "Sharm El Sheikh Tour", titleAr: "جولة شرم الشيخ", intro: "Red Sea stays with diving, snorkelling and desert excursions arranged around them." },
-          { title: "Hurghada Holiday Package", titleAr: "باقة عطلة الغردقة", intro: "Beach resorts on the Red Sea coast with transfers and optional excursions." },
-          { title: "Airport Pickup & Drop-off", titleAr: "الاستقبال والتوصيل من المطار", intro: "Meet-and-greet on arrival and a return transfer timed to your departure." },
-          { title: "Professional Tour Guide", titleAr: "مرشد سياحي محترف", intro: "Licensed Arabic and English speaking guides for individual days or a full programme." },
-          { title: "Group Tour Package", titleAr: "برنامج جماعي لمصر", intro: "Egypt programmes co-ordinated for larger parties travelling together." },
-          { title: "Honeymoon Package", titleAr: "باقة شهر العسل", intro: "A quieter itinerary combining Cairo, a Nile cruise and Red Sea nights." },
-          { title: "Family Tour Package", titleAr: "باقة عائلية لمصر", intro: "An Egypt programme paced for families, with connecting rooms and shorter touring days." },
-          { title: "Customized Egypt Tour Package", titleAr: "برنامج مصر مخصص", intro: "Tell us the dates, the party and what you want to see; we build the itinerary around it.", featured: true },
-        ],
-      },
     ],
   },
   {
     slug: "business-setup",
-    title: "Business Setup",
-    titleAr: "تأسيس الأعمال",
-    tagline: "Investor licensing and market entry",
-    taglineAr: "رخص المستثمرين ودخول السوق",
+    title: "Business Setup & Company Formation",
+    titleAr: "تأسيس الأعمال والشركات",
+    tagline: "Investor licensing, registration and market entry",
+    taglineAr: "رخص المستثمرين والتسجيل ودخول السوق",
     summary:
       "Support for investors entering the Saudi market: eligibility, documentation, and assistance through the investor licence application and the steps around it.",
     summaryAr:
@@ -157,22 +136,6 @@ export const CATALOG: SeedCategory[] = [
           { title: "Business Consultation", titleAr: "استشارة أعمال", intro: "A general session for questions that do not fit a single service." },
         ],
       },
-    ],
-  },
-  {
-    slug: "company-formation",
-    title: "Company Formation",
-    titleAr: "تأسيس الشركات",
-    tagline: "Registration and incorporation support",
-    taglineAr: "دعم التسجيل والتأسيس",
-    summary:
-      "Registering a company and preparing what it needs to operate: incorporation documents, registration steps and the paperwork between them.",
-    summaryAr:
-      "تسجيل الشركة وتجهيز ما تحتاجه لمزاولة نشاطها: وثائق التأسيس وخطوات التسجيل والأوراق المرتبطة بها.",
-    icon: "building",
-    ctaLabel: "Start your company",
-    ctaLabelAr: "ابدأ تأسيس شركتك",
-    subcategories: [
       {
         slug: "company-formation-registration",
         title: "Company Formation & Registration",
@@ -190,11 +153,11 @@ export const CATALOG: SeedCategory[] = [
     ],
   },
   {
-    slug: "general-services",
-    title: "General Services",
-    titleAr: "الخدمات العامة",
-    tagline: "Khidamat & Iqama services",
-    taglineAr: "الخدمات والإقامة",
+    slug: "iqama-services",
+    title: "Iqama & Employee Services",
+    titleAr: "خدمات الإقامة والموظفين",
+    tagline: "Residency and employee paperwork",
+    taglineAr: "أوراق الإقامة والموظفين",
     summary:
       "Residency and employee paperwork for individuals and companies: Iqama issuance, renewal and transfer, exit and re-entry, and the government portals around them. This is resident documentation, not international visa work.",
     summaryAr:
@@ -205,7 +168,7 @@ export const CATALOG: SeedCategory[] = [
     subcategories: [
       {
         slug: "khidamat-iqama",
-        title: "Khidamat & Iqama Services",
+        title: "Iqama & Employee Services",
         titleAr: "خدمات الإقامة والمعاملات",
         summary: "Residency, dependants and employee documentation, including Muqeem, Qiwa and Absher Business.",
         preset: "iqama",
@@ -229,8 +192,8 @@ export const CATALOG: SeedCategory[] = [
   },
   {
     slug: "license-renewal",
-    title: "License Renewal",
-    titleAr: "تجديد التراخيص",
+    title: "License Renewal & Compliance",
+    titleAr: "تجديد التراخيص والامتثال",
     tagline: "Licences and permits, renewed on time",
     taglineAr: "تراخيص وتصاريح تُجدَّد في وقتها",
     summary:
@@ -260,8 +223,8 @@ export const CATALOG: SeedCategory[] = [
   },
   {
     slug: "government-relations",
-    title: "Government Relations Services",
-    titleAr: "خدمات العلاقات الحكومية",
+    title: "Government & General Services",
+    titleAr: "الخدمات الحكومية والعامة",
     tagline: "Premium Residency and TGA support",
     taglineAr: "الإقامة المميزة ودعم الهيئة العامة للنقل",
     summary:

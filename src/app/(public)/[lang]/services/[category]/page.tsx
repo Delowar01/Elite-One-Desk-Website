@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 
 import { Breadcrumbs } from "@/components/site/breadcrumbs";
 import { FaqAccordion } from "@/components/site/faq-accordion";
@@ -10,11 +10,19 @@ import { SectionHeading } from "@/components/site/section-heading";
 import { Icon } from "@/components/ui/icon";
 import { isLocale, localeHref, pick } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n/dictionary";
-import { getCatalog, getCategoryBySlug, getFaqs } from "@/lib/queries/catalog";
+import { getCatalog, getCategoryBySlug, getFaqs, getPackageCatalog } from "@/lib/queries/catalog";
 import { getMediaMap } from "@/lib/queries/site";
 import { breadcrumbJsonLd, buildMetadata, faqJsonLd } from "@/lib/seo";
 import { getSettings, whatsappLink } from "@/lib/settings";
+import { categoryMove } from "@/lib/taxonomy-moves";
 import { toPlainText } from "@/lib/cms/sanitize";
+
+/**
+ * The one category that fronts a package catalogue. A constant rather than a
+ * column because exactly one does, and a column nobody would ever set twice is
+ * a column that misleads the next reader.
+ */
+const PACKAGE_HUB_CATEGORY = "travel-tourism";
 
 type Params = { params: Promise<{ lang: string; category: string }> };
 
@@ -22,6 +30,8 @@ export async function generateMetadata({ params }: Params) {
   const { lang, category: slug } = await params;
   if (!isLocale(lang)) return {};
   const category = await getCategoryBySlug(slug);
+  // A retired slug renders no metadata: the page body issues the redirect, and
+  // metadata for a page that will 308 away is metadata nobody reads.
   if (!category) return {};
   return buildMetadata({
     locale: lang,
@@ -53,7 +63,14 @@ export default async function CategoryPage({ params }: Params) {
   ]);
 
   const category = catalog.categories.find((c) => c.slug === slug);
-  if (!category) notFound();
+  if (!category) {
+    // Absent from the database is the only condition under which a retired
+    // address is recognised — so before the restructure these slugs resolve
+    // normally and nothing here runs.
+    const moved = categoryMove(slug);
+    if (moved) permanentRedirect(localeHref(lang, moved));
+    notFound();
+  }
 
   const dict = getDictionary(lang);
   const services = catalog.byCategory.get(category.id) ?? [];
@@ -76,10 +93,22 @@ export default async function CategoryPage({ params }: Params) {
     { name: title, path: `/services/${slug}` },
   ];
 
+  // Featured first inside each group, then the editor's order — so the two
+  // services a customer most often wants lead the list they are in.
+  const featuredFirst = (rows: typeof services) =>
+    [...rows].sort((a, b) => Number(b.isFeatured) - Number(a.isFeatured));
+
   const grouped = subs
-    .map((sub) => ({ sub, rows: services.filter((s) => s.subcategoryId === sub.id) }))
+    .map((sub) => ({ sub, rows: featuredFirst(services.filter((s) => s.subcategoryId === sub.id)) }))
     .filter((group) => group.rows.length > 0);
-  const ungrouped = services.filter((s) => !s.subcategoryId);
+  const ungrouped = featuredFirst(services.filter((s) => !s.subcategoryId));
+
+  // The Tour Packages panel renders only where there is a catalogue to point
+  // at: the right category, and at least one destination that actually holds a
+  // published package. Before the data cutover that is false, so this page is
+  // unchanged.
+  const hub =
+    slug === PACKAGE_HUB_CATEGORY ? (await getPackageCatalog()).grouped : [];
 
   return (
     <>
@@ -153,7 +182,11 @@ export default async function CategoryPage({ params }: Params) {
 
           <div className="mt-10 space-y-12">
             {grouped.map((group) => (
-              <div key={group.sub.id}>
+              // The subcategory slug is the anchor the header dropdown points
+              // at, so a menu entry can land on a group rather than the top of
+              // a long page. scroll-padding-top on <html> keeps it clear of the
+              // fixed header.
+              <div key={group.sub.id} id={group.sub.slug} className="scroll-mt-28">
                 <h3 className="mb-1.5 text-[length:var(--text-h3)]">
                   {pick(lang, group.sub.titleEn, group.sub.titleAr)}
                 </h3>
@@ -165,6 +198,41 @@ export default async function CategoryPage({ params }: Params) {
                 <ServiceList rows={group.rows} lang={lang} categorySlug={slug} learnMore={dict.common.learnMore} />
               </div>
             ))}
+
+            {hub.length ? (
+              <Reveal>
+                <div className="panel p-7 sm:p-9">
+                  <p className="eyebrow">{dict.common.tourPackages}</p>
+                  <h3 className="mt-4 text-[length:var(--text-h3)]">
+                    {lang === "ar" ? "اختر وجهتك" : "Choose your destination"}
+                  </h3>
+                  <p className="lede mt-3 max-w-2xl">
+                    {lang === "ar"
+                      ? "برامج مُعدّة لكل وجهة — اختر واحداً كما هو أو اطلب تعديله."
+                      : "Prepared programmes for every destination — take one as it stands, or ask us to change it."}
+                  </p>
+                  <ul className="mt-7 flex flex-wrap gap-2.5">
+                    {hub.map(({ destination, packages }) => (
+                      <li key={destination.id}>
+                        <Link
+                          href={localeHref(lang, `/packages/${destination.slug}`)}
+                          className="btn btn-ghost btn-sm"
+                        >
+                          {pick(lang, destination.titleEn, destination.titleAr)}
+                          <span className="text-muted">{packages.length}</span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-7">
+                    <Link href={localeHref(lang, "/packages")} className="btn btn-primary btn-sm">
+                      {dict.common.viewPackages}
+                      <Icon name="arrowRight" size={15} className="flip-rtl" />
+                    </Link>
+                  </div>
+                </div>
+              </Reveal>
+            ) : null}
 
             {ungrouped.length ? (
               <ServiceList rows={ungrouped} lang={lang} categorySlug={slug} learnMore={dict.common.learnMore} />

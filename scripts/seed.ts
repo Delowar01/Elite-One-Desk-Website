@@ -15,6 +15,7 @@ import {
   serviceSubcategories,
   services,
   siteSettings,
+  packageDestinations,
   travelPackages,
   users,
 } from "../src/lib/db/schema";
@@ -24,6 +25,7 @@ import { SETTINGS_DEFAULTS } from "../src/lib/settings-defaults";
 import { CATALOG, slugify } from "./seed/catalog";
 import { FAQS, HOME_SECTIONS, NAVIGATION, PAGE_SECTIONS } from "./seed/content";
 import { SEED_IMAGES, importSeedImages } from "./seed/media";
+import { LEGACY_NOTICE, taxonomyState, type TaxonomyState } from "./seed/state";
 
 /**
  * First-run content.
@@ -377,6 +379,43 @@ const PACKAGES = [
   },
 ];
 
+/**
+ * Destinations ship with the catalogue for a fresh database. On an existing one
+ * the restructure transaction creates Egypt instead — a destination inserted
+ * here before its packages were assigned would flip the public catalogue into
+ * destination mode with nothing in it.
+ */
+const DESTINATIONS = [
+  {
+    slug: "egypt",
+    titleEn: "Egypt",
+    titleAr: "مصر",
+    summaryEn:
+      "Explore Egypt through curated travel packages covering Cairo, Giza, the Nile, Luxor, Aswan, Sharm El Sheikh and Hurghada. Choose a ready itinerary or contact us to tailor your trip.",
+    summaryAr:
+      "اكتشف مصر من خلال باقات سفر مختارة تشمل القاهرة والجيزة والنيل والأقصر وأسوان وشرم الشيخ والغردقة. اختر برنامجاً جاهزاً أو تواصل معنا لتخصيص رحلتك.",
+    sortOrder: 0,
+  },
+];
+
+/** Which destination each shipped package belongs to, by slug. */
+const PACKAGE_DESTINATION: Record<string, string> = {
+  "cairo-and-giza-classic": "egypt",
+  "nile-cruise-luxor-aswan": "egypt",
+  "red-sea-sharm-el-sheikh": "egypt",
+  "egypt-family-programme": "egypt",
+  // `custom-itinerary` is deliberately absent: "Anywhere" is not a destination.
+};
+
+async function seedDestinations() {
+  for (const row of DESTINATIONS) {
+    await db.insert(packageDestinations).values(row).onConflictDoNothing({
+      target: packageDestinations.slug,
+    });
+  }
+  console.log(`· ${DESTINATIONS.length} package destination(s)`);
+}
+
 async function seedPackages() {
   for (const row of PACKAGES) {
     await db
@@ -397,6 +436,21 @@ async function seedPackages() {
       })
       .onConflictDoNothing({ target: travelPackages.slug });
   }
+
+  // Attach the shipped packages to their destination — only where the package
+  // has none, so a later editorial decision is never overwritten.
+  for (const [packageSlug, destinationSlug] of Object.entries(PACKAGE_DESTINATION)) {
+    const [destination] = await db
+      .select({ id: packageDestinations.id })
+      .from(packageDestinations)
+      .where(eq(packageDestinations.slug, destinationSlug))
+      .limit(1);
+    if (!destination) continue;
+    await db
+      .update(travelPackages)
+      .set({ destinationId: destination.id })
+      .where(and(eq(travelPackages.slug, packageSlug), isNull(travelPackages.destinationId)));
+  }
   console.log(`· ${PACKAGES.length} travel packages`);
 }
 
@@ -416,8 +470,7 @@ async function seedImagery() {
   const byCategory: Record<string, string> = {
     "travel-tourism": "travel-tourism",
     "business-setup": "business-setup",
-    "company-formation": "company-formation",
-    "general-services": "general-services",
+    "iqama-services": "general-services",
     "license-renewal": "license-renewal",
     "government-relations": "government-relations",
   };
@@ -436,7 +489,7 @@ async function seedImagery() {
   const byBlock: Record<string, string> = {
     "featured-service": "investor-licence",
     "travel-feature": "travel-tourism",
-    "egypt-feature": "egypt",
+    "destination-feature": "egypt",
     "image-text": "one-desk",
   };
   const sections = await db.select().from(pageSections);
@@ -473,14 +526,30 @@ async function seedImagery() {
 
 async function main() {
   console.log("Seeding Elite One Desk…");
+
+  // Asked once, before anything that depends on which taxonomy is in place.
+  const state: TaxonomyState = await taxonomyState();
+  console.log(`· taxonomy state: ${state}`);
+
   await seedRolesAndPermissions();
   await seedOwner();
   await seedSettings();
-  await seedNavigation();
-  await seedCatalog();
-  await seedPages();
-  await seedFaqs();
-  await seedPackages();
+
+  if (state === "legacy") {
+    // Everything above is taxonomy-independent and safe in any state.
+    // Everything below would either create a duplicate of a live row or
+    // silently perform half of a restructure, so it does not run at all. The
+    // seed never restructures; that is a deliberate act with its own command.
+    console.log(LEGACY_NOTICE);
+  } else {
+    await seedNavigation();
+    await seedCatalog();
+    await seedPages();
+    await seedFaqs();
+    await seedDestinations();
+    await seedPackages();
+  }
+
   await seedImagery();
   console.log("Done.");
   process.exit(0);

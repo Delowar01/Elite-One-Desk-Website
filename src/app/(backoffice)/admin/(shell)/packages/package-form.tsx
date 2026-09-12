@@ -12,6 +12,7 @@ export type PackageValues = {
   id?: number;
   slug: string;
   region: string;
+  destinationId: number | null;
   titleEn: string;
   titleAr: string;
   destinationEn: string;
@@ -29,12 +30,18 @@ export type PackageValues = {
   sortOrder: number;
 };
 
+/**
+ * LEGACY. Grouping moved to Destination; this field is kept so older records
+ * keep the value they have. `egypt` is offered ONLY to a record that already
+ * holds it — otherwise saving such a record would silently change it, and no
+ * new record can pick up a value that now means nothing.
+ */
 const REGIONS = [
-  { value: "egypt", label: "Egypt" },
   { value: "international", label: "International" },
   { value: "holiday", label: "Holiday" },
   { value: "corporate", label: "Corporate" },
 ];
+const LEGACY_REGIONS = [{ value: "egypt", label: "Egypt (legacy)" }];
 
 function Pair({
   label,
@@ -93,14 +100,18 @@ function Pair({
   );
 }
 
+export type DestinationOption = { id: number; titleEn: string };
+
 export function PackageForm({
   csrf,
   pkg,
   media,
+  destinations,
 }: {
   csrf: string;
   pkg: PackageValues;
   media: MediaOption[];
+  destinations: DestinationOption[];
 }) {
   const isNew = !pkg.id;
   const [imageId, setImageId] = useState<number | null>(pkg.imageId);
@@ -134,18 +145,60 @@ export function PackageForm({
           initial={pkg.highlights}
         />
 
-        <div className="grid gap-4 sm:grid-cols-3">
-          <Field label="Region" name="region">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            label="Destination"
+            name="destinationId"
+            hint="Which destination page this package is listed under. Leave unassigned for a build-your-own programme."
+          >
+            <select
+              id="destinationId"
+              name="destinationId"
+              defaultValue={pkg.destinationId ?? ""}
+              className="admin-select"
+            >
+              <option value="">No destination — build your own</option>
+              {destinations.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.titleEn}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field
+            label="Region (legacy)"
+            name="region"
+            hint="Superseded by Destination. Kept so older records keep the value they have."
+          >
             <select id="region" name="region" defaultValue={pkg.region} className="admin-select">
-              {REGIONS.map((option) => (
+              {[...REGIONS, ...(pkg.region === "egypt" ? LEGACY_REGIONS : [])].map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="Address" name="slug">
-            <input id="slug" name="slug" defaultValue={pkg.slug} required dir="ltr" className="admin-input" />
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            label="Address"
+            name="slug"
+            hint={
+              isNew
+                ? "The page becomes /packages/<address>. It must not match a destination address."
+                : "Fixed once the package exists — the address may already have been shared."
+            }
+          >
+            <input
+              id="slug"
+              name="slug"
+              defaultValue={pkg.slug}
+              required
+              readOnly={!isNew}
+              dir="ltr"
+              className="admin-input"
+            />
           </Field>
           <Field label="Order" name="sortOrder">
             <input

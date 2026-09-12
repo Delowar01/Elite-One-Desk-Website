@@ -5,14 +5,17 @@ import { asc, eq } from "drizzle-orm";
 import { AdminPageHeader } from "@/components/admin/page-header";
 import { requirePermission } from "@/lib/auth/guard";
 import { db } from "@/lib/db";
-import { media, travelPackages } from "@/lib/db/schema";
+import { media, packageDestinations, travelPackages } from "@/lib/db/schema";
 import { DeletePackage, PackageForm, type PackageValues } from "../package-form";
 
 export const dynamic = "force-dynamic";
 
 const BLANK: PackageValues = {
   slug: "",
-  region: "egypt",
+  // A new package is international until somebody says otherwise; the legacy
+  // `egypt` value is never handed out again.
+  region: "international",
+  destinationId: null,
   titleEn: "",
   titleAr: "",
   destinationEn: "",
@@ -47,18 +50,24 @@ export default async function PackageEditor({ params }: { params: Promise<{ id: 
   const isNew = rawId === "new";
   const id = isNew ? 0 : Number(rawId) || 0;
 
-  const library = await db
-    .select({
-      id: media.id,
-      filename: media.filename,
-      title: media.title,
-      altEn: media.altEn,
-      width: media.width,
-      height: media.height,
-      folder: media.folder,
-    })
-    .from(media)
-    .orderBy(asc(media.folder), asc(media.title));
+  const [library, destinations] = await Promise.all([
+    db
+      .select({
+        id: media.id,
+        filename: media.filename,
+        title: media.title,
+        altEn: media.altEn,
+        width: media.width,
+        height: media.height,
+        folder: media.folder,
+      })
+      .from(media)
+      .orderBy(asc(media.folder), asc(media.title)),
+    db
+      .select({ id: packageDestinations.id, titleEn: packageDestinations.titleEn })
+      .from(packageDestinations)
+      .orderBy(asc(packageDestinations.sortOrder), asc(packageDestinations.id)),
+  ]);
 
   if (isNew) {
     return (
@@ -73,7 +82,7 @@ export default async function PackageEditor({ params }: { params: Promise<{ id: 
           }
         />
         <div className="max-w-4xl">
-          <PackageForm csrf={session.csrfToken} pkg={BLANK} media={library} />
+          <PackageForm csrf={session.csrfToken} pkg={BLANK} media={library} destinations={destinations} />
         </div>
       </>
     );
@@ -94,7 +103,12 @@ export default async function PackageEditor({ params }: { params: Promise<{ id: 
         }
       />
       <div className="grid gap-5 xl:grid-cols-[1.6fr_1fr] xl:items-start">
-        <PackageForm csrf={session.csrfToken} pkg={row as unknown as PackageValues} media={library} />
+        <PackageForm
+          csrf={session.csrfToken}
+          pkg={row as unknown as PackageValues}
+          media={library}
+          destinations={destinations}
+        />
         <DeletePackage csrf={session.csrfToken} id={id} title={row.titleEn} />
       </div>
     </>

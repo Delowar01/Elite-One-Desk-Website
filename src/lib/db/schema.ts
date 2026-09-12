@@ -334,13 +334,50 @@ export type LocalisedItem = { en: string; ar: string };
 export type LocalisedStep = { en: string; ar: string; detailEn: string; detailAr: string };
 
 /* -------------------------------------------------------------------------- */
-/* Travel and Egypt packages                                                   */
+/* Tour packages and their destinations                                        */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * A destination is a place packages are grouped under — Egypt today, Nepal or
+ * Turkey whenever somebody types them in. It exists so that adding a country is
+ * data entry rather than a schema change: the older `region` enum could only
+ * grow by migration, which is exactly the wrong shape for a growing catalogue.
+ *
+ * Deliberately the same columns as `serviceCategories`, so the admin list, the
+ * public grouping and the sitemap all follow code paths that already exist.
+ */
+export const packageDestinations = pgTable("package_destinations", {
+  id: serial("id").primaryKey(),
+  slug: varchar("slug", { length: 120 }).notNull().unique(),
+  titleEn: varchar("title_en", { length: 190 }).notNull(),
+  titleAr: varchar("title_ar", { length: 190 }).notNull().default(""),
+  summaryEn: text("summary_en").notNull().default(""),
+  summaryAr: text("summary_ar").notNull().default(""),
+  imageId: integer("image_id").references(() => media.id, { onDelete: "set null" }),
+  sortOrder: integer("sort_order").notNull().default(0),
+  isPublished: boolean("is_published").notNull().default(true),
+  ...timestamps,
+});
 
 export const travelPackages = pgTable("travel_packages", {
   id: serial("id").primaryKey(),
   slug: varchar("slug", { length: 120 }).notNull().unique(),
+  /**
+   * LEGACY. Kept for backward compatibility and no longer the grouping
+   * mechanism — `destinationId` is. Nothing rewrites the values it already
+   * holds, and no new record can be given `egypt`; see the admin package form.
+   */
   region: packageRegionEnum("region").notNull().default("international"),
+  /**
+   * Nullable on purpose. It is what lets a release that adds this column run
+   * against a runtime that knows nothing about it, and it lets a package exist
+   * without belonging anywhere — `custom-itinerary` is "Anywhere", which is not
+   * a destination. SET NULL rather than CASCADE: deleting a destination must
+   * never delete the packages inside it.
+   */
+  destinationId: integer("destination_id").references(() => packageDestinations.id, {
+    onDelete: "set null",
+  }),
   titleEn: varchar("title_en", { length: 190 }).notNull(),
   titleAr: varchar("title_ar", { length: 190 }).notNull().default(""),
   destinationEn: varchar("destination_en", { length: 120 }).notNull().default(""),
@@ -358,7 +395,7 @@ export const travelPackages = pgTable("travel_packages", {
   isPublished: boolean("is_published").notNull().default(true),
   sortOrder: integer("sort_order").notNull().default(0),
   ...timestamps,
-});
+}, (t) => [index("travel_packages_destination_idx").on(t.destinationId, t.sortOrder)]);
 
 /* -------------------------------------------------------------------------- */
 /* Videos, testimonials, FAQs                                                  */

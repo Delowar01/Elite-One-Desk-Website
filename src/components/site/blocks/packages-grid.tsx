@@ -10,11 +10,17 @@ import type { BlockProps } from "./context";
 
 export function PackagesGridBlock({ values, ctx }: BlockProps) {
   const { locale, dict } = ctx;
-  const region = str(values, "region");
+  // A destination slug, or blank for every package. Resolved through the
+  // destination list rather than stored as an id, so the block survives a
+  // destination being deleted and recreated.
+  const destinationSlug = str(values, "destination");
+  const destinationId = destinationSlug
+    ? (ctx.destinations.find((d) => d.slug === destinationSlug)?.id ?? -1)
+    : null;
   const limit = num(values, "limit", 6);
 
   const rows = ctx.packages
-    .filter((p) => (region ? p.region === region : true))
+    .filter((p) => (destinationId === null ? true : p.destinationId === destinationId))
     .slice(0, limit > 0 ? limit : undefined);
   if (!rows.length) return null;
 

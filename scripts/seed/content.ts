@@ -48,8 +48,8 @@ export const HOME_SECTIONS: SeedSection[] = [
         { label: t("Plan a Trip", "خطّط لرحلة"), href: "/services/travel-tourism", icon: "plane" },
         { label: t("Visa Assistance", "المساعدة في التأشيرات"), href: "/services/travel-tourism/schengen-visa-assistance", icon: "passport" },
         { label: t("Investor Licence", "رخصة المستثمر"), href: "/services/business-setup/investor-license-assistance", icon: "briefcase" },
-        { label: t("Start a Company", "تأسيس شركة"), href: "/services/company-formation", icon: "building" },
-        { label: t("Iqama & Khidamat", "الإقامة والمعاملات"), href: "/services/general-services", icon: "idCard" },
+        { label: t("Start a Company", "تأسيس شركة"), href: "/services/business-setup#company-formation-registration", icon: "building" },
+        { label: t("Iqama & Khidamat", "الإقامة والمعاملات"), href: "/services/iqama-services", icon: "idCard" },
         { label: t("Renew a Licence", "تجديد ترخيص"), href: "/services/license-renewal", icon: "refresh" },
         { label: t("Premium Residency", "الإقامة المميزة"), href: "/services/government-relations/premium-residency-consultation", icon: "shield" },
         { label: t("TGA Services", "خدمات النقل"), href: "/services/government-relations/tga-license-consultation", icon: "route" },
@@ -137,7 +137,7 @@ export const HOME_SECTIONS: SeedSection[] = [
     },
   },
   {
-    blockType: "egypt-feature",
+    blockType: "destination-feature",
     values: {
       eyebrow: t("Destination", "وجهة"),
       title: t("Discover Egypt", "اكتشف مصر"),
@@ -417,39 +417,49 @@ export const NAVIGATION: Array<{
   children?: Array<{ label: L; href: string }>;
 }> = [
   { menu: "header", label: t("Home", "الرئيسية"), href: "/" },
-  { menu: "header", label: t("Travel & Tourism", "السفر والسياحة"), href: "/services/travel-tourism" },
   {
     menu: "header",
-    label: t("Business", "الأعمال"),
-    href: "/services/business-setup",
+    label: t("Travel & Tourism", "السفر والسياحة"),
+    href: "/services/travel-tourism",
+    // The two subcategory links are anchors into the category page: a
+    // subcategory has no address of its own, and a menu entry that lands on a
+    // group is more use than one that lands on the top of a long page.
     children: [
-      { label: t("Business Setup", "تأسيس الأعمال"), href: "/services/business-setup" },
-      { label: t("Company Formation", "تأسيس الشركات"), href: "/services/company-formation" },
+      { label: t("Travel & Holiday", "السفر والعطلات"), href: "/services/travel-tourism#travel-holiday" },
+      { label: t("Visa Services", "خدمات التأشيرات"), href: "/services/travel-tourism#visa-services" },
+      { label: t("Tour Packages", "باقات السياحة"), href: "/packages" },
     ],
+  },
+  // Business Setup has no dropdown: with Company Formation merged into it, a
+  // parent with one child is a menu that opens onto itself.
+  {
+    menu: "header",
+    label: t("Business Setup", "تأسيس الأعمال"),
+    href: "/services/business-setup",
   },
   {
     menu: "header",
     label: t("Government Services", "الخدمات الحكومية"),
-    href: "/services/general-services",
+    href: "/services/iqama-services",
     children: [
-      { label: t("General Services", "الخدمات العامة"), href: "/services/general-services" },
-      { label: t("License Renewal", "تجديد التراخيص"), href: "/services/license-renewal" },
-      { label: t("Government Relations", "العلاقات الحكومية"), href: "/services/government-relations" },
+      { label: t("Iqama & Employee Services", "خدمات الإقامة والموظفين"), href: "/services/iqama-services" },
+      { label: t("License Renewal & Compliance", "تجديد التراخيص والامتثال"), href: "/services/license-renewal" },
+      { label: t("Government & General Services", "الخدمات الحكومية والعامة"), href: "/services/government-relations" },
     ],
   },
   { menu: "header", label: t("About Us", "من نحن"), href: "/about" },
   { menu: "header", label: t("Contact", "تواصل"), href: "/contact" },
 
   { menu: "footer_services", label: t("Travel & Tourism", "السفر والسياحة"), href: "/services/travel-tourism" },
-  { menu: "footer_services", label: t("Business Setup", "تأسيس الأعمال"), href: "/services/business-setup" },
-  { menu: "footer_services", label: t("Company Formation", "تأسيس الشركات"), href: "/services/company-formation" },
-  { menu: "footer_services", label: t("General Services", "الخدمات العامة"), href: "/services/general-services" },
-  { menu: "footer_services", label: t("License Renewal", "تجديد التراخيص"), href: "/services/license-renewal" },
-  { menu: "footer_services", label: t("Government Relations", "العلاقات الحكومية"), href: "/services/government-relations" },
+  { menu: "footer_services", label: t("Tour Packages", "باقات السياحة"), href: "/packages" },
+  { menu: "footer_services", label: t("Business Setup & Company Formation", "تأسيس الأعمال والشركات"), href: "/services/business-setup" },
+  { menu: "footer_services", label: t("Iqama & Employee Services", "خدمات الإقامة والموظفين"), href: "/services/iqama-services" },
+  { menu: "footer_services", label: t("License Renewal & Compliance", "تجديد التراخيص والامتثال"), href: "/services/license-renewal" },
+  { menu: "footer_services", label: t("Government & General Services", "الخدمات الحكومية والعامة"), href: "/services/government-relations" },
 
   { menu: "footer_company", label: t("About Us", "من نحن"), href: "/about" },
   { menu: "footer_company", label: t("All Services", "جميع الخدمات"), href: "/services" },
-  { menu: "footer_company", label: t("Travel Packages", "البرامج السياحية"), href: "/packages" },
+  { menu: "footer_company", label: t("Tour Packages", "باقات السياحة"), href: "/packages" },
   { menu: "footer_company", label: t("Contact", "تواصل"), href: "/contact" },
 
   { menu: "footer_legal", label: t("Privacy Policy", "سياسة الخصوصية"), href: "/privacy" },

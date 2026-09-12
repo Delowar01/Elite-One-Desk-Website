@@ -1,6 +1,7 @@
 import type { MediaRef } from "@/lib/media/url";
 import type {
   CategoryRow,
+  DestinationRow,
   FaqRow,
   PackageRow,
   ServiceRow,
@@ -29,6 +30,7 @@ export type BlockContext = {
     byCategory: Map<number, ServiceRow[]>;
   };
   packages: PackageRow[];
+  destinations: DestinationRow[];
   videos: VideoRow[];
   testimonials: TestimonialRow[];
   faqs: FaqRow[];
