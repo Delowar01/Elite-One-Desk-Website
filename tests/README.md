@@ -43,8 +43,11 @@ checked out into a git worktree and run, with this branch's migration applied on
 top — exactly the state a Phase A deployment leaves behind. `fresh` is this
 branch's seed on an empty database.
 
-Both are built once per run into `.data/test/` and restored per test, so a test
-costs a `psql` restore rather than a seed.
+Both are built once into `.data/test/` and restored per test, so a test costs a
+`psql` restore rather than a seed. `npm test` builds them first, in
+`tests/prepare.ts`, because `node --test` runs one process per file and starts
+them together; running a single file on its own builds them too, under a
+directory lock.
 
 ## The files
 

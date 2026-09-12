@@ -14,19 +14,26 @@ import { giveLegacy } from "./helpers/fixtures";
 import { connect, dropDatabase, dumpData, plain, type Sql } from "./helpers/pg";
 import { restructure } from "./helpers/run";
 
-const opened: Array<{ name: string; sql: Sql }> = [];
+/** Every database this file makes, so none of them outlives the run. */
+const created: string[] = [];
+const opened: Sql[] = [];
+
+/** A pre-cutover database, registered for teardown. */
+function legacy(label: string): string {
+  const name = giveLegacy(label);
+  created.push(name);
+  return name;
+}
 
 function open(name: string): Sql {
   const sql = connect(name);
-  opened.push({ name, sql });
+  opened.push(sql);
   return sql;
 }
 
 after(async () => {
-  for (const { name, sql } of opened) {
-    await sql.end({ timeout: 5 });
-    dropDatabase(name);
-  }
+  for (const sql of opened) await sql.end({ timeout: 5 });
+  for (const name of created) dropDatabase(name);
 });
 
 const slugs = (sql: Sql, table: string) =>
@@ -36,7 +43,7 @@ const slugs = (sql: Sql, table: string) =>
 
 describe("dry run", () => {
   test("does the whole thing, proves the invariants, and writes nothing", async () => {
-    const name = giveLegacy("dry");
+    const name = legacy("dry");
     const before = dumpData(name);
 
     const result = restructure(name, ["--dry-run"]);
@@ -56,7 +63,7 @@ describe("dry run", () => {
 
 describe("the live run", () => {
   test("commits, and every structural claim holds afterwards", async () => {
-    const name = giveLegacy("live");
+    const name = legacy("live");
     const sql = open(name);
 
     const result = restructure(name);
@@ -106,7 +113,7 @@ describe("the live run", () => {
   });
 
   test("D3: not one region value is rewritten", async () => {
-    const name = giveLegacy("regions");
+    const name = legacy("regions");
     const sql = open(name);
 
     const before = await sql`select slug, region from travel_packages order by slug`;
@@ -126,7 +133,7 @@ describe("the live run", () => {
   });
 
   test("a second run is a no-op, and so is a dry run over it", () => {
-    const name = giveLegacy("twice");
+    const name = legacy("twice");
     assert.equal(restructure(name).code, 0);
 
     const second = restructure(name);
@@ -138,22 +145,21 @@ describe("the live run", () => {
     assert.match(dry.output, /Already restructured — nothing to do\./);
   });
 
-  test("an empty database is refused rather than half-built", () => {
-    const name = giveLegacy("empty_check");
-    const sql = connect(name);
-    opened.push({ name, sql });
-    return sql`truncate service_categories cascade`.then(() => {
-      const result = restructure(name);
-      assert.equal(result.code, 1);
-      assert.match(result.output, /no service catalogue at all/);
-      assert.match(result.output, /DATABASE_URL/);
-    });
+  test("an empty database is refused rather than half-built", async () => {
+    const name = legacy("empty_check");
+    const sql = open(name);
+    await sql`truncate service_categories cascade`;
+
+    const result = restructure(name);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /no service catalogue at all/);
+    assert.match(result.output, /DATABASE_URL/);
   });
 });
 
 describe("enquiries", () => {
   test("a customer record outlives the category it was filed under, and still reads", async () => {
-    const name = giveLegacy("enquiries");
+    const name = legacy("enquiries");
     const sql = open(name);
 
     // Two enquiries against things the cutover removes: the Company Formation
@@ -199,7 +205,7 @@ describe("enquiries", () => {
   });
 
   test("an enquiry against the renamed category keeps its link, because the row survives", async () => {
-    const name = giveLegacy("enquiries_renamed");
+    const name = legacy("enquiries_renamed");
     const sql = open(name);
 
     const [category] = await sql<{ id: number }[]>`
@@ -224,7 +230,7 @@ describe("enquiries", () => {
 
 describe("atomicity", () => {
   test("a failure late in the run leaves the database byte-identical", async () => {
-    const name = giveLegacy("rollback_late");
+    const name = legacy("rollback_late");
     const sql = open(name);
 
     // Injected by moving the world, not by a test-only branch in the script.
@@ -249,7 +255,7 @@ describe("atomicity", () => {
   });
 
   test("a customised menu stops the run instead of being discarded", async () => {
-    const name = giveLegacy("rollback_nav");
+    const name = legacy("rollback_nav");
     const sql = open(name);
 
     await sql`
@@ -267,7 +273,7 @@ describe("atomicity", () => {
 
 describe("exclusivity", () => {
   test("four cutovers at once produce exactly one", async () => {
-    const name = giveLegacy("concurrent");
+    const name = legacy("concurrent");
     const sql = open(name);
 
     const runs = await Promise.all(

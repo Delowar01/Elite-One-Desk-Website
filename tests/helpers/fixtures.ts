@@ -13,7 +13,7 @@
  * Both are built once per run, dumped, and restored per test. Building them is
  * the slow part (a migrate and a seed each); restoring is a second.
  */
-import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
@@ -86,24 +86,63 @@ function buildFreshSql(): void {
   }
 }
 
-let legacyReady = false;
-let freshReady = false;
-
-export function legacySql(): string {
-  if (!legacyReady) {
-    if (!existsSync(LEGACY_SQL) || process.env.REBUILD_FIXTURES) buildLegacySql();
-    legacyReady = true;
+/**
+ * `npm test` runs one process per file, and they start together, so "build it
+ * if it is missing" needs a lock across processes rather than a flag inside
+ * one. `mkdir` is the lock: it either creates the directory or it does not.
+ *
+ * `tests/prepare.ts` builds both fixtures before the files run, so in practice
+ * nothing waits here. This is what makes running a single file directly safe
+ * too.
+ */
+function withLock(name: string, build: () => void): void {
+  const lock = path.join(WORK, `${name}.lock`);
+  mkdirSync(WORK, { recursive: true });
+  const deadline = Date.now() + 10 * 60_000;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch {
+      // Held by another process. A lock older than the deadline is stale.
+      if (Date.now() > deadline) {
+        rmSync(lock, { recursive: true, force: true });
+        continue;
+      }
+      const held = statSync(lock, { throwIfNoEntry: false });
+      if (!held) continue;
+      spawnSync("sleep", ["0.25"]);
+      if (!needsBuild(name)) return;
+    }
   }
-  return LEGACY_SQL;
+  try {
+    build();
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
 }
 
-export function freshSql(): string {
-  if (!freshReady) {
-    if (!existsSync(FRESH_SQL) || process.env.REBUILD_FIXTURES) buildFreshSql();
-    freshReady = true;
+const fileFor = (name: string) => (name === "legacy" ? LEGACY_SQL : FRESH_SQL);
+const needsBuild = (name: string) => !existsSync(fileFor(name));
+
+const rebuilt = new Set<string>();
+
+function ensure(name: "legacy" | "fresh"): string {
+  const file = fileFor(name);
+  // `REBUILD_FIXTURES` discards a cached dump, but only once per process.
+  if (process.env.REBUILD_FIXTURES && !rebuilt.has(name)) {
+    rebuilt.add(name);
+    rmSync(file, { force: true });
+    if (name === "legacy") rmSync(LEGACY_TREE, { recursive: true, force: true });
   }
-  return FRESH_SQL;
+  if (needsBuild(name)) {
+    withLock(name, name === "legacy" ? buildLegacySql : buildFreshSql);
+  }
+  return file;
 }
+
+export const legacySql = () => ensure("legacy");
+export const freshSql = () => ensure("fresh");
 
 /** A database holding the pre-restructure catalogue, with this branch's schema. */
 export function giveLegacy(label = "legacy"): string {
