@@ -12,6 +12,7 @@ import { TAGS, revalidate, revalidateEverything } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { socialLinks } from "@/lib/db/schema";
 import { saveSettingsGroup, type SettingsKey } from "@/lib/settings";
+import { isSocialPlatform, socialLabel } from "@/lib/social";
 
 const refreshAll = () => {
   revalidate(TAGS.settings, TAGS.social);
@@ -268,6 +269,25 @@ export async function saveSocialLink(_prev: ActionState, form: FormData): Promis
     const url = field(form, "url", 255);
 
     if (!platform) return fail("Which network is this?", { platform: "Required." });
+
+    /**
+     * The network has to be one the site can draw. The panel offers a menu
+     * built from the same registry, so the only way to arrive here with
+     * anything else is a hand-made request — or a row saved before that network
+     * was on the list, which is allowed to keep its own key until somebody
+     * deliberately changes it.
+     */
+    if (!isSocialPlatform(platform)) {
+      const [existing] = id
+        ? await db.select({ platform: socialLinks.platform }).from(socialLinks).where(eq(socialLinks.id, id)).limit(1)
+        : [];
+      if (existing?.platform !== platform) {
+        return fail("That network is not one we have a mark for.", {
+          platform: "Choose one from the list.",
+        });
+      }
+    }
+
     // https only — a social profile has no reason to be anything else, and it
     // is the one field most likely to be pasted from an untrusted place.
     let parsed: URL;
@@ -300,7 +320,7 @@ export async function saveSocialLink(_prev: ActionState, form: FormData): Promis
       action: id ? "social.updated" : "social.created",
       entityType: "social",
       entityId: id || 0,
-      summary: `${id ? "Updated" : "Added"} the ${platform} link`,
+      summary: `${id ? "Updated" : "Added"} the ${socialLabel(platform)} link`,
     });
     refreshAll();
     return ok(id ? "Link saved." : "Link added.");
@@ -318,7 +338,7 @@ export async function deleteSocialLink(_prev: ActionState, form: FormData): Prom
       action: "social.deleted",
       entityType: "social",
       entityId: id,
-      summary: `Removed the ${row.platform} link`,
+      summary: `Removed the ${socialLabel(row.platform)} link`,
     });
     refreshAll();
     return ok("Link removed.");

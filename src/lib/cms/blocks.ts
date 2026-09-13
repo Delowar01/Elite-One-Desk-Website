@@ -25,11 +25,22 @@ export type FieldType =
   | "number"
   | "items";
 
+/**
+ * A field inside a repeatable row.
+ *
+ * `media` and `icon` are controlled choosers rather than free text, and they
+ * are declared here for the same reason the top-level field types are: the
+ * admin form, the validator and the renderer all read this one declaration, so
+ * a row field cannot be editable as one thing and stored as another. Neither
+ * accepts markup — `media` stores a library id and `icon` stores a key from the
+ * in-code `ICON_NAMES` allowlist.
+ */
 export type ItemFieldDef = {
   name: string;
   label: string;
-  type?: "text" | "textarea";
+  type?: "text" | "textarea" | "media" | "icon";
   localised?: boolean;
+  help?: string;
 };
 
 export type FieldDef = {
@@ -125,7 +136,7 @@ export const BLOCKS: BlockDef[] = [
   {
     type: "quick-links",
     name: "Quick service navigation",
-    description: "The row of direct links under the hero — plan a trip, investor licence, Iqama and so on.",
+    description: "The visual entry points under the hero — plan a trip, investor licence, Iqama and so on.",
     scope: "home",
     fields: [
       localisedText("title", "Title"),
@@ -138,7 +149,13 @@ export const BLOCKS: BlockDef[] = [
         itemFields: [
           { name: "label", label: "Label", localised: true },
           { name: "href", label: "Link" },
-          { name: "icon", label: "Icon key", type: "text" },
+          { name: "icon", label: "Icon", type: "icon" },
+          {
+            name: "image",
+            label: "Image",
+            type: "media",
+            help: "Optional. With none, the card uses the picture belonging to the page it links to.",
+          },
         ],
       },
     ],

@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Icon } from "@/components/ui/icon";
 import type { BlockDef, FieldDef, ItemFieldDef } from "@/lib/cms/blocks";
+import { IconSelect } from "./icon-select";
 import { MediaPicker, type MediaOption } from "./media-picker";
 
 type Values = Record<string, unknown>;
@@ -72,7 +73,7 @@ function FieldRow({
   const id = `field-${field.name}`;
 
   if (field.type === "items") {
-    return <ItemsField field={field} value={value} onChange={onChange} />;
+    return <ItemsField field={field} value={value} media={media} onChange={onChange} />;
   }
 
   if (field.type === "media") {
@@ -244,10 +245,12 @@ function FieldRow({
 function ItemsField({
   field,
   value,
+  media,
   onChange,
 }: {
   field: FieldDef;
   value: unknown;
+  media: MediaOption[];
   onChange: (next: unknown) => void;
 }) {
   const fields: ItemFieldDef[] = field.itemFields ?? [];
@@ -319,17 +322,57 @@ function ItemsField({
             <div className="space-y-2.5">
               {fields.map((sub) => {
                 const raw = row[sub.name];
+                const subId = `${field.name}-${index}-${sub.name}`;
+
+                if (sub.type === "media") {
+                  return (
+                    <div key={sub.name}>
+                      <span className="mb-1 block text-[0.68rem] font-semibold text-muted">
+                        {sub.label}
+                      </span>
+                      <MediaPicker
+                        value={typeof raw === "number" ? raw : null}
+                        onChange={(next) => update(index, sub.name, next)}
+                        options={media}
+                        label={sub.label}
+                      />
+                      {sub.help ? (
+                        <p className="mt-1.5 text-[0.72rem] text-muted">{sub.help}</p>
+                      ) : null}
+                    </div>
+                  );
+                }
+
+                if (sub.type === "icon") {
+                  return (
+                    <div key={sub.name}>
+                      <span className="mb-1 block text-[0.68rem] font-semibold text-muted">
+                        {sub.label}
+                      </span>
+                      <IconSelect
+                        id={subId}
+                        value={typeof raw === "string" ? raw : ""}
+                        onChange={(next) => update(index, sub.name, next)}
+                        label={sub.label}
+                      />
+                      {sub.help ? (
+                        <p className="mt-1.5 text-[0.72rem] text-muted">{sub.help}</p>
+                      ) : null}
+                    </div>
+                  );
+                }
+
                 if (!sub.localised) {
                   return (
                     <div key={sub.name}>
                       <label
                         className="mb-1 block text-[0.68rem] font-semibold text-muted"
-                        htmlFor={`${field.name}-${index}-${sub.name}`}
+                        htmlFor={subId}
                       >
                         {sub.label}
                       </label>
                       <input
-                        id={`${field.name}-${index}-${sub.name}`}
+                        id={subId}
                         value={String(raw ?? "")}
                         onChange={(event) => update(index, sub.name, event.target.value)}
                         className="admin-input"
@@ -401,6 +444,8 @@ function ItemsField({
 
 function emptyRow(fields: ItemFieldDef[]): Record<string, unknown> {
   const row: Record<string, unknown> = {};
-  for (const field of fields) row[field.name] = field.localised ? { en: "", ar: "" } : "";
+  for (const field of fields) {
+    row[field.name] = field.type === "media" ? null : field.localised ? { en: "", ar: "" } : "";
+  }
   return row;
 }

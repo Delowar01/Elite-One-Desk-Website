@@ -2,23 +2,13 @@ import Link from "next/link";
 
 import { Icon } from "@/components/ui/icon";
 import { Logo } from "@/components/ui/logo";
+import { SocialIcon } from "@/components/ui/social-icon";
 import type { Locale } from "@/lib/i18n/config";
 import { localeHref, pick } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n/dictionary";
 import { getMenu, getSocialLinks } from "@/lib/queries/site";
 import { getSettings } from "@/lib/settings";
-
-const SOCIAL_ICON: Record<string, string> = {
-  linkedin: "users",
-  instagram: "sparkle",
-  facebook: "users",
-  x: "close",
-  twitter: "close",
-  youtube: "play",
-  tiktok: "play",
-  snapchat: "sparkle",
-  whatsapp: "whatsapp",
-};
+import { socialLabel } from "@/lib/social";
 
 export async function SiteFooter({ locale }: { locale: Locale }) {
   const [services, company, legal, social, settings] = await Promise.all([
@@ -59,10 +49,10 @@ export async function SiteFooter({ locale }: { locale: Locale }) {
                       href={item.url}
                       target="_blank"
                       rel="noopener noreferrer me"
-                      aria-label={item.platform}
+                      aria-label={socialLabel(item.platform)}
                       className="flex size-10 items-center justify-center rounded-full border border-line text-body transition-colors hover:border-[color-mix(in_oklab,var(--color-peach)_55%,transparent)] hover:text-strong"
                     >
-                      <Icon name={SOCIAL_ICON[item.platform.toLowerCase()] ?? "arrowUpRight"} size={17} />
+                      <SocialIcon platform={item.platform} size={17} />
                     </a>
                   </li>
                 ))}

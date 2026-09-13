@@ -48,7 +48,7 @@ export function items(
   values: BlockValues,
   name: string,
   locale: Locale,
-  fields: readonly { name: string; localised?: boolean }[],
+  fields: readonly { name: string; localised?: boolean; type?: string }[],
 ): BlockItem[] {
   const raw = values?.[name];
   if (!Array.isArray(raw)) return [];
@@ -60,6 +60,14 @@ export function items(
       const out: BlockItem = {};
       for (const field of fields) {
         const value = record[field.name];
+        // A media field is stored as a number. A row is a flat string record —
+        // that is what keeps every renderer's reads simple — so the id comes
+        // back through `itemMediaId` rather than widening the row type for the
+        // one field that is not text.
+        if (field.type === "media") {
+          out[field.name] = typeof value === "number" && value > 0 ? String(value) : "";
+          continue;
+        }
         out[field.name] = field.localised && isLocalised(value)
           ? pick(locale, String(value.en ?? ""), String(value.ar ?? ""))
           : typeof value === "string"
@@ -69,6 +77,12 @@ export function items(
       return out;
     })
     .filter((row): row is BlockItem => Boolean(row && (!primary || row[primary]?.trim())));
+}
+
+/** A repeatable row's `media` field, read back as a library id. */
+export function itemMediaId(row: BlockItem, name: string): number | null {
+  const id = Number.parseInt(row[name] ?? "", 10);
+  return Number.isFinite(id) && id > 0 ? id : null;
 }
 
 /** Empty shell for a new section, so the admin form always has every key. */

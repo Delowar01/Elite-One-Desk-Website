@@ -1,4 +1,6 @@
-import type { SVGProps } from "react";
+import type { ReactNode, SVGProps } from "react";
+
+import type { IconName } from "@/lib/icons";
 
 /**
  * One stroke-based icon set, drawn inline. A fixed set keeps the visual
@@ -6,7 +8,7 @@ import type { SVGProps } from "react";
  * markup — an editor picks from this list and nothing they type is ever
  * rendered as SVG.
  */
-const PATHS: Record<string, React.ReactNode> = {
+const PATHS: Record<IconName, ReactNode> = {
   plane: <path d="M3.5 13.5 21 4l-4.2 9.5L21 20l-4.3-1.6-3.4 2.9-.8-4.7-4.6-1.2 3.1-2.6-7.5-.3Z" />,
   globe: (
     <>
@@ -164,13 +166,13 @@ const PATHS: Record<string, React.ReactNode> = {
   ),
 };
 
-export type IconName = keyof typeof PATHS;
-export const ICON_NAMES = Object.keys(PATHS) as IconName[];
+/** Re-exported so a component that draws an icon needs one import, not two. */
+export { ICON_NAMES, isIconName, type IconName } from "@/lib/icons";
 
 type Props = SVGProps<SVGSVGElement> & { name: string; size?: number };
 
 export function Icon({ name, size = 24, ...rest }: Props) {
-  const path = PATHS[name] ?? PATHS.sparkle;
+  const path = PATHS[name as IconName] ?? PATHS.sparkle;
   return (
     <svg
       viewBox="0 0 24 24"

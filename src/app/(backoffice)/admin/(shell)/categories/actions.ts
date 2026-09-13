@@ -20,7 +20,7 @@ import { TAGS, revalidate } from "@/lib/cache";
 import { sanitizeRichText } from "@/lib/cms/sanitize";
 import { db } from "@/lib/db";
 import { serviceCategories, serviceSubcategories } from "@/lib/db/schema";
-import { ICON_NAMES } from "@/components/ui/icon";
+import { isIconName } from "@/lib/icons";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -43,7 +43,7 @@ function readCategory(form: FormData) {
     ctaLabelEn: field(form, "ctaLabelEn", 64),
     ctaLabelAr: field(form, "ctaLabelAr", 64),
     // The icon is a key into our own set — never markup from the panel.
-    icon: (ICON_NAMES as readonly string[]).includes(icon) ? icon : "desk",
+    icon: isIconName(icon) ? icon : "desk",
     imageId: optionalId(form, "imageId"),
     sortOrder: numberField(form, "sortOrder", 0),
     isPublished: checkbox(form, "isPublished"),

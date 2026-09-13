@@ -5,7 +5,7 @@ import type { Metadata } from "next";
 import { siteUrl } from "@/lib/env";
 import type { Locale } from "@/lib/i18n/config";
 import { DEFAULT_LOCALE, localeHref, pick } from "@/lib/i18n/config";
-import { getMediaMap } from "@/lib/queries/site";
+import { getMediaMap, getSocialLinks } from "@/lib/queries/site";
 import { getSeo } from "@/lib/queries/content";
 import { getSettings } from "@/lib/settings";
 import { mediaSrc } from "@/lib/media/url";
@@ -115,9 +115,16 @@ export async function buildMetadata(args: BuildArgs): Promise<Metadata> {
  * true: Elite One Desk is an independent provider.
  */
 export async function organizationJsonLd(locale: Locale) {
-  const settings = await getSettings();
+  const [settings, social] = await Promise.all([getSettings(), getSocialLinks()]);
   const { contact, brand } = settings;
-  const sameAs: string[] = [];
+  /**
+   * The profiles an admin has published, which is the one list that can say
+   * "these accounts are us". It was declared here and never filled, so every
+   * social account the business had was invisible to a search engine while
+   * being visible in the footer. Both loaders are cached and tagged, so this
+   * costs the homepage nothing it was not already paying.
+   */
+  const sameAs = social.map((row) => row.url);
 
   const data: Record<string, unknown> = {
     "@context": "https://schema.org",

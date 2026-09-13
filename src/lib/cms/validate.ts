@@ -1,3 +1,5 @@
+import { isIconName } from "@/lib/icons";
+
 import { sanitizeHref, sanitizeRichText } from "./sanitize";
 import type { BlockDef, FieldDef, ItemFieldDef } from "./blocks";
 
@@ -29,12 +31,25 @@ function localised(value: unknown, max: number, rich = false): Localised {
   return { en: clean(source.en), ar: clean(source.ar) };
 }
 
+/** A library id, or null. The one reading of a media value, top level or row. */
+function mediaValue(raw: unknown): number | null {
+  const id = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
 function itemRow(row: unknown, fields: ItemFieldDef[]): Record<string, unknown> {
   const source = (typeof row === "object" && row !== null ? row : {}) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const field of fields) {
     const max = field.type === "textarea" ? MAX_AREA : MAX_TEXT;
-    if (field.localised) {
+    if (field.type === "media") {
+      out[field.name] = mediaValue(source[field.name]);
+    } else if (field.type === "icon") {
+      // The allowlist is the icon set itself, so a key that would render as the
+      // unknown-icon fallback is stored as nothing instead of as a broken name.
+      const key = asString(source[field.name], 48);
+      out[field.name] = isIconName(key) ? key : "";
+    } else if (field.localised) {
       out[field.name] = localised(source[field.name], max);
     } else if (field.name === "href") {
       out[field.name] = sanitizeHref(asString(source[field.name], MAX_TEXT));
@@ -55,10 +70,8 @@ function fieldValue(field: FieldDef, raw: unknown): unknown {
       return field.localised ? localised(raw, MAX_AREA) : asString(raw, MAX_AREA);
     case "link":
       return sanitizeHref(asString(raw, MAX_TEXT));
-    case "media": {
-      const id = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
-      return Number.isFinite(id) && id > 0 ? id : null;
-    }
+    case "media":
+      return mediaValue(raw);
     case "number": {
       const n = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
       return Number.isFinite(n) ? Math.max(0, Math.min(999, n)) : 0;

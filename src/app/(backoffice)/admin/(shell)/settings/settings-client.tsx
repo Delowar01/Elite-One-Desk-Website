@@ -4,7 +4,9 @@ import { useState } from "react";
 
 import { AdminForm, ConfirmSubmit, Field, InlineAction, SubmitButton } from "@/components/admin/form";
 import { Icon } from "@/components/ui/icon";
+import { SocialIcon } from "@/components/ui/social-icon";
 import type { SiteSettings } from "@/lib/settings-defaults";
+import { SOCIAL_PLATFORMS, socialLabel, socialPlatform } from "@/lib/social";
 import {
   deleteSocialLink,
   refreshCaches,
@@ -339,7 +341,7 @@ function SocialPanel({ csrf, rows }: { csrf: string; rows: SocialRow[] }) {
           <div>
             <h2>Social links</h2>
             <p className="mt-0.5 text-[0.78rem] text-muted">
-              Shown as icons in the footer. https addresses only.
+              Each network is shown in the footer with its own mark, and every published address is listed as a verified profile in the site’s Organization structured data. https addresses only.
             </p>
           </div>
           <button
@@ -358,7 +360,13 @@ function SocialPanel({ csrf, rows }: { csrf: string; rows: SocialRow[] }) {
           {rows.map((row) => (
             <li key={row.id} className="admin-card p-3.5">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold capitalize text-strong">{row.platform}</span>
+                <span
+                  className="flex size-7 shrink-0 items-center justify-center rounded-full border border-[var(--admin-line)]"
+                  style={{ color: "var(--color-peach)" }}
+                >
+                  <SocialIcon platform={row.platform} size={14} />
+                </span>
+                <span className="font-semibold text-strong">{socialLabel(row.platform)}</span>
                 <span className="truncate text-[0.76rem] text-muted" dir="ltr">
                   {row.url}
                 </span>
@@ -376,7 +384,7 @@ function SocialPanel({ csrf, rows }: { csrf: string; rows: SocialRow[] }) {
                     {editing === row.id ? "Close" : "Edit"}
                   </button>
                   <InlineAction action={deleteSocialLink} hidden={{ _csrf: csrf, id: row.id }}>
-                    <ConfirmSubmit className="admin-btn-sm" message={`Remove the ${row.platform} link?`}>
+                    <ConfirmSubmit className="admin-btn-sm" message={`Remove the ${socialLabel(row.platform)} link?`}>
                       <Icon name="trash" size={11} />
                       <span className="sr-only">Remove</span>
                     </ConfirmSubmit>
@@ -398,19 +406,42 @@ function SocialPanel({ csrf, rows }: { csrf: string; rows: SocialRow[] }) {
 
 function SocialForm({ csrf, row }: { csrf: string; row: SocialRow | null }) {
   const key = row?.id ?? "new";
+  // The network is picked, not typed: the same registry drives this menu, the
+  // footer's mark and the check the action runs on save, so an admin cannot
+  // reach a state where a link is stored under a key nothing can draw.
+  const [platform, setPlatform] = useState(row?.platform ?? SOCIAL_PLATFORMS[0]!.key);
+  const known = socialPlatform(platform);
+
   return (
     <AdminForm action={saveSocialLink} successMessage={row ? "Link saved." : "Link added."}>
       <input type="hidden" name="_csrf" value={csrf} />
       {row ? <input type="hidden" name="id" value={row.id} /> : null}
       <div className="grid gap-3 sm:grid-cols-3">
-        <Field label="Network" name={`platform-${key}`} hint="linkedin, instagram, x, youtube, facebook, tiktok, snapchat">
-          <input
-            id={`platform-${key}`}
-            name="platform"
-            defaultValue={row?.platform ?? ""}
-            required
-            className="admin-input"
-          />
+        <Field label="Network" name={`platform-${key}`}>
+          <div className="flex items-center gap-2">
+            <span
+              className="flex size-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--admin-line)]"
+              style={{ color: "var(--color-peach)" }}
+            >
+              <SocialIcon platform={platform} size={17} />
+            </span>
+            <select
+              id={`platform-${key}`}
+              name="platform"
+              value={platform}
+              onChange={(event) => setPlatform(event.target.value)}
+              className="admin-select"
+            >
+              {SOCIAL_PLATFORMS.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+              {/* A row saved before this network was on the list keeps its own
+                  key until somebody deliberately changes it. */}
+              {known ? null : <option value={platform}>{socialLabel(platform)} (not on the list)</option>}
+            </select>
+          </div>
         </Field>
         <Field label="Address" name={`url-${key}`} className="sm:col-span-2">
           <input
@@ -420,7 +451,7 @@ function SocialForm({ csrf, row }: { csrf: string; row: SocialRow | null }) {
             defaultValue={row?.url ?? ""}
             required
             dir="ltr"
-            placeholder="https://www.linkedin.com/company/…"
+            placeholder={known?.urlHint ?? "https://"}
             className="admin-input"
           />
         </Field>

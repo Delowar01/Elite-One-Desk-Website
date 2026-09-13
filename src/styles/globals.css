@@ -666,6 +666,172 @@
     );
   }
 
+
+  /* --- Quick access card ------------------------------------------------
+     The entry points under the hero. Image-led, but kept small on purpose:
+     this is navigation, and a visitor has to be able to take in the whole set
+     without scrolling. The picture is a backdrop under a bottom-weighted
+     scrim, so two cards that lead into the same part of the catalogue read as
+     one family rather than as a duplicated card.
+
+     The fallback below repeats the service card's recipe rather than sharing a
+     class with it. The two are deliberately independent: this section is being
+     redesigned and that one is already live, and a shared primitive would mean
+     every future tweak here lands on a page nobody asked to change. ------- */
+  .ql-card {
+    position: relative;
+    display: block;
+    overflow: hidden;
+    aspect-ratio: 16 / 11;
+    /* The width is stated rather than left to `auto`, and that is load-bearing.
+       With `width: auto` the ratio runs backwards off the minimum below —
+       Chromium derives an inline size of 16/11 × 140px, so at 375px two-up
+       every card sat at 204px inside a 161px track and pushed the page
+       sideways. A definite width can only transfer one way. */
+    inline-size: 100%;
+    min-inline-size: 0;
+    /* Two-up at 375px the ratio alone gives a 111px card, which is not enough
+       room for a badge, a two-line label and a comfortable tap. */
+    min-block-size: 8.75rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-color);
+    background-color: var(--color-ink-700);
+    box-shadow: inset 0 1px rgb(255 255 255 / 0.05);
+    transition:
+      transform var(--duration-base) var(--ease-out-expo),
+      border-color var(--duration-base) var(--ease-out-soft),
+      box-shadow var(--duration-base) var(--ease-out-soft);
+  }
+  .ql-card:hover,
+  .ql-card:focus-visible {
+    transform: translateY(-2px);
+    border-color: color-mix(in oklab, var(--color-peach) 48%, transparent);
+    box-shadow: var(--shadow-soft), inset 0 1px rgb(255 255 255 / 0.08);
+  }
+
+  /* The picture, or the branded fill standing in for one. */
+  .ql-shot {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    background-color: var(--color-ink-700);
+    background-image:
+      repeating-linear-gradient(var(--ql-stripe, 118deg), rgb(255 255 255 / 0.045) 0 1px, transparent 1px 11px),
+      linear-gradient(var(--ql-warm-angle, 150deg), color-mix(in oklab, var(--color-orange) var(--ql-warm, 22%), transparent), transparent 66%),
+      linear-gradient(var(--ql-cool-angle, 22deg), color-mix(in oklab, rgb(var(--ambient-indigo)) var(--ql-cool, 30%), transparent), transparent 70%);
+  }
+  .ql-card[data-tint="1"] .ql-shot { --ql-focus: 50%; --ql-warm-angle: 198deg; --ql-cool-angle: 340deg; --ql-warm: 14%; --ql-cool: 36%; --ql-stripe: 62deg; }
+  .ql-card[data-tint="2"] .ql-shot { --ql-focus: 34%; --ql-warm-angle: 126deg; --ql-cool-angle: 302deg; --ql-warm: 28%; --ql-cool: 20%; --ql-stripe: 150deg; }
+  .ql-card[data-tint="3"] .ql-shot { --ql-focus: 46%; --ql-warm-angle: 14deg;  --ql-cool-angle: 210deg; --ql-warm: 18%; --ql-cool: 29%; --ql-stripe: 96deg; }
+
+  .ql-img {
+    position: absolute;
+    inset: 0;
+    inline-size: 100%;
+    block-size: 100%;
+    object-fit: cover;
+    /* Slightly above centre: the catalogue's artwork carries its subject in
+       the upper half, and the lower third of this card is under the label.
+       The four variants below shift it a little further, which matters because
+       two cards often lead into the same part of the catalogue and therefore
+       resolve to the same picture — the same photograph at two crops reads as
+       a pair, the identical crop twice reads as a mistake. An admin who picks
+       a picture per card never sees this. */
+    object-position: 50% var(--ql-focus, 42%);
+    transition: transform var(--duration-slow) var(--ease-out-expo);
+  }
+  .ql-card:hover .ql-img,
+  .ql-card:focus-visible .ql-img { transform: scale(1.05); }
+
+  /* The scrim. Weighted to the bottom, where the label is, and flat-tinted
+     across the whole frame so a bright photograph cannot out-shout a dark one
+     two cards along. Vertical, so it needs no mirroring in Arabic. */
+  .ql-shot::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(
+        to top,
+        color-mix(in oklab, var(--color-ink-900) 90%, transparent) 0%,
+        color-mix(in oklab, var(--color-ink-900) 62%, transparent) 36%,
+        color-mix(in oklab, var(--color-ink-900) 20%, transparent) 72%,
+        transparent 100%
+      ),
+      color-mix(in oklab, var(--color-ink-900) 12%, transparent);
+    transition: opacity var(--duration-base) var(--ease-out-soft);
+  }
+  .ql-card:hover .ql-shot::after,
+  .ql-card:focus-visible .ql-shot::after { opacity: 0.88; }
+
+  .ql-body {
+    position: relative;
+    display: flex;
+    block-size: 100%;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    padding: clamp(0.7rem, 2.4vw, 1rem);
+  }
+
+  .ql-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    inline-size: clamp(1.75rem, 6vw, 2.1rem);
+    block-size: clamp(1.75rem, 6vw, 2.1rem);
+    border-radius: var(--radius-sm);
+    border: 1px solid color-mix(in oklab, var(--color-peach) 26%, transparent);
+    background: color-mix(in oklab, var(--color-ink-900) 52%, transparent);
+    color: var(--color-peach);
+    backdrop-filter: blur(3px);
+    transition:
+      border-color var(--duration-base) var(--ease-out-soft),
+      background-color var(--duration-base) var(--ease-out-soft);
+  }
+  .ql-card:hover .ql-badge,
+  .ql-card:focus-visible .ql-badge {
+    border-color: color-mix(in oklab, var(--color-peach) 58%, transparent);
+    background: color-mix(in oklab, var(--color-orange) 20%, transparent);
+  }
+
+  .ql-foot {
+    display: flex;
+    inline-size: 100%;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .ql-title {
+    min-inline-size: 0;
+    font-family: var(--font-display);
+    font-size: clamp(0.83rem, 0.78rem + 0.24vw, 0.99rem);
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.012em;
+    color: var(--text-strong);
+    text-shadow: 0 1px 12px rgb(3 5 11 / 0.55);
+  }
+  [dir="rtl"] .ql-title { font-family: var(--font-arabic); letter-spacing: 0; }
+
+  /* Restated rather than `.flip-rtl`, which declares its own transform
+     transition and would win the cascade over the nudge below. */
+  .ql-arrow {
+    margin-inline-start: auto;
+    flex: none;
+    opacity: 0.55;
+    color: var(--text-strong);
+    transition:
+      translate var(--duration-base) var(--ease-out-expo),
+      opacity var(--duration-base) var(--ease-out-soft);
+  }
+  [dir="rtl"] .ql-arrow { transform: scaleX(-1); }
+  .ql-card:hover .ql-arrow,
+  .ql-card:focus-visible .ql-arrow { opacity: 1; translate: 3px; }
+  [dir="rtl"] .ql-card:hover .ql-arrow,
+  [dir="rtl"] .ql-card:focus-visible .ql-arrow { translate: -3px; }
+
   /* --- Rich text from the CMS ------------------------------------------ */
   .prose-eod { color: var(--text-body-color); }
   .prose-eod > * + * { margin-block-start: 1.05em; }
@@ -785,6 +951,15 @@
   .svc-card:focus-visible .svc-wedge-img { transform: none; }
   .svc-card:hover .svc-card-arrow,
   .svc-card:focus-visible .svc-card-arrow { translate: none; }
+
+  /* And the same for a quick-access card: the accent still answers, the lift,
+     the picture's scale and the arrow's nudge do not. */
+  .ql-card:hover,
+  .ql-card:focus-visible { transform: none; }
+  .ql-card:hover .ql-img,
+  .ql-card:focus-visible .ql-img { transform: none; }
+  .ql-card:hover .ql-arrow,
+  .ql-card:focus-visible .ql-arrow { translate: none; }
 }
 
 /* Printing a service page should give a client something readable. */
