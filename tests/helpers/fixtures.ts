@@ -33,15 +33,56 @@ const sh = (cmd: string, args: string[], cwd = REPO_ROOT) => {
   return result;
 };
 
-/** A checkout of some earlier commit, sharing this one's node_modules. */
+/** `<ref>` as an exact commit, or a thrown error naming what could not be found. */
+export function resolveCommit(ref: string): string {
+  const resolved = sh("git", ["rev-parse", `${ref}^{commit}`]);
+  if (resolved.status !== 0) throw new Error(`no such commit: ${ref}\n${resolved.stderr}`);
+  return resolved.stdout.trim();
+}
+
+/**
+ * A checkout of some earlier commit, sharing this one's node_modules.
+ *
+ * Identity is checked, not assumed. The old version returned the directory as
+ * soon as it contained a `package.json`, which meant a worktree built for one
+ * ref was silently reused after the ref changed — and `deploy/previous-release`
+ * is designed to change every release. The compatibility probe would then have
+ * run the wrong release's table definitions and passed, which is worse than not
+ * running at all.
+ *
+ * A stale tree is removed through git rather than with `rm -rf`, so the
+ * repository's worktree metadata does not end up pointing at a directory that
+ * is no longer there. The result is checked again before it is returned: this
+ * function cannot hand back a tree at the wrong commit.
+ */
 function ensureTree(ref: string, dir: string): string {
-  if (existsSync(path.join(dir, "package.json"))) return dir;
+  const wanted = resolveCommit(ref);
   mkdirSync(WORK, { recursive: true });
-  rmSync(dir, { recursive: true, force: true });
+
+  const headOf = (at: string) => {
+    const head = sh("git", ["rev-parse", "HEAD"], at);
+    return head.status === 0 ? head.stdout.trim() : "";
+  };
+
+  if (existsSync(path.join(dir, ".git"))) {
+    if (headOf(dir) === wanted) return dir;
+    // Registered with git, and at the wrong commit. `--force` copes with the
+    // untracked probe files and the node_modules symlink these trees carry.
+    if (sh("git", ["worktree", "remove", "--force", dir]).status !== 0) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  } else if (existsSync(dir)) {
+    // A directory that is not a worktree at all — a half-finished earlier run.
+    rmSync(dir, { recursive: true, force: true });
+  }
   sh("git", ["worktree", "prune"]);
-  const added = sh("git", ["worktree", "add", "--detach", dir, ref]);
-  if (added.status !== 0) throw new Error(`could not check out ${ref}: ${added.stderr}`);
+
+  const added = sh("git", ["worktree", "add", "--detach", dir, wanted]);
+  if (added.status !== 0) throw new Error(`could not check out ${ref} (${wanted}): ${added.stderr}`);
   symlinkSync(path.join(REPO_ROOT, "node_modules"), path.join(dir, "node_modules"));
+
+  const got = headOf(dir);
+  if (got !== wanted) throw new Error(`worktree ${dir} is at ${got}, expected ${wanted} (${ref})`);
   return dir;
 }
 

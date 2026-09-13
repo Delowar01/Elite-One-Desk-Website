@@ -23,8 +23,8 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { after, describe, test } from "node:test";
 
-import { REPO_ROOT, compatRef, dbUrl, scriptEnv } from "./helpers/env";
-import { compatTree, giveFresh } from "./helpers/fixtures";
+import { LEGACY_REF, REPO_ROOT, compatRef, dbUrl, scriptEnv } from "./helpers/env";
+import { compatTree, giveFresh, resolveCommit } from "./helpers/fixtures";
 import { dropDatabase } from "./helpers/pg";
 
 const created: string[] = [];
@@ -110,6 +110,63 @@ describe("the release in production can still read the migrated schema", () => {
     // A probe that checked nothing would pass silently.
     const checked = Number(/COMPATIBLE (\d+) tables/.exec(output)?.[1] ?? "0");
     assert.ok(checked >= 10, `only ${checked} tables were probed — the probe found no schema`);
+  });
+});
+
+describe("the compatibility worktree is the release it claims to be", () => {
+  const headOf = (dir: string) =>
+    spawnSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).stdout.trim();
+
+  test("its HEAD is the resolved compatibility ref, not merely a tree that exists", () => {
+    const wanted = resolveCommit(compatRef());
+    assert.equal(headOf(compatTree()), wanted, "the probe would otherwise run the wrong release");
+  });
+
+  test("a tree built for one ref is replaced when the ref changes", () => {
+    // The defect this guards: `deploy/previous-release` changes every release,
+    // and the old helper returned any directory containing a package.json. The
+    // probe then ran the previous-previous release's definitions and passed.
+    //
+    // Two real commits from this repository's own history, no production
+    // anywhere near it.
+    const first = resolveCommit(compatRef());
+    const second = resolveCommit(LEGACY_REF);
+    assert.notEqual(first, second, "the two refs must differ for this to prove anything");
+
+    const original = process.env.COMPAT_REF;
+    try {
+      assert.equal(headOf(compatTree()), first);
+
+      process.env.COMPAT_REF = LEGACY_REF;
+      assert.equal(
+        headOf(compatTree()),
+        second,
+        "the worktree should have been rebuilt at the new ref, not reused",
+      );
+
+      // And back, so the rest of the run sees the tree it expects.
+      delete process.env.COMPAT_REF;
+      assert.equal(headOf(compatTree()), first, "and rebuilt again when the ref changes back");
+    } finally {
+      if (original === undefined) delete process.env.COMPAT_REF;
+      else process.env.COMPAT_REF = original;
+    }
+  });
+
+  test("git's own worktree list agrees, with no stale entries", () => {
+    const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    }).stdout;
+    const tree = compatTree();
+    const entry = listed
+      .split("\n\n")
+      .find((block) => block.split("\n")[0] === `worktree ${tree}`);
+    assert.ok(entry, `git does not know about ${tree} — its metadata is inconsistent`);
+    assert.ok(
+      entry.includes(`HEAD ${resolveCommit(compatRef())}`),
+      "git and the working tree disagree about which commit is checked out",
+    );
   });
 });
 
