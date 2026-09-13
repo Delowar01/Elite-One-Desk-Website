@@ -1,0 +1,18 @@
+# The release currently running in production — the one a new release's
+# migrations must stay backward-compatible with.
+#
+# A migration is applied at deploy step 10 and the runtime switches at step 14,
+# so for the minutes in between THIS commit's code is reading the new schema.
+# `tests/schema-compat.test.ts` checks out this commit and runs its own table
+# definitions against the schema the candidate release produces.
+#
+# Update it as part of each release, after that release is live. Git cannot
+# infer it: `HEAD~1` is the previous commit, not the previous release, and a
+# release is usually several commits.
+#
+# Not to be confused with LEGACY_REF in tests/helpers/env.ts, which is the
+# pre-restructure historical fixture (ea20a22) and stays where it is.
+#
+# First non-comment line is the commit. Override for a one-off run with
+# COMPAT_REF=<ref> npm test.
+93ec7353fe9ddbf2479bd6758d668414013d284b

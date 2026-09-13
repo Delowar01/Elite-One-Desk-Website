@@ -8,6 +8,7 @@
  * remembering.
  */
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,8 +20,39 @@ export const PG_BASE = (process.env.TEST_PG_URL ?? "postgres://postgres@127.0.0.
   "",
 );
 
-/** The commit whose seed produces the pre-restructure catalogue — production's shape. */
+/**
+ * The commit whose seed produces the pre-restructure catalogue — the historical
+ * fixture the restructure and seed-state tests are written against.
+ *
+ * This is NOT the previous release. It is a fixed point in history that stays
+ * where it is; see COMPAT_REF for the moving one.
+ */
 export const LEGACY_REF = process.env.LEGACY_REF ?? "ea20a22";
+
+/**
+ * The release currently running in production, read from
+ * `deploy/previous-release`.
+ *
+ * A migration runs while that release is still serving, so it is that release —
+ * not `LEGACY_REF` — whose table definitions have to survive the new schema.
+ * Pinning the compatibility check to the historical fixture would miss anything
+ * added after it: `destination_id` does not exist at `ea20a22`, so a migration
+ * dropping it would pass a probe built from that schema while breaking the code
+ * actually serving traffic.
+ *
+ * Read from a file rather than inferred, because git cannot tell which commit is
+ * deployed — `HEAD~1` is the previous commit, and a release is usually several.
+ */
+export function compatRef(): string {
+  if (process.env.COMPAT_REF) return process.env.COMPAT_REF;
+  const file = path.join(REPO_ROOT, "deploy", "previous-release");
+  const line = readFileSync(file, "utf8")
+    .split("\n")
+    .map((row) => row.trim())
+    .find((row) => row && !row.startsWith("#"));
+  if (!line) throw new Error(`${file} names no commit`);
+  return line;
+}
 
 export const PREFIX = "eodt_";
 

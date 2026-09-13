@@ -7,7 +7,8 @@
  * checked rather than assumed.
  *
  * Two checks, and they cover different things. The first runs the previous
- * release's own table definitions against the migrated schema — it catches a
+ * release's own table definitions — the commit named in `deploy/previous-release`,
+ * not the historical `LEGACY_REF` fixture — against the migrated schema — it catches a
  * dropped, renamed or retyped column, which is the common mistake. The second
  * reads the migration SQL and refuses destructive DDL outright unless somebody
  * marked it as a deliberate contraction.
@@ -22,8 +23,8 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { after, describe, test } from "node:test";
 
-import { LEGACY_REF, REPO_ROOT, dbUrl, scriptEnv } from "./helpers/env";
-import { giveLegacy, legacyTree } from "./helpers/fixtures";
+import { REPO_ROOT, compatRef, dbUrl, scriptEnv } from "./helpers/env";
+import { compatTree, giveFresh } from "./helpers/fixtures";
 import { dropDatabase } from "./helpers/pg";
 
 const created: string[] = [];
@@ -31,18 +32,38 @@ after(() => {
   for (const name of created) dropDatabase(name);
 });
 
-describe(`the release at ${LEGACY_REF} can still read the migrated schema`, () => {
-  test("every table the old release defines is still readable", () => {
-    // `giveLegacy` is precisely the shape this needs: that release's seed with
-    // every migration since applied on top — old data, new schema.
-    const database = giveLegacy("compat");
-    created.push(database);
-    const tree = legacyTree();
+describe("the release in production can still read the migrated schema", () => {
+  test("the compatibility reference names a real, earlier commit", () => {
+    const ref = compatRef();
+    const resolved = spawnSync("git", ["rev-parse", `${ref}^{commit}`], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    assert.equal(resolved.status, 0, `deploy/previous-release names no commit: ${ref}`);
+    const sha = resolved.stdout.trim();
 
-    // A probe written into the old checkout, using the OLD release's own schema
-    // definitions and its own drizzle. If the new schema dropped or renamed a
-    // column the old code names, the select fails here exactly as it would fail
-    // in production between migrate and switch.
+    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" })
+      .stdout.trim();
+    assert.notEqual(sha, head, "the previous release cannot be the candidate release");
+
+    const ancestor = spawnSync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], {
+      cwd: REPO_ROOT,
+    });
+    assert.equal(ancestor.status, 0, `${sha} is not an ancestor of HEAD — is it really deployed?`);
+  });
+
+  test("every table that release defines is still readable", () => {
+    // The schema and data THIS release produces: migrate then seed, which is
+    // deploy steps 10 and 11. The probe below is the old runtime at step 12,
+    // reading it before the switch at step 14.
+    const database = giveFresh("compat");
+    created.push(database);
+    const tree = compatTree();
+
+    // Written into the previous release's checkout and run there, so it uses
+    // that release's own table definitions and its own drizzle. A column it
+    // names that the new schema dropped, renamed or retyped fails here exactly
+    // as it would fail in production between migrate and switch.
     const probe = path.join(tree, "compat-probe.mts");
     writeFileSync(
       probe,
@@ -54,9 +75,11 @@ describe(`the release at ${LEGACY_REF} can still read the migrated schema`, () =
         "const sql = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });",
         "const db = drizzle(sql);",
         "const failures: string[] = [];",
+        "let checked = 0;",
         "for (const [name, table] of Object.entries(schema)) {",
         '  if (!table || typeof table !== "object") continue;',
         '  if (!Object.getOwnPropertySymbols(table).some((s) => String(s).includes("drizzle:Name"))) continue;',
+        "  checked += 1;",
         "  try {",
         "    // eslint-disable-next-line @typescript-eslint/no-explicit-any",
         "    await db.select().from(table as any).limit(1);",
@@ -66,7 +89,7 @@ describe(`the release at ${LEGACY_REF} can still read the migrated schema`, () =
         "}",
         "await sql.end();",
         'if (failures.length) { console.error("INCOMPATIBLE\\n" + failures.join("\\n")); process.exit(1); }',
-        'console.log("COMPATIBLE");',
+        'console.log(`COMPATIBLE ${checked} tables`);',
       ].join("\n"),
       "utf8",
     );
@@ -78,8 +101,15 @@ describe(`the release at ${LEGACY_REF} can still read the migrated schema`, () =
       maxBuffer: 16 * 1024 * 1024,
     });
     const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-    assert.equal(result.status, 0, `the old release cannot read the new schema:\n${output}`);
-    assert.match(output, /COMPATIBLE/);
+    assert.equal(
+      result.status,
+      0,
+      `the release at ${compatRef()} cannot read the schema this one produces:\n${output}`,
+    );
+    assert.match(output, /COMPATIBLE \d+ tables/);
+    // A probe that checked nothing would pass silently.
+    const checked = Number(/COMPATIBLE (\d+) tables/.exec(output)?.[1] ?? "0");
+    assert.ok(checked >= 10, `only ${checked} tables were probed — the probe found no schema`);
   });
 });
 

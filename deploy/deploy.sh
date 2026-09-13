@@ -137,7 +137,11 @@ PUBLIC_HEALTHCHECK_REQUIRED="${PUBLIC_HEALTHCHECK_REQUIRED:-1}"
 # died partway through.
 FORCE_REDEPLOY="${FORCE_REDEPLOY:-0}"
 
-# The database the BUILD is given. Deliberately unreachable: port 1 refuses
+# ---------------------------------------------------------------------------
+# Not configuration. This one is a safety property, so it is not in the block
+# above and it does not read the environment.
+# ---------------------------------------------------------------------------
+# The database the BUILD is given: deliberately unreachable. Port 1 refuses
 # immediately, so a build that tries to query PostgreSQL fails in seconds rather
 # than hanging on a connect timeout.
 #
@@ -145,11 +149,12 @@ FORCE_REDEPLOY="${FORCE_REDEPLOY:-0}"
 # makes every public route render per request, so nothing is prerendered from
 # catalogue data — and when it did, a release could not be built until its own
 # migration had been applied, which could not happen until the build succeeded.
-# Overriding the variable for this one command turns "the build happens not to
-# need the database" into "the build cannot reach the database", which is a
-# property rather than a habit. Anything that reintroduces the dependency fails
-# here, before the backup, the migration, the seed or the runtime switch.
-BUILD_DATABASE_URL="${BUILD_DATABASE_URL:-postgresql://invalid:invalid@127.0.0.1:1/invalid}"
+#
+# The assignment ignores any inherited value and the variable is then readonly,
+# so `BUILD_DATABASE_URL="$DATABASE_URL" ./deploy.sh` cannot quietly hand the
+# build a real database and restore the dependency this exists to prevent. There
+# is nothing secret in it; the point is that it is not a knob.
+readonly BUILD_DATABASE_URL="postgresql://invalid:invalid@127.0.0.1:1/invalid"
 
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 RUN_USER="$(id -un)"

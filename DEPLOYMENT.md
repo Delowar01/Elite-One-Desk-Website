@@ -367,11 +367,22 @@ intentionally unavailable to the build. Only after that succeeds may production
 be backed up and migrated.
 
 `deploy.sh` hands `npm run build` an unreachable `DATABASE_URL`
-(`BUILD_DATABASE_URL`, `postgresql://invalid:invalid@127.0.0.1:1/invalid` —
-port 1 refuses instantly rather than hanging on a timeout). The assignment
-reaches that one command. The production `.env` in the build worktree is not
-edited, not read for this purpose and never printed, and the runtime the build
-produces uses it normally.
+(`postgresql://invalid:invalid@127.0.0.1:1/invalid` — port 1 refuses instantly
+rather than hanging on a timeout). The assignment reaches that one command.
+
+**`BUILD_DATABASE_URL` is not a configuration option.** It sits outside the
+configurable block, it does not read the environment, and it is `readonly`, so
+`BUILD_DATABASE_URL="$DATABASE_URL" ./deploy.sh` cannot quietly give the build a
+real database back. There is nothing secret in the value; the point is that it
+cannot be changed from outside the script. Changing it means editing the script,
+in a commit, under review.
+
+The production `.env` in the build worktree is not edited, not read for this
+purpose and never printed. `next build` copies that file — the one on disk, not
+the environment the build ran under — beside the standalone server, so the
+runtime gets the real value and never the unreachable one.
+`tests/build-isolation.test.ts` compares the two by hash and asserts the
+build-only URL is absent.
 
 **Why.** The release adding `travel_packages.destination_id` could not be built.
 The new code queried the column while collecting page data; the column did not
@@ -434,10 +445,21 @@ A contraction — dropping the column nobody reads any more — is legitimate, b
 ships in a release *after* the one that stopped reading it. Two deploys, never
 one.
 
+**Which release is "the previous release" is recorded, not guessed.**
+`deploy/previous-release` holds the commit currently serving production, and is
+updated as part of each release once that release is live. Git cannot infer it:
+`HEAD~1` is the previous commit, and a release is usually several. It is not the
+same thing as `LEGACY_REF` in `tests/helpers/env.ts`, which is the fixed
+pre-restructure catalogue fixture (`ea20a22`) the restructure tests are written
+against — pinning the compatibility check there would miss anything added since,
+so a migration dropping `destination_id` would pass a probe built from a schema
+that never had it.
+
 Two automated guards, in `tests/schema-compat.test.ts`:
 
-1. The previous release's own table definitions are run against the migrated
-   schema. A dropped, renamed or retyped column fails here.
+1. The previous release's own table definitions — checked out from
+   `deploy/previous-release` — are run against the schema and data this release
+   produces. A dropped, renamed or retyped column fails here.
 2. New migration SQL is refused if it contains `DROP COLUMN`, `DROP TABLE`,
    `RENAME`, `SET NOT NULL`, a type change or a dropped constraint or default,
    unless the file carries `-- contract: approved <reason>`.

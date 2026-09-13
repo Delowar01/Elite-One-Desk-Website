@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
-import { LEGACY_REF, REPO_ROOT, dbUrl, scriptEnv, uniqueName } from "./env";
+import { LEGACY_REF, REPO_ROOT, compatRef, dbUrl, scriptEnv, uniqueName } from "./env";
 import { dropDatabase, dumpDatabase, recreateDatabase, restoreDatabase } from "./pg";
 import { migrate, runScript, seed } from "./run";
 
@@ -25,6 +25,7 @@ const WORK = path.join(REPO_ROOT, ".data", "test");
 const LEGACY_TREE = path.join(WORK, "legacy-tree");
 const LEGACY_SQL = path.join(WORK, "legacy.sql");
 const FRESH_SQL = path.join(WORK, "fresh.sql");
+const COMPAT_TREE = path.join(WORK, "compat-tree");
 
 const sh = (cmd: string, args: string[], cwd = REPO_ROOT) => {
   const result = spawnSync(cmd, args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
@@ -32,19 +33,20 @@ const sh = (cmd: string, args: string[], cwd = REPO_ROOT) => {
   return result;
 };
 
-/** A checkout of the pre-restructure code, sharing this one's node_modules. */
-function ensureLegacyTree(): string {
-  if (existsSync(path.join(LEGACY_TREE, "package.json"))) return LEGACY_TREE;
+/** A checkout of some earlier commit, sharing this one's node_modules. */
+function ensureTree(ref: string, dir: string): string {
+  if (existsSync(path.join(dir, "package.json"))) return dir;
   mkdirSync(WORK, { recursive: true });
-  rmSync(LEGACY_TREE, { recursive: true, force: true });
+  rmSync(dir, { recursive: true, force: true });
   sh("git", ["worktree", "prune"]);
-  const added = sh("git", ["worktree", "add", "--detach", LEGACY_TREE, LEGACY_REF]);
-  if (added.status !== 0) {
-    throw new Error(`could not check out ${LEGACY_REF}: ${added.stderr}`);
-  }
-  symlinkSync(path.join(REPO_ROOT, "node_modules"), path.join(LEGACY_TREE, "node_modules"));
-  return LEGACY_TREE;
+  const added = sh("git", ["worktree", "add", "--detach", dir, ref]);
+  if (added.status !== 0) throw new Error(`could not check out ${ref}: ${added.stderr}`);
+  symlinkSync(path.join(REPO_ROOT, "node_modules"), path.join(dir, "node_modules"));
+  return dir;
 }
+
+/** A checkout of the pre-restructure code. */
+const ensureLegacyTree = () => ensureTree(LEGACY_REF, LEGACY_TREE);
 
 function buildLegacySql(): void {
   const tree = ensureLegacyTree();
@@ -138,6 +140,7 @@ export function discardFixtures(): void {
   rmSync(LEGACY_SQL, { force: true });
   rmSync(FRESH_SQL, { force: true });
   rmSync(LEGACY_TREE, { recursive: true, force: true });
+  rmSync(COMPAT_TREE, { recursive: true, force: true });
 }
 
 function ensure(name: "legacy" | "fresh"): string {
@@ -181,10 +184,19 @@ export function giveRestructured(label = "cutover"): string {
   return name;
 }
 
-/** The checkout of `LEGACY_REF`, for tests that need to run the old release's code. */
+/** The checkout of `LEGACY_REF`, for tests that need the pre-restructure code. */
 export function legacyTree(): string {
   legacySql(); // builds the worktree if it is not there yet
   return ensureLegacyTree();
 }
 
-export { LEGACY_SQL, FRESH_SQL, WORK, LEGACY_TREE };
+/**
+ * A checkout of the release currently in production — the one a new migration
+ * has to stay readable by. Deliberately a different worktree from `legacyTree`:
+ * one is a fixed historical fixture, the other moves with every release.
+ */
+export function compatTree(): string {
+  return ensureTree(compatRef(), COMPAT_TREE);
+}
+
+export { LEGACY_SQL, FRESH_SQL, WORK, LEGACY_TREE, COMPAT_TREE };
