@@ -6,9 +6,15 @@ import { AdminForm, ConfirmSubmit, Field, InlineAction, SubmitButton } from "@/c
 import { Icon } from "@/components/ui/icon";
 import { SocialIcon } from "@/components/ui/social-icon";
 import type { SiteSettings } from "@/lib/settings-defaults";
-import { SOCIAL_PLATFORMS, socialLabel, socialPlatform } from "@/lib/social";
+import {
+  SOCIAL_PLATFORMS,
+  normalizeSocialPlatformKey,
+  socialLabel,
+  socialPlatform,
+} from "@/lib/social";
 import {
   deleteSocialLink,
+  moveSocialLink,
   refreshCaches,
   saveBrand,
   saveContact,
@@ -16,6 +22,7 @@ import {
   saveFeatures,
   saveSocialLink,
   saveWhatsapp,
+  toggleSocialLink,
 } from "./actions";
 import { SETTINGS_TABS, type SettingsTab } from "./tabs";
 
@@ -331,73 +338,102 @@ function MaintenancePanel({ csrf }: { csrf: string }) {
   );
 }
 
+/**
+ * Social Media.
+ *
+ * Everything here is rendered by the server and every control is a real form,
+ * so the panel works before hydration and after JavaScript fails — which is the
+ * rule the rest of this page already follows. The add form is always present
+ * rather than behind a toggle, and a row's fields sit in a `<details>`: a
+ * disclosure the browser owns, with no state to get out of step.
+ */
 function SocialPanel({ csrf, rows }: { csrf: string; rows: SocialRow[] }) {
-  const [editing, setEditing] = useState<number | "new" | null>(rows.length ? null : "new");
-
   return (
     <div className="max-w-3xl space-y-4">
       <div className="admin-card p-5">
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div>
-            <h2>Social links</h2>
-            <p className="mt-0.5 text-[0.78rem] text-muted">
-              Each network is shown in the footer with its own mark, and every published address is listed as a verified profile in the site’s Organization structured data. https addresses only.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setEditing(editing === "new" ? null : "new")}
-            className="admin-btn admin-btn-sm"
-          >
-            {editing === "new" ? "Cancel" : "Add link"}
-          </button>
-        </div>
-        {editing === "new" ? <SocialForm csrf={csrf} row={null} /> : null}
+        <h2>Add a network</h2>
+        <p className="mb-4 mt-0.5 text-[0.78rem] text-muted">
+          Each network is shown in the footer with its own mark, and its address is listed in the
+          site’s Organization structured data as one of the accounts that belong to this business.
+          https addresses only.
+        </p>
+        <SocialForm csrf={csrf} row={null} />
       </div>
 
       {rows.length === 0 ? null : (
         <ul className="space-y-2">
-          {rows.map((row) => (
-            <li key={row.id} className="admin-card p-3.5">
-              <div className="flex flex-wrap items-center gap-2">
-                <span
-                  className="flex size-7 shrink-0 items-center justify-center rounded-full border border-[var(--admin-line)]"
-                  style={{ color: "var(--color-peach)" }}
-                >
-                  <SocialIcon platform={row.platform} size={14} />
-                </span>
-                <span className="font-semibold text-strong">{socialLabel(row.platform)}</span>
-                <span className="truncate text-[0.76rem] text-muted" dir="ltr">
-                  {row.url}
-                </span>
-                {!row.isPublished ? (
-                  <span className="admin-badge" style={{ color: "#9aa2b5" }}>
-                    Hidden
-                  </span>
-                ) : null}
-                <div className="ms-auto flex gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setEditing(editing === row.id ? null : row.id)}
-                    className="admin-btn admin-btn-sm"
+          {rows.map((row, index) => {
+            const label = socialLabel(row.platform);
+            return (
+              <li key={row.id} className="admin-card p-3.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className="flex size-7 shrink-0 items-center justify-center rounded-full border border-[var(--admin-line)]"
+                    style={{ color: "var(--color-peach)" }}
                   >
-                    {editing === row.id ? "Close" : "Edit"}
-                  </button>
-                  <InlineAction action={deleteSocialLink} hidden={{ _csrf: csrf, id: row.id }}>
-                    <ConfirmSubmit className="admin-btn-sm" message={`Remove the ${socialLabel(row.platform)} link?`}>
-                      <Icon name="trash" size={11} />
-                      <span className="sr-only">Remove</span>
-                    </ConfirmSubmit>
-                  </InlineAction>
+                    <SocialIcon platform={row.platform} size={14} />
+                  </span>
+                  <span className="font-semibold text-strong">{label}</span>
+                  <span className="truncate text-[0.76rem] text-muted" dir="ltr">
+                    {row.url}
+                  </span>
+                  {!row.isPublished ? (
+                    <span className="admin-badge" style={{ color: "#9aa2b5" }}>
+                      Hidden
+                    </span>
+                  ) : null}
+
+                  <div className="ms-auto flex gap-1.5">
+                    <InlineAction action={moveSocialLink} hidden={{ _csrf: csrf, id: row.id, direction: "up" }}>
+                      <button
+                        type="submit"
+                        disabled={index === 0}
+                        aria-label={`Move ${label} up`}
+                        className="admin-btn admin-btn-sm"
+                      >
+                        <Icon name="chevronDown" size={11} className="rotate-180" />
+                      </button>
+                    </InlineAction>
+                    <InlineAction action={moveSocialLink} hidden={{ _csrf: csrf, id: row.id, direction: "down" }}>
+                      <button
+                        type="submit"
+                        disabled={index === rows.length - 1}
+                        aria-label={`Move ${label} down`}
+                        className="admin-btn admin-btn-sm"
+                      >
+                        <Icon name="chevronDown" size={11} />
+                      </button>
+                    </InlineAction>
+                    <InlineAction action={toggleSocialLink} hidden={{ _csrf: csrf, id: row.id }}>
+                      <button
+                        type="submit"
+                        aria-label={`${row.isPublished ? "Hide" : "Show"} ${label}`}
+                        className="admin-btn admin-btn-sm"
+                      >
+                        <Icon name={row.isPublished ? "eyeOff" : "eye"} size={11} />
+                        {row.isPublished ? "Hide" : "Show"}
+                      </button>
+                    </InlineAction>
+                    <InlineAction action={deleteSocialLink} hidden={{ _csrf: csrf, id: row.id }}>
+                      <ConfirmSubmit className="admin-btn-sm" message={`Remove the ${label} link?`}>
+                        <Icon name="trash" size={11} />
+                        <span className="sr-only">{`Remove ${label}`}</span>
+                      </ConfirmSubmit>
+                    </InlineAction>
+                  </div>
                 </div>
-              </div>
-              {editing === row.id ? (
-                <div className="mt-3 border-t border-[var(--admin-line)] pt-3">
-                  <SocialForm csrf={csrf} row={row} />
-                </div>
-              ) : null}
-            </li>
-          ))}
+
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-[0.78rem] text-muted">
+                    {`Edit ${label}`}
+                  </summary>
+                  <div className="mt-3 border-t border-[var(--admin-line)] pt-3">
+                    <SocialForm csrf={csrf} row={row} />
+                  </div>
+                </details>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
@@ -409,7 +445,9 @@ function SocialForm({ csrf, row }: { csrf: string; row: SocialRow | null }) {
   // The network is picked, not typed: the same registry drives this menu, the
   // footer's mark and the check the action runs on save, so an admin cannot
   // reach a state where a link is stored under a key nothing can draw.
-  const [platform, setPlatform] = useState(row?.platform ?? SOCIAL_PLATFORMS[0]!.key);
+  const [platform, setPlatform] = useState(
+    row ? normalizeSocialPlatformKey(row.platform) : SOCIAL_PLATFORMS[0]!.key,
+  );
   const known = socialPlatform(platform);
 
   return (

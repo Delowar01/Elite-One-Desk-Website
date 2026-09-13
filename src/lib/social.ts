@@ -25,6 +25,13 @@ export type SocialPlatform = {
   urlHint: string;
   /** `d` for a single 24×24 path, filled with currentColor. */
   path: string;
+  /**
+   * Not an account on a network — an address that is ours but is not an
+   * identity. Two things follow from it and both are decided by this flag
+   * rather than by a key comparison: a site may hold several of them, and they
+   * are left out of the Organization's `sameAs`.
+   */
+  generic?: boolean;
 };
 
 export const SOCIAL_PLATFORMS: readonly SocialPlatform[] = [
@@ -88,20 +95,106 @@ export const SOCIAL_PLATFORMS: readonly SocialPlatform[] = [
     urlHint: "https://www.pinterest.com/your-handle",
     path: "M12.017 0C5.396 0 .029 5.367.029 11.987c0 5.079 3.158 9.417 7.618 11.162-.105-.949-.199-2.403.041-3.439.219-.937 1.406-5.957 1.406-5.957s-.359-.72-.359-1.781c0-1.663.967-2.911 2.168-2.911 1.024 0 1.518.769 1.518 1.688 0 1.029-.653 2.567-.992 3.992-.285 1.193.6 2.165 1.775 2.165 2.128 0 3.768-2.245 3.768-5.487 0-2.861-2.063-4.869-5.008-4.869-3.41 0-5.409 2.562-5.409 5.199 0 1.033.394 2.143.889 2.741.099.12.112.225.085.345-.09.375-.293 1.199-.334 1.363-.053.225-.172.271-.401.165-1.495-.69-2.433-2.878-2.433-4.646 0-3.776 2.748-7.252 7.92-7.252 4.158 0 7.392 2.967 7.392 6.923 0 4.135-2.607 7.462-6.233 7.462-1.214 0-2.354-.629-2.758-1.379l-.749 2.848c-.269 1.045-1.004 2.352-1.498 3.146 1.123.345 2.306.535 3.55.535 6.607 0 11.985-5.365 11.985-11.987C23.97 5.39 18.592.026 11.985.026L12.017 0z",
   },
+  {
+    key: "threads",
+    label: "Threads",
+    urlHint: "https://www.threads.net/@your-handle",
+    path: "M12.186 24h-.007c-3.581-.024-6.334-1.205-8.184-3.509C2.35 18.44 1.5 15.586 1.472 12.01v-.017c.03-3.579.879-6.43 2.525-8.482C5.845 1.205 8.6.024 12.18 0h.014c2.746.02 5.043.725 6.826 2.098 1.677 1.29 2.858 3.13 3.509 5.467l-2.04.569c-1.104-3.96-3.898-5.984-8.304-6.015-2.91.022-5.11.936-6.54 2.717C4.307 6.504 3.616 8.914 3.589 12c.027 3.086.718 5.496 2.057 7.164 1.43 1.783 3.631 2.698 6.54 2.717 2.623-.02 4.358-.631 5.8-2.045 1.647-1.613 1.618-3.593 1.09-4.798-.31-.71-.873-1.3-1.634-1.75-.192 1.352-.622 2.446-1.284 3.272-.886 1.102-2.14 1.704-3.73 1.79-1.202.065-2.361-.218-3.259-.801-1.063-.689-1.685-1.74-1.752-2.964-.065-1.19.408-2.285 1.33-3.082.88-.76 2.119-1.207 3.583-1.291a13.853 13.853 0 0 1 3.02.142c-.126-.742-.375-1.332-.75-1.757-.513-.586-1.308-.883-2.359-.89h-.029c-.844 0-1.992.232-2.721 1.32L7.11 7.665c.98-1.454 2.568-2.256 4.478-2.256h.044c3.194.02 5.097 1.975 5.287 5.388.108.046.216.094.321.142 1.49.7 2.58 1.761 3.154 3.07.797 1.82.871 4.79-1.548 7.158-1.85 1.81-4.094 2.628-7.277 2.65Zm1.003-11.69c-.242 0-.487.007-.739.021-1.836.103-2.98.946-2.916 2.143.067 1.256 1.452 1.839 2.784 1.767 1.224-.065 2.818-.543 3.086-3.71a10.5 10.5 0 0 0-2.215-.221z",
+  },
+  {
+    /**
+     * Not a network. It is the row for an address that is ours but is not a
+     * social profile — a booking portal, a group site — and it wears an
+     * external-link mark rather than borrowing somebody else's brand. It is
+     * also the one platform a site may hold more than one of, and the one left
+     * out of `sameAs`; both are explained where they are decided.
+     */
+    key: "website",
+    label: "Other / Website",
+    urlHint: "https://example.com",
+    generic: true,
+    path: "M4 8h6v2H6v9h9v-4h2v6H4V8Zm16-5v8h-2.1V6.6l-7.5 7.5-1.5-1.5 7.5-7.5H12V3h8Z",
+  },
 ] as const;
 
 export const SOCIAL_PLATFORM_MAP = new Map(SOCIAL_PLATFORMS.map((p) => [p.key, p]));
 
-export const isSocialPlatform = (value: string): boolean => SOCIAL_PLATFORM_MAP.has(value);
-
-/** The registry entry, or null for a key stored before it was on the list. */
-export const socialPlatform = (key: string): SocialPlatform | null =>
-  SOCIAL_PLATFORM_MAP.get(key.trim().toLowerCase()) ?? null;
+/**
+ * Keys that mean a platform already on the list.
+ *
+ * A network renames itself and the rows stored under the old name do not: the
+ * database still holds `twitter` and always will, because rewriting production
+ * data by migration to correct a label is the wrong trade. So the old key is
+ * *read* as the new one everywhere — footer mark, accessible name, the menu's
+ * current selection, the duplicate check — and only actually rewritten when an
+ * admin saves that row, which is a deliberate act that leaves an audit line.
+ *
+ * The rest are shapes a key plausibly arrived in while this was the free-text
+ * field it used to be.
+ */
+const ALIASES: Record<string, string> = {
+  twitter: "x",
+  "twitter-x": "x",
+  "x-twitter": "x",
+  fb: "facebook",
+  ig: "instagram",
+  insta: "instagram",
+  "linked-in": "linkedin",
+  yt: "youtube",
+  "you-tube": "youtube",
+  "tik-tok": "tiktok",
+  wa: "whatsapp",
+  tg: "telegram",
+  web: "website",
+  site: "website",
+  other: "website",
+};
 
 /**
- * What to call a network we do not have a mark for. A row stored under an old
- * or hand-typed key still has to render and still has to be announced, so it
- * gets its own key back with the first letter raised rather than nothing.
+ * One reading of a stored platform value, used by everything that touches one.
+ *
+ * Trimmed, so ` X ` is X. Lower-cased, so `Twitter` is twitter. Inner spaces
+ * and underscores folded to the hyphen the keys use. Then aliased. An unknown
+ * key comes back normalised rather than dropped, so it can still be drawn,
+ * still be announced, and still be told apart from a different unknown key.
  */
-export const socialLabel = (key: string): string =>
-  socialPlatform(key)?.label ?? key.charAt(0).toUpperCase() + key.slice(1);
+export function normalizeSocialPlatformKey(value: string | null | undefined): string {
+  const key = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-");
+  return ALIASES[key] ?? key;
+}
+
+export const isSocialPlatform = (value: string | null | undefined): boolean =>
+  SOCIAL_PLATFORM_MAP.has(normalizeSocialPlatformKey(value));
+
+/** The registry entry, or null for a key the registry has never known. */
+export const socialPlatform = (value: string | null | undefined): SocialPlatform | null =>
+  SOCIAL_PLATFORM_MAP.get(normalizeSocialPlatformKey(value)) ?? null;
+
+/**
+ * What to call it. A network we know is called what it calls itself; anything
+ * else gets its own key back with the first letter raised, because "Myspace" is
+ * more use to an admin and to a screen reader than "Other".
+ */
+export function socialLabel(value: string | null | undefined): string {
+  const known = socialPlatform(value);
+  if (known) return known.label;
+  const key = normalizeSocialPlatformKey(value);
+  return key ? key.charAt(0).toUpperCase() + key.slice(1) : "Link";
+}
+
+/**
+ * Is this an address rather than an account?
+ *
+ * A business has one account per network, so a second Instagram row is a
+ * mistake and is refused. It can have any number of other addresses worth
+ * linking to, so those are not — and they are also not claims about identity,
+ * which is why `sameAs` leaves them out. One flag, both consequences.
+ */
+export const isGenericLink = (value: string | null | undefined): boolean =>
+  socialPlatform(value)?.generic === true;
+
+/** A site may hold more than one of these. See `isGenericLink`. */
+export const allowsMultiple = isGenericLink;

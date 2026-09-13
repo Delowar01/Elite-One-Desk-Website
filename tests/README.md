@@ -61,6 +61,8 @@ directory lock.
 | `build-isolation.test.ts` | `next build` succeeds cold with PostgreSQL unreachable, contacts no database, prerenders nothing database-backed, and no catalogue route enumerates paths at build time |
 | `schema-compat.test.ts` | the release named in `deploy/previous-release` still reads the schema this one produces · that reference names a real, earlier commit · no migration drops, renames or narrows anything without an approval marker |
 | `admin-destinations.test.ts` | adding Nepal is data entry · the shared `/packages/<slug>` namespace is guarded from both sides · deleting a destination keeps its packages |
+| `cms-fields.test.ts` | the controlled row fields — a real icon key survives, an invented one does not, a media id survives as a number, junk becomes null, a dangerous href is still stripped · the link→image resolver, including the language prefix, the fragment, the per-category service slug and the destination that wins over a package of the same name · the social registry: twelve platforms, `twitter` is X, casing and whitespace do not fork a platform |
+| `social-admin.test.ts` | the Social Media panel, driven through its own forms: a new link appends · an ordinary edit does not reorder · show and hide · the arrows, including on rows that already share a `sort_order` · one row per network, with `twitter` and `x` counted as one · `Other / Website` may repeat · a legacy `twitter` row is X in the footer and in the panel · `sameAs` lists the accounts once each and leaves the plain addresses out · every mutation named in the activity log for what it was |
 
 ## Ports
 

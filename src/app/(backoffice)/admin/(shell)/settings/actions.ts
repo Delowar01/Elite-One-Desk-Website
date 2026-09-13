@@ -1,18 +1,23 @@
 "use server";
 
-import { eq, sql } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
 import {
-  checkbox, fail, field, numberField, ok, optionalId, runAction, type ActionState,
+  checkbox, fail, field, ok, optionalId, runAction, type ActionState,
 } from "@/lib/admin/actions";
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate, revalidateEverything } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { socialLinks } from "@/lib/db/schema";
 import { saveSettingsGroup, type SettingsKey } from "@/lib/settings";
-import { isSocialPlatform, socialLabel } from "@/lib/social";
+import {
+  allowsMultiple,
+  isSocialPlatform,
+  normalizeSocialPlatformKey,
+  socialLabel,
+} from "@/lib/social";
 
 const refreshAll = () => {
   revalidate(TAGS.settings, TAGS.social);
@@ -261,29 +266,90 @@ export async function refreshCaches(_prev: ActionState, form: FormData): Promise
 /* Social links                                                               */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The rows in the order the footer shows them.
+ *
+ * `sortOrder` then `id`, so the order is total even where two rows share a
+ * number — which they can, because nothing ever guaranteed they would not.
+ */
+async function orderedSocial() {
+  return db
+    .select({
+      id: socialLinks.id,
+      platform: socialLinks.platform,
+      url: socialLinks.url,
+      isPublished: socialLinks.isPublished,
+    })
+    .from(socialLinks)
+    .orderBy(asc(socialLinks.sortOrder), asc(socialLinks.id));
+}
+
+/**
+ * Writes `0..n-1` down a list of ids, in one transaction.
+ *
+ * Renumbering the whole list rather than swapping two numbers is what makes
+ * this safe on data that already holds duplicates or gaps: whatever the rows
+ * came in as, they leave contiguous and in the order given.
+ */
+async function renumberSocial(ids: number[]) {
+  await db.transaction(async (tx) => {
+    for (const [index, id] of ids.entries()) {
+      await tx
+        .update(socialLinks)
+        .set({ sortOrder: index, updatedAt: new Date() })
+        .where(eq(socialLinks.id, id));
+    }
+  });
+}
+
 export async function saveSocialLink(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("social-save", async () => {
     const session = await guardAction("settings.manage", form);
     const id = Number(form.get("id")) || 0;
-    const platform = field(form, "platform", 32).toLowerCase();
+    const submitted = field(form, "platform", 32);
+    // Canonical from the first line: `twitter` and ` X ` are the same platform,
+    // and every check below — the allowlist, the duplicate test, the label in
+    // the audit line — has to be asking about the same thing.
+    const platform = normalizeSocialPlatformKey(submitted);
     const url = field(form, "url", 255);
+    const isPublished = checkbox(form, "isPublished");
 
     if (!platform) return fail("Which network is this?", { platform: "Required." });
+
+    const [existing] = id
+      ? await db.select().from(socialLinks).where(eq(socialLinks.id, id)).limit(1)
+      : [];
+    if (id && !existing) return fail("That link no longer exists.");
 
     /**
      * The network has to be one the site can draw. The panel offers a menu
      * built from the same registry, so the only way to arrive here with
-     * anything else is a hand-made request — or a row saved before that network
-     * was on the list, which is allowed to keep its own key until somebody
+     * anything else is a hand-made request — or a row stored under a key the
+     * registry has never known, which keeps its own key until somebody
      * deliberately changes it.
      */
     if (!isSocialPlatform(platform)) {
-      const [existing] = id
-        ? await db.select({ platform: socialLinks.platform }).from(socialLinks).where(eq(socialLinks.id, id)).limit(1)
-        : [];
-      if (existing?.platform !== platform) {
+      if (normalizeSocialPlatformKey(existing?.platform) !== platform) {
         return fail("That network is not one we have a mark for.", {
           platform: "Choose one from the list.",
+        });
+      }
+    }
+
+    /**
+     * One row per network. The comparison is canonical, so a `twitter` row and
+     * an `x` row are the same platform and the second one is refused — but
+     * refused, never rewritten: a pair that already exists stays until an admin
+     * decides which to keep. `Other / Website` is exempt, because a business
+     * can legitimately have several addresses that are not social accounts.
+     */
+    if (!allowsMultiple(platform)) {
+      const clash = (await orderedSocial()).find(
+        (row) => row.id !== id && normalizeSocialPlatformKey(row.platform) === platform,
+      );
+      if (clash) {
+        return fail(`There is already a link for ${socialLabel(platform)}.`, {
+          platform: "Edit or remove the existing one instead.",
         });
       }
     }
@@ -300,30 +366,124 @@ export async function saveSocialLink(_prev: ActionState, form: FormData): Promis
       return fail("Social links must be https.", { url: "Use the https:// address." });
     }
 
-    const values = {
-      platform,
-      url: parsed.toString(),
-      sortOrder: numberField(form, "sortOrder", 0),
-      isPublished: checkbox(form, "isPublished"),
-    };
-
-    if (id) {
-      await db.update(socialLinks).set({ ...values, updatedAt: new Date() }).where(eq(socialLinks.id, id));
+    if (existing) {
+      /**
+       * `sortOrder` is deliberately absent. The edit form does not carry one —
+       * it never did — so reading a number out of the request meant an ordinary
+       * URL correction silently sent the row to the top of the footer. Order is
+       * changed by the arrows, and by nothing else.
+       */
+      await db
+        .update(socialLinks)
+        .set({ platform, url: parsed.toString(), isPublished, updatedAt: new Date() })
+        .where(eq(socialLinks.id, id));
     } else {
       const [last] = await db
         .select({ n: sql<number>`coalesce(max(${socialLinks.sortOrder}), -1)::int` })
         .from(socialLinks);
-      await db.insert(socialLinks).values({ ...values, sortOrder: (last?.n ?? -1) + 1 });
+      await db
+        .insert(socialLinks)
+        .values({ platform, url: parsed.toString(), isPublished, sortOrder: (last?.n ?? -1) + 1 });
     }
 
     await logActivity(session, {
-      action: id ? "social.updated" : "social.created",
+      action: existing ? "social.updated" : "social.created",
       entityType: "social",
       entityId: id || 0,
-      summary: `${id ? "Updated" : "Added"} the ${socialLabel(platform)} link`,
+      summary: describeSave(existing, { platform, url: parsed.toString(), isPublished }),
     });
     refreshAll();
-    return ok(id ? "Link saved." : "Link added.");
+    return ok(existing ? "Link saved." : "Link added.");
+  });
+}
+
+/**
+ * What actually changed, in a sentence.
+ *
+ * An audit line that says "Updated link" for a URL correction, for taking a
+ * network off the site and for migrating a legacy key is three different events
+ * wearing one label — and the two that matter most are the two it hides.
+ */
+function describeSave(
+  before: { platform: string; url: string; isPublished: boolean } | undefined,
+  after: { platform: string; url: string; isPublished: boolean },
+): string {
+  const name = socialLabel(after.platform);
+  if (!before) return `Added the ${name} social link`;
+  if (before.platform !== after.platform) {
+    return `Changed the ${socialLabel(before.platform)} row (${before.platform}) to ${name}`;
+  }
+  if (before.isPublished !== after.isPublished) {
+    return `${after.isPublished ? "Enabled" : "Disabled"} the ${name} social link`;
+  }
+  if (before.url !== after.url) return `Updated the ${name} URL`;
+  return `Saved the ${name} social link`;
+}
+
+/** Show or hide one row, without opening its form. */
+export async function toggleSocialLink(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("social-toggle", async () => {
+    const session = await guardAction("settings.manage", form);
+    const id = Number(form.get("id"));
+    const [row] = await db.select().from(socialLinks).where(eq(socialLinks.id, id)).limit(1);
+    if (!row) return fail("That link no longer exists.");
+
+    const next = !row.isPublished;
+    await db
+      .update(socialLinks)
+      .set({ isPublished: next, updatedAt: new Date() })
+      .where(eq(socialLinks.id, id));
+
+    const name = socialLabel(row.platform);
+    await logActivity(session, {
+      action: next ? "social.enabled" : "social.disabled",
+      entityType: "social",
+      entityId: id,
+      summary: `${next ? "Enabled" : "Disabled"} the ${name} social link`,
+    });
+    refreshAll();
+    return ok(next ? `${name} is shown in the footer.` : `${name} is hidden.`);
+  });
+}
+
+/**
+ * Moves one row up or down.
+ *
+ * Published and hidden rows sit in one list, because the admin is ordering the
+ * footer and a hidden row is one that will be in it again. The move is done on
+ * the read order and written back as a contiguous run, so it behaves the same
+ * whether the stored numbers were tidy or not.
+ */
+export async function moveSocialLink(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("social-move", async () => {
+    const session = await guardAction("settings.manage", form);
+    const id = Number(form.get("id"));
+    const direction = field(form, "direction", 8) === "up" ? -1 : 1;
+
+    const rows = await orderedSocial();
+    const index = rows.findIndex((row) => row.id === id);
+    if (index < 0) return fail("That link no longer exists.");
+
+    const target = index + direction;
+    if (target < 0 || target >= rows.length) {
+      // A stale page can ask to move the first row up. Nothing to do, and
+      // nothing wrong either.
+      return ok();
+    }
+
+    const ids = rows.map((row) => row.id);
+    [ids[index], ids[target]] = [ids[target]!, ids[index]!];
+    await renumberSocial(ids);
+
+    await logActivity(session, {
+      action: "social.reordered",
+      entityType: "social",
+      entityId: id,
+      summary: `Moved the ${socialLabel(rows[index]!.platform)} social link ${direction < 0 ? "up" : "down"}`,
+      metadata: { order: ids },
+    });
+    refreshAll();
+    return ok("Order saved.");
   });
 }
 

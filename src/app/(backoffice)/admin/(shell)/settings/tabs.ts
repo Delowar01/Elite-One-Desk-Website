@@ -9,7 +9,7 @@ export const SETTINGS_TABS = [
   { key: "brand", label: "Brand" },
   { key: "contact", label: "Contact" },
   { key: "whatsapp", label: "WhatsApp" },
-  { key: "social", label: "Social links" },
+  { key: "social", label: "Social Media" },
   { key: "disclaimers", label: "Disclaimers" },
   { key: "features", label: "Features" },
   { key: "maintenance", label: "Maintenance" },

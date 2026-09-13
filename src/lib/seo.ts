@@ -8,6 +8,7 @@ import { DEFAULT_LOCALE, localeHref, pick } from "@/lib/i18n/config";
 import { getMediaMap, getSocialLinks } from "@/lib/queries/site";
 import { getSeo } from "@/lib/queries/content";
 import { getSettings } from "@/lib/settings";
+import { isGenericLink } from "@/lib/social";
 import { mediaSrc } from "@/lib/media/url";
 import { toPlainText } from "@/lib/cms/sanitize";
 
@@ -118,13 +119,30 @@ export async function organizationJsonLd(locale: Locale) {
   const [settings, social] = await Promise.all([getSettings(), getSocialLinks()]);
   const { contact, brand } = settings;
   /**
-   * The profiles an admin has published, which is the one list that can say
-   * "these accounts are us". It was declared here and never filled, so every
-   * social account the business had was invisible to a search engine while
-   * being visible in the footer. Both loaders are cached and tagged, so this
-   * costs the homepage nothing it was not already paying.
+   * The accounts an admin has published.
+   *
+   * `sameAs` states that these addresses refer to the same entity as this
+   * Organization. It is an identity claim, not a verification — nothing here
+   * proves ownership, and a comment that said "verified profile" was promising
+   * something the markup does not deliver. It was also declared and never
+   * filled, guarded by `if (sameAs.length)`, so every account the business
+   * published was in the footer and invisible to a search engine.
+   *
+   * `getSocialLinks` returns published rows only. Blank addresses are dropped
+   * and duplicates collapsed, so the list is deterministic rather than a
+   * transcription of whatever the table happens to hold. `Other / Website` is
+   * left out on purpose: that row is for an address that is ours but is not an
+   * account — a booking portal, a group site — and listing it would assert an
+   * identity equivalence we cannot stand behind.
    */
-  const sameAs = social.map((row) => row.url);
+  const sameAs = [
+    ...new Set(
+      social
+        .filter((row) => !isGenericLink(row.platform))
+        .map((row) => row.url.trim())
+        .filter(Boolean),
+    ),
+  ];
 
   const data: Record<string, unknown> = {
     "@context": "https://schema.org",
