@@ -7,11 +7,12 @@
 # definitions against the schema the candidate release produces.
 #
 # This is the deployed RUNTIME, not the newest commit that has been used for
-# anything. 93ec735 added the TGA cutover repair and the service restructure was
-# run from an isolated 93ec735 worktree, but the web runtime was never switched
-# to it: production has served aa1dbf5 since the Phase A deployment. Recording
-# the commit that merely ran a script would check compatibility against code
-# nobody is serving.
+# anything. Production served aa1dbf5 from the Phase A deployment until 5999109
+# was deployed and independently verified; 93ec735 was never a runtime at all —
+# it added the TGA cutover repair and the service restructure was run from an
+# isolated 93ec735 worktree, but the web runtime was never switched to it.
+# Recording a commit that merely ran a script would check compatibility against
+# code nobody is serving.
 #
 # Update it as part of each release, after that release's runtime is live. Git
 # cannot infer it: `HEAD~1` is the previous commit, not the previous release, a
@@ -23,4 +24,4 @@
 #
 # First non-comment line is the commit. Override for a one-off run with
 # COMPAT_REF=<ref> npm test.
-aa1dbf5927e4c0e686196fafb24c3c633b777222
+5999109616f1c161e71eab4af122348306d26ee7
