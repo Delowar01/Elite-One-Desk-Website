@@ -34,7 +34,7 @@ import { taxonomyState } from "./seed/state";
  *  1. ATOMIC. Every statement runs in one transaction with every assertion
  *     inside it. A failure anywhere leaves production byte-identical.
  *  2. EXCLUSIVE. A transaction-scoped advisory lock stops two of these running
- *     at once, and SHARE ROW EXCLUSIVE on the seven tables it mutates stops an
+ *     at once, and SHARE ROW EXCLUSIVE on the eight tables it mutates stops an
  *     admin saving into the middle of it. Plain SELECT is unaffected, so the
  *     public site keeps serving and enquiries keep being written — the enquiry
  *     tables are not in the lock set.
@@ -362,9 +362,9 @@ const FAQ_REWRITE = {
  * the twelve duplicates being deleted. `faqs.service_id` cascades, so without
  * this the FAQ would go with it, silently.
  *
- * Only the seven whose replacement is another service are listed. The other
- * five moved to a package or to the Egypt destination, where a service-scoped
- * FAQ has nothing to attach to — the cutover stops rather than guess, and says
+ * Only the six whose replacement is another service are listed. The other six
+ * moved to a package or to the Egypt destination, where a service-scoped FAQ
+ * has nothing to attach to — the cutover stops rather than guess, and says
  * which ones and why.
  */
 const FAQ_SERVICE_MOVES: Record<string, string> = {
@@ -375,6 +375,189 @@ const FAQ_SERVICE_MOVES: Record<string, string> = {
   "family-tour-package": "family-tour-packages",
   "customized-egypt-tour-package": "customized-travel-itinerary",
 };
+
+/* -------------------------------------------------------------------------- */
+/* The menu as it was seeded                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The navigation the pre-restructure seed wrote, frozen.
+ *
+ * The cutover replaces the menu wholesale, which is only safe if the menu is
+ * still the one nobody has touched. Counting rows does not establish that: a
+ * renamed label, a moved link, a reordered item, a hidden one, or a row deleted
+ * and replaced all leave the count at twenty-four. So the whole shape is
+ * compared instead, and a single difference stops the run.
+ */
+const LEGACY_NAVIGATION: Array<{
+  menu: string;
+  label: { en: string; ar: string };
+  href: string;
+  children?: Array<{ label: { en: string; ar: string }; href: string }>;
+}> = [
+  { menu: "header", label: { en: "Home", ar: "الرئيسية" }, href: "/" },
+  {
+    menu: "header",
+    label: { en: "Travel & Tourism", ar: "السفر والسياحة" },
+    href: "/services/travel-tourism",
+  },
+  {
+    menu: "header",
+    label: { en: "Business", ar: "الأعمال" },
+    href: "/services/business-setup",
+    children: [
+      { label: { en: "Business Setup", ar: "تأسيس الأعمال" }, href: "/services/business-setup" },
+      { label: { en: "Company Formation", ar: "تأسيس الشركات" }, href: "/services/company-formation" },
+    ],
+  },
+  {
+    menu: "header",
+    label: { en: "Government Services", ar: "الخدمات الحكومية" },
+    href: "/services/general-services",
+    children: [
+      { label: { en: "General Services", ar: "الخدمات العامة" }, href: "/services/general-services" },
+      { label: { en: "License Renewal", ar: "تجديد التراخيص" }, href: "/services/license-renewal" },
+      {
+        label: { en: "Government Relations", ar: "العلاقات الحكومية" },
+        href: "/services/government-relations",
+      },
+    ],
+  },
+  { menu: "header", label: { en: "About Us", ar: "من نحن" }, href: "/about" },
+  { menu: "header", label: { en: "Contact", ar: "تواصل" }, href: "/contact" },
+
+  {
+    menu: "footer_services",
+    label: { en: "Travel & Tourism", ar: "السفر والسياحة" },
+    href: "/services/travel-tourism",
+  },
+  {
+    menu: "footer_services",
+    label: { en: "Business Setup", ar: "تأسيس الأعمال" },
+    href: "/services/business-setup",
+  },
+  {
+    menu: "footer_services",
+    label: { en: "Company Formation", ar: "تأسيس الشركات" },
+    href: "/services/company-formation",
+  },
+  {
+    menu: "footer_services",
+    label: { en: "General Services", ar: "الخدمات العامة" },
+    href: "/services/general-services",
+  },
+  {
+    menu: "footer_services",
+    label: { en: "License Renewal", ar: "تجديد التراخيص" },
+    href: "/services/license-renewal",
+  },
+  {
+    menu: "footer_services",
+    label: { en: "Government Relations", ar: "العلاقات الحكومية" },
+    href: "/services/government-relations",
+  },
+
+  { menu: "footer_company", label: { en: "About Us", ar: "من نحن" }, href: "/about" },
+  { menu: "footer_company", label: { en: "All Services", ar: "جميع الخدمات" }, href: "/services" },
+  { menu: "footer_company", label: { en: "Travel Packages", ar: "البرامج السياحية" }, href: "/packages" },
+  { menu: "footer_company", label: { en: "Contact", ar: "تواصل" }, href: "/contact" },
+
+  { menu: "footer_legal", label: { en: "Privacy Policy", ar: "سياسة الخصوصية" }, href: "/privacy" },
+  { menu: "footer_legal", label: { en: "Terms", ar: "الشروط" }, href: "/terms" },
+  { menu: "footer_legal", label: { en: "Disclaimer", ar: "إخلاء المسؤولية" }, href: "/disclaimer" },
+];
+
+/** A navigation row, reduced to the fields an editor can change. */
+type NavNode = {
+  /** Opaque: a database id for a stored row, a synthetic one for the seed. */
+  key: string;
+  parent: string | null;
+  menu: string;
+  labelEn: string;
+  labelAr: string;
+  href: string;
+  sortOrder: number;
+  isPublished: boolean;
+  isHighlighted: boolean;
+};
+
+/** The rows the legacy seed wrote, with the numbering it gave them. */
+function legacyNavigationNodes(): NavNode[] {
+  const nodes: NavNode[] = [];
+  let order = 0;
+  LEGACY_NAVIGATION.forEach((item, index) => {
+    const key = `seed-${index}`;
+    nodes.push({
+      key,
+      parent: null,
+      menu: item.menu,
+      labelEn: item.label.en,
+      labelAr: item.label.ar,
+      href: item.href,
+      sortOrder: order++,
+      isPublished: true,
+      isHighlighted: false,
+    });
+    (item.children ?? []).forEach((child, childIndex) => {
+      nodes.push({
+        key: `${key}-${childIndex}`,
+        parent: key,
+        menu: item.menu,
+        labelEn: child.label.en,
+        labelAr: child.label.ar,
+        href: child.href,
+        sortOrder: order++,
+        isPublished: true,
+        isHighlighted: false,
+      });
+    });
+  });
+  return nodes;
+}
+
+/**
+ * The menu as a list of lines, in an order the database cannot influence.
+ *
+ * Ids and timestamps are not compared — they differ between any two databases
+ * and mean nothing to an editor. Everything an editor *can* change is: the
+ * menu, the hierarchy, both labels, the address, the position, and whether the
+ * item is published or highlighted. Children are nested under their parent by
+ * walking the tree rather than by joining on a parent id, so a parent id being
+ * 41 here and 7 there is not a difference.
+ *
+ * A row whose parent is missing is walked at the root instead of being dropped:
+ * a menu that has lost a parent is a customised menu, and it has to show up.
+ */
+function navigationSignature(nodes: NavNode[]): string[] {
+  const present = new Set(nodes.map((node) => node.key));
+  const children = new Map<string | null, NavNode[]>();
+  for (const node of nodes) {
+    const parent = node.parent && present.has(node.parent) ? node.parent : null;
+    const list = children.get(parent) ?? [];
+    list.push(node);
+    children.set(parent, list);
+  }
+
+  const order = (a: NavNode, b: NavNode) =>
+    a.menu.localeCompare(b.menu) ||
+    a.sortOrder - b.sortOrder ||
+    a.labelEn.localeCompare(b.labelEn) ||
+    a.href.localeCompare(b.href);
+
+  const lines: string[] = [];
+  const walk = (parent: string | null, depth: number) => {
+    for (const node of (children.get(parent) ?? []).slice().sort(order)) {
+      lines.push(
+        `${"  ".repeat(depth)}${"↳ ".repeat(depth)}${node.menu} · ${node.labelEn} / ${node.labelAr}` +
+          ` → ${node.href} · #${node.sortOrder}${node.isPublished ? "" : " · unpublished"}` +
+          `${node.isHighlighted ? " · highlighted" : ""}`,
+      );
+      walk(node.key, depth + 1);
+    }
+  };
+  walk(null, 0);
+  return lines;
+}
 
 /** Sorted-key JSON, so two equal values compare equal whatever their key order. */
 function canonical(value: unknown): string {
@@ -771,14 +954,59 @@ async function cutover(tx: Tx) {
 
   // --- 6. navigation -------------------------------------------------------
   // Replaced wholesale from the same constant the seed uses, so a restructured
-  // database and a freshly seeded one end up with an identical menu. Refusing
-  // to run when the menu has been customised is deliberate: silently discarding
-  // somebody's link would be worse than stopping.
-  const existingNav = await tx.select({ n: sql<number>`count(*)::int` }).from(navigationItems);
-  assert(
-    (existingNav[0]?.n ?? 0) === 24,
-    `expected the 24 seeded navigation rows, found ${existingNav[0]?.n ?? 0} — the menu looks customised, so it is not being replaced`,
+  // database and a freshly seeded one end up with an identical menu.
+  //
+  // Wholesale replacement is only defensible if the menu is provably still the
+  // one the seed wrote, so that is what is checked — the whole normalised shape,
+  // not the row count. A renamed label, a moved link, a reordered item, one
+  // hidden, one highlighted, or a row deleted and replaced by another all keep
+  // the count at twenty-four, and every one of them is somebody's work.
+  const storedNav = await tx
+    .select({
+      id: navigationItems.id,
+      parentId: navigationItems.parentId,
+      menu: navigationItems.menu,
+      labelEn: navigationItems.labelEn,
+      labelAr: navigationItems.labelAr,
+      href: navigationItems.href,
+      sortOrder: navigationItems.sortOrder,
+      isPublished: navigationItems.isPublished,
+      isHighlighted: navigationItems.isHighlighted,
+    })
+    .from(navigationItems);
+
+  const found = navigationSignature(
+    storedNav.map((row) => ({
+      key: String(row.id),
+      parent: row.parentId === null ? null : String(row.parentId),
+      menu: row.menu,
+      labelEn: row.labelEn,
+      labelAr: row.labelAr,
+      href: row.href,
+      sortOrder: row.sortOrder,
+      isPublished: row.isPublished,
+      isHighlighted: row.isHighlighted,
+    })),
   );
+  const seeded = navigationSignature(legacyNavigationNodes());
+
+  if (found.join("\n") !== seeded.join("\n")) {
+    const inDatabase = found.filter((line) => !seeded.includes(line));
+    const inSeed = seeded.filter((line) => !found.includes(line));
+    log();
+    log("  Navigation has been customised since the original seed. The restructure will");
+    log("  not replace editor-owned navigation. Review the differences before continuing.");
+    log();
+    log(`    rows: ${found.length} stored, ${seeded.length} in the original seed`);
+    for (const line of inSeed.slice(0, 12)) log(`    − ${line.trim()}`);
+    for (const line of inDatabase.slice(0, 12)) log(`    + ${line.trim()}`);
+    if (inSeed.length + inDatabase.length > 24) log("    … and more");
+    log();
+    log("  Either restore the menu to its seeded state, or update NAVIGATION in");
+    log("  scripts/seed/content.ts to carry those changes forward and re-run.");
+    throw new Error("navigation has been customised — it is not being replaced");
+  }
+
   await tx.delete(navigationItems);
 
   let order = 0;

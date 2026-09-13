@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { after, describe, test } from "node:test";
 
 import { REPO_ROOT, dbUrl, scriptEnv } from "./helpers/env";
-import { giveLegacy } from "./helpers/fixtures";
+import { giveFresh, giveLegacy } from "./helpers/fixtures";
 import { connect, dropDatabase, dumpData, plain, type Sql } from "./helpers/pg";
 import { restructure } from "./helpers/run";
 
@@ -385,20 +385,137 @@ describe("atomicity", () => {
     assert.ok((await slugs(sql, "service_categories")).includes("general-services"));
   });
 
-  test("a customised menu stops the run instead of being discarded", async () => {
-    const name = legacy("rollback_nav");
-    const sql = open(name);
+});
 
-    await sql`
-      insert into navigation_items (menu, label_en, label_ar, href, sort_order)
-      values ('header', 'Careers', 'وظائف', '/careers', 99)
-    `;
+/**
+ * The cutover replaces the menu wholesale, so it first has to prove the menu is
+ * still the one the seed wrote. A row count cannot prove that: every case below
+ * except the first leaves the count at twenty-four, and every one of them is
+ * somebody's work.
+ */
+describe("navigation is only replaced if nobody has touched it", () => {
+  /** Each case is one edit an editor could plausibly have made in the panel. */
+  const CASES: Array<{ name: string; edit: string; keepsCount: boolean; shows: RegExp }> = [
+    {
+      name: "an English label renamed",
+      edit: "update navigation_items set label_en = 'Welcome' where menu = 'header' and label_en = 'Home'",
+      keepsCount: true,
+      shows: /Welcome/,
+    },
+    {
+      name: "an Arabic label rewritten",
+      edit: "update navigation_items set label_ar = 'ترحيب' where menu = 'header' and label_en = 'Home'",
+      keepsCount: true,
+      shows: /ترحيب/,
+    },
+    {
+      name: "an address changed",
+      edit: "update navigation_items set href = '/home' where menu = 'header' and label_en = 'Home'",
+      keepsCount: true,
+      shows: /→ \/home/,
+    },
+    {
+      name: "an item reordered",
+      edit: "update navigation_items set sort_order = 99 where menu = 'header' and label_en = 'Contact'",
+      keepsCount: true,
+      shows: /#99/,
+    },
+    {
+      name: "an item unpublished",
+      edit: "update navigation_items set is_published = false where menu = 'header' and label_en = 'About Us'",
+      keepsCount: true,
+      shows: /unpublished/,
+    },
+    {
+      name: "an item highlighted",
+      edit: "update navigation_items set is_highlighted = true where menu = 'header' and label_en = 'Contact'",
+      keepsCount: true,
+      shows: /highlighted/,
+    },
+    {
+      name: "a child promoted to the top level",
+      edit: "update navigation_items set parent_id = null where menu = 'header' and label_en = 'License Renewal'",
+      keepsCount: true,
+      shows: /License Renewal/,
+    },
+    {
+      name: "one item deleted and another put in its place",
+      edit:
+        "delete from navigation_items where menu = 'footer_legal' and label_en = 'Terms'; " +
+        "insert into navigation_items (menu, label_en, label_ar, href, sort_order) " +
+        "values ('footer_legal', 'Cookies', 'ملفات تعريف', '/cookies', 22)",
+      keepsCount: true,
+      shows: /Cookies/,
+    },
+    {
+      name: "an extra item added",
+      edit:
+        "insert into navigation_items (menu, label_en, label_ar, href, sort_order) " +
+        "values ('header', 'Careers', 'وظائف', '/careers', 99)",
+      keepsCount: false,
+      shows: /Careers/,
+    },
+  ];
+
+  for (const item of CASES) {
+    test(`refuses, and changes nothing, when ${item.name}`, async () => {
+      const name = legacy("nav");
+      const sql = open(name);
+      await sql.unsafe(item.edit);
+
+      const [{ n }] = await sql<{ n: number }[]>`
+        select count(*)::int as n from navigation_items
+      `;
+      assert.equal(
+        n,
+        item.keepsCount ? 24 : 25,
+        item.keepsCount ? "this edit must not change the row count, or it proves nothing" : "",
+      );
+
+      const before = dumpData(name);
+      const result = restructure(name);
+
+      assert.equal(result.code, 1, result.output);
+      assert.match(result.output, /Navigation has been customised since the original seed/);
+      assert.match(result.output, /will\s+not replace editor-owned navigation/);
+      assert.match(result.output, item.shows, "the report should name what differs");
+      assert.equal(dumpData(name), before, "the database must be byte-identical");
+    });
+  }
+
+  test("a dry run refuses just as firmly", async () => {
+    const name = legacy("nav_dry");
+    const sql = open(name);
+    await sql`update navigation_items set label_en = 'Welcome' where menu = 'header' and label_en = 'Home'`;
     const before = dumpData(name);
 
-    const result = restructure(name);
-    assert.equal(result.code, 1);
-    assert.match(result.output, /the menu looks customised, so it is not being replaced/);
+    const result = restructure(name, ["--dry-run"]);
+    assert.equal(result.code, 1, result.output);
+    assert.match(result.output, /Navigation has been customised since the original seed/);
     assert.equal(dumpData(name), before);
+  });
+
+  test("an untouched menu is replaced, and matches a fresh install exactly", async () => {
+    const cutoverName = legacy("nav_clean");
+    const cutover = open(cutoverName);
+
+    const result = restructure(cutoverName);
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /navigation rewritten \(25 rows\)/);
+    assert.ok(!/customised/.test(result.output), result.output);
+
+    const freshName = giveFresh("nav_fresh");
+    created.push(freshName);
+    const fresh = open(freshName);
+
+    const menu = (sql: Sql) => sql`
+      select n.menu, coalesce(p.label_en, '') as parent, n.label_en, n.label_ar, n.href,
+             n.sort_order, n.is_published, n.is_highlighted
+        from navigation_items n
+        left join navigation_items p on p.id = n.parent_id
+       order by n.menu, parent, n.sort_order, n.label_en
+    `;
+    assert.deepEqual(plain(await menu(cutover)), plain(await menu(fresh)));
   });
 });
 
