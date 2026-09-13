@@ -58,6 +58,18 @@ const ADVISORY_LOCK_KEY = 728_104_2026;
  */
 const PROMOTED_ORDER = 9_000;
 
+/**
+ * The mirror of `PROMOTED_ORDER`, for a service being re-filed into a category
+ * it should already have been in: low enough to sit at the head of its
+ * subcategory block whatever numbering it arrives carrying. Step 8b renumbers
+ * it away, exactly as it does the promotions.
+ *
+ * A moved service has to be given a position — the one it brings belongs to the
+ * category it is leaving and means nothing in the one it is joining. The head of
+ * the block is where the target catalogue lists it.
+ */
+const REFILED_ORDER = -1_000;
+
 const log = (line = "") => console.log(line);
 const step = (line: string) => console.log(`· ${line}`);
 
@@ -834,11 +846,33 @@ async function cutover(tx: Tx) {
   const businessId = await idOfCategory(tx, "business-setup");
   const companyId = await idOfCategory(tx, "company-formation");
   const generalId = await idOfCategory(tx, "general-services");
+  const governmentId = await idOfCategory(tx, "government-relations");
   const travelHolidayId = await idOfSubcategory(tx, "travel-holiday");
   const egyptToursId = await idOfSubcategory(tx, "egypt-tours");
   const companySubId = await idOfSubcategory(tx, "company-formation-registration");
+  const tgaSubId = await idOfSubcategory(tx, "tga-services");
   assert(travelId && businessId && companyId && generalId, "a legacy category is missing");
+  assert(governmentId, "the government-relations category is missing");
   assert(travelHolidayId && egyptToursId && companySubId, "a legacy subcategory is missing");
+  assert(tgaSubId, "the tga-services subcategory is missing");
+
+  // The repair in step 3b re-files a service into the category its own
+  // subcategory belongs to, so that relationship has to be the expected one
+  // first. A `tga-services` sitting under some other category is a different
+  // problem, and not one to resolve by guessing.
+  const tgaSubs = await tx
+    .select({ id: serviceSubcategories.id, categoryId: serviceSubcategories.categoryId })
+    .from(serviceSubcategories)
+    .where(eq(serviceSubcategories.slug, "tga-services"));
+  assert(
+    tgaSubs.length === 1,
+    `expected exactly one tga-services subcategory, found ${tgaSubs.length}`,
+  );
+  assert(
+    tgaSubs[0]!.categoryId === governmentId,
+    "the tga-services subcategory does not belong to government-relations — " +
+      "that is not an inconsistency this script repairs automatically",
+  );
 
   // --- 2. the Egypt destination -------------------------------------------
   const [destination] = await tx
@@ -892,6 +926,68 @@ async function cutover(tx: Tx) {
     .update(services)
     .set({ isFeatured: true, updatedAt: new Date() })
     .where(and(eq(services.slug, "customized-travel-itinerary"), eq(services.categoryId, travelId)));
+
+  // --- 3b. one known legacy inconsistency ----------------------------------
+  // Production holds TGA License Consultation under Travel & Tourism while its
+  // own subcategory, tga-services, belongs to Government Relations. That is why
+  // the live counts read 39/14 where the catalogue says 38/15, and it is why the
+  // "Travel should hold 26 services" assertion fired on the first dry run — it
+  // was right, and the data was wrong.
+  //
+  // Only that one service, and only its category. Everything else about the row
+  // — its id, slug, subcategory, content, image, featured and published flags,
+  // and every FAQ or enquiry pointing at it — is left exactly as it is. The
+  // position is the one thing that cannot be carried over: the number it holds
+  // belongs to the category it is leaving.
+  //
+  // Two states are acceptable, and only two. Anything else stops the run rather
+  // than overwrite a classification somebody chose.
+  const tgaService = await tx
+    .select({
+      id: services.id,
+      categoryId: services.categoryId,
+      subcategoryId: services.subcategoryId,
+    })
+    .from(services)
+    .where(eq(services.slug, "tga-license-consultation"));
+
+  assert(
+    tgaService.length === 1,
+    `expected exactly one tga-license-consultation service, found ${tgaService.length}`,
+  );
+  const tga = tgaService[0]!;
+
+  if (tga.categoryId === governmentId && tga.subcategoryId === tgaSubId) {
+    // Already where the catalogue puts it. Nothing to do, and nothing to say.
+  } else if (tga.categoryId === travelId && tga.subcategoryId === tgaSubId) {
+    await tx
+      .update(services)
+      .set({ categoryId: governmentId, sortOrder: REFILED_ORDER, updatedAt: new Date() })
+      .where(eq(services.id, tga.id));
+    step("TGA License Consultation moved from Travel to Government Relations");
+  } else {
+    const [foundCategory] = await tx
+      .select({ slug: serviceCategories.slug })
+      .from(serviceCategories)
+      .where(eq(serviceCategories.id, tga.categoryId))
+      .limit(1);
+    const foundSub = tga.subcategoryId
+      ? (
+          await tx
+            .select({ slug: serviceSubcategories.slug })
+            .from(serviceSubcategories)
+            .where(eq(serviceSubcategories.id, tga.subcategoryId))
+            .limit(1)
+        )[0]?.slug
+      : null;
+    assert(
+      false,
+      `tga-license-consultation is filed under ${foundCategory?.slug ?? "an unknown category"} / ` +
+        `${foundSub ?? "no subcategory"}. This script only knows how to re-file it from ` +
+        "travel-tourism/tga-services into government-relations, and will not guess at anything " +
+        "else — move it in the panel, then run this again.",
+    );
+  }
 
   // --- 4. Company Formation merges into Business Setup ---------------------
   // Order matters: both foreign keys cascade, so the category may only be

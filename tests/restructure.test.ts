@@ -393,6 +393,230 @@ describe("atomicity", () => {
  * except the first leaves the count at twenty-four, and every one of them is
  * somebody's work.
  */
+/**
+ * Production holds TGA License Consultation under Travel & Tourism while its own
+ * subcategory belongs to Government Relations — 39/14 where the catalogue says
+ * 38/15. The first production dry run aborted on "Travel should hold 26
+ * services", which was the assertion doing its job.
+ */
+describe("the TGA License Consultation classification", () => {
+  const CATEGORY_OF = `
+    select c.slug as category, coalesce(sc.slug, '-') as subcategory,
+           s.slug, s.sort_order, s.is_featured, s.is_published,
+           s.title_en, s.title_ar, s.intro_en, s.image_id
+      from services s
+      join service_categories c on c.id = s.category_id
+      left join service_subcategories sc on sc.id = s.subcategory_id
+     where s.slug = 'tga-license-consultation'
+  `;
+
+  const counts = async (sql: Sql) => {
+    const rows = await sql<{ slug: string; n: number }[]>`
+      select c.slug, count(*)::int as n
+        from services s join service_categories c on c.id = s.category_id
+       group by c.slug
+    `;
+    return Object.fromEntries(rows.map((row) => [row.slug, row.n]));
+  };
+
+  /** The whole catalogue, ordered — what "converges with a fresh seed" means. */
+  const catalogue = (sql: Sql) => sql`
+    select c.slug as category, coalesce(sc.slug, '-') as subcategory, s.slug,
+           s.sort_order, s.is_featured
+      from services s
+      join service_categories c on c.id = s.category_id
+      left join service_subcategories sc on sc.id = s.subcategory_id
+     order by c.sort_order, s.sort_order, s.id
+  `;
+
+  test("A · the pristine seed already has it under Government, and nothing moves it", async () => {
+    const name = legacy("tga_pristine");
+    const sql = open(name);
+
+    const [before] = await sql.unsafe(CATEGORY_OF);
+    assert.equal(before!.category, "government-relations");
+    assert.equal(before!.subcategory, "tga-services");
+    assert.deepEqual(await counts(sql), {
+      "travel-tourism": 38,
+      "business-setup": 9,
+      "company-formation": 5,
+      "general-services": 13,
+      "license-renewal": 6,
+      "government-relations": 15,
+    });
+
+    const result = restructure(name);
+    assert.equal(result.code, 0, result.output);
+    assert.ok(
+      !/TGA License Consultation moved/.test(result.output),
+      "there was nothing to move, so it should not say it moved anything",
+    );
+
+    const freshName = giveFresh("tga_pristine_fresh");
+    created.push(freshName);
+    const fresh = open(freshName);
+    assert.deepEqual(plain(await catalogue(sql)), plain(await catalogue(fresh)));
+  });
+
+  test("B · the production shape restructures to 26/15 and converges", async () => {
+    const name = legacy("tga_prod");
+    const sql = open(name);
+
+    const [original] = await sql.unsafe(CATEGORY_OF);
+    // Exactly the mutation the production evidence describes: the category
+    // only, with the subcategory left where it is.
+    await sql`
+      update services
+         set category_id = (select id from service_categories where slug = 'travel-tourism')
+       where slug = 'tga-license-consultation'
+    `;
+
+    const [{ total }] = await sql<{ total: number }[]>`select count(*)::int as total from services`;
+    assert.equal(total, 86);
+    const before = await counts(sql);
+    assert.equal(before["travel-tourism"], 39, "the production anomaly");
+    assert.equal(before["government-relations"], 14, "the production anomaly");
+
+    const result = restructure(name);
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /TGA License Consultation moved from Travel to Government Relations/);
+
+    const after = await counts(sql);
+    assert.deepEqual(after, {
+      "travel-tourism": 26,
+      "business-setup": 14,
+      "iqama-services": 13,
+      "license-renewal": 6,
+      "government-relations": 15,
+    });
+    const [{ total: finalTotal }] = await sql<{ total: number }[]>`
+      select count(*)::int as total from services
+    `;
+    assert.equal(finalTotal, 74);
+
+    const rows = await sql.unsafe(CATEGORY_OF);
+    assert.equal(rows.length, 1, "the service must still exist exactly once");
+    const moved = rows[0]!;
+    assert.equal(moved.category, "government-relations");
+    assert.equal(moved.subcategory, "tga-services");
+    assert.equal(moved.slug, "tga-license-consultation");
+
+    // Everything but its position is the row it always was.
+    for (const field of ["title_en", "title_ar", "intro_en", "image_id", "is_featured", "is_published"]) {
+      assert.deepEqual(moved[field], original![field], `${field} should be untouched`);
+    }
+
+    const freshName = giveFresh("tga_prod_fresh");
+    created.push(freshName);
+    const fresh = open(freshName);
+    assert.deepEqual(plain(await catalogue(sql)), plain(await catalogue(fresh)));
+  });
+
+  test("B2 · the same, carrying the position it had in Travel", async () => {
+    // Closer to production, where the row has been in Travel long enough to
+    // hold a Travel-shaped sort_order. The number it arrives with must not
+    // decide where it lands in its new category.
+    const name = legacy("tga_prod_order");
+    const sql = open(name);
+    await sql`
+      update services
+         set category_id = (select id from service_categories where slug = 'travel-tourism'),
+             sort_order = 38
+       where slug = 'tga-license-consultation'
+    `;
+
+    const result = restructure(name);
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /TGA License Consultation moved/);
+
+    const freshName = giveFresh("tga_prod_order_fresh");
+    created.push(freshName);
+    const fresh = open(freshName);
+    assert.deepEqual(plain(await catalogue(sql)), plain(await catalogue(fresh)));
+
+    // And specifically: first inside the TGA block, where the catalogue lists it.
+    const block = await sql<{ slug: string }[]>`
+      select s.slug from services s
+        join service_subcategories sc on sc.id = s.subcategory_id
+       where sc.slug = 'tga-services' order by s.sort_order
+    `;
+    assert.equal(block[0]!.slug, "tga-license-consultation");
+  });
+
+  test("a dry run over the production shape rolls back byte-identically", async () => {
+    const name = legacy("tga_dry");
+    const sql = open(name);
+    await sql`
+      update services
+         set category_id = (select id from service_categories where slug = 'travel-tourism'),
+             sort_order = 38
+       where slug = 'tga-license-consultation'
+    `;
+    const before = dumpData(name);
+
+    const result = restructure(name, ["--dry-run"]);
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /travel-tourism\s+39/, "the report should show the anomaly");
+    assert.match(result.output, /government-relations\s+14/);
+    assert.match(result.output, /TGA License Consultation moved/);
+    assert.match(result.output, /all invariants hold/);
+    assert.match(result.output, /Rolled back\. Nothing was written\./);
+
+    assert.equal(dumpData(name), before);
+  });
+
+  test("any other classification stops the run instead of being overwritten", async () => {
+    const name = legacy("tga_unknown");
+    const sql = open(name);
+    // A third category — neither the one the catalogue names nor the one the
+    // production anomaly puts it in.
+    await sql`
+      update services
+         set category_id = (select id from service_categories where slug = 'license-renewal')
+       where slug = 'tga-license-consultation'
+    `;
+    const before = dumpData(name);
+
+    const result = restructure(name);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /tga-license-consultation is filed under license-renewal \/ tga-services/);
+    assert.match(result.output, /will not guess/);
+    assert.equal(dumpData(name), before, "the database must be byte-identical");
+  });
+
+  test("an unexpected subcategory stops it too", async () => {
+    const name = legacy("tga_unknown_sub");
+    const sql = open(name);
+    await sql`
+      update services
+         set subcategory_id = (select id from service_subcategories where slug = 'premium-residency')
+       where slug = 'tga-license-consultation'
+    `;
+    const before = dumpData(name);
+
+    const result = restructure(name);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /filed under government-relations \/ premium-residency/);
+    assert.equal(dumpData(name), before);
+  });
+
+  test("a tga-services subcategory under the wrong category is refused, not repaired", async () => {
+    const name = legacy("tga_sub_moved");
+    const sql = open(name);
+    await sql`
+      update service_subcategories
+         set category_id = (select id from service_categories where slug = 'travel-tourism')
+       where slug = 'tga-services'
+    `;
+    const before = dumpData(name);
+
+    const result = restructure(name);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /tga-services subcategory does not belong to government-relations/);
+    assert.equal(dumpData(name), before);
+  });
+});
+
 describe("navigation is only replaced if nobody has touched it", () => {
   /** Each case is one edit an editor could plausibly have made in the panel. */
   const CASES: Array<{ name: string; edit: string; keepsCount: boolean; shows: RegExp }> = [
