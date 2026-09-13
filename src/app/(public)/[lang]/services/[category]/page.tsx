@@ -7,6 +7,7 @@ import { JsonLd } from "@/components/site/json-ld";
 import { MediaImage } from "@/components/site/media-image";
 import { Reveal } from "@/components/site/reveal";
 import { SectionHeading } from "@/components/site/section-heading";
+import { ServiceCardGrid } from "@/components/site/service-card";
 import { Icon } from "@/components/ui/icon";
 import { isLocale, localeHref, pick } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n/dictionary";
@@ -15,7 +16,6 @@ import { getMediaMap } from "@/lib/queries/site";
 import { breadcrumbJsonLd, buildMetadata, faqJsonLd } from "@/lib/seo";
 import { getSettings, whatsappLink } from "@/lib/settings";
 import { categoryMove } from "@/lib/taxonomy-moves";
-import { toPlainText } from "@/lib/cms/sanitize";
 
 /**
  * The one category that fronts a package catalogue. A constant rather than a
@@ -175,22 +175,31 @@ export default async function CategoryPage({ params }: Params) {
         <div className="shell shell-wide">
           <SectionHeading eyebrow={dict.service.inThisCategory} title={dict.common.services} />
 
-          <div className="mt-10 space-y-12">
+          <div className="mt-10 space-y-14">
             {grouped.map((group) => (
               // The subcategory slug is the anchor the header dropdown points
               // at, so a menu entry can land on a group rather than the top of
               // a long page. scroll-padding-top on <html> keeps it clear of the
               // fixed header.
               <div key={group.sub.id} id={group.sub.slug} className="scroll-mt-28">
-                <h3 className="mb-1.5 text-[length:var(--text-h3)]">
-                  {pick(lang, group.sub.titleEn, group.sub.titleAr)}
-                </h3>
-                {pick(lang, group.sub.summaryEn, group.sub.summaryAr) ? (
-                  <p className="mb-5 max-w-2xl text-small text-muted">
-                    {pick(lang, group.sub.summaryEn, group.sub.summaryAr)}
-                  </p>
-                ) : null}
-                <ServiceList rows={group.rows} lang={lang} categorySlug={slug} learnMore={dict.common.learnMore} />
+                <div className="mb-6">
+                  <h3 className="text-[length:var(--text-h3)]">
+                    {pick(lang, group.sub.titleEn, group.sub.titleAr)}
+                  </h3>
+                  {pick(lang, group.sub.summaryEn, group.sub.summaryAr) ? (
+                    <p className="mt-2 max-w-2xl text-small text-muted">
+                      {pick(lang, group.sub.summaryEn, group.sub.summaryAr)}
+                    </p>
+                  ) : null}
+                </div>
+                <ServiceCardGrid
+                  rows={group.rows}
+                  locale={lang}
+                  categorySlug={slug}
+                  categoryIcon={category.icon}
+                  media={media}
+                  learnMore={dict.common.learnMore}
+                />
               </div>
             ))}
 
@@ -230,7 +239,14 @@ export default async function CategoryPage({ params }: Params) {
             ) : null}
 
             {ungrouped.length ? (
-              <ServiceList rows={ungrouped} lang={lang} categorySlug={slug} learnMore={dict.common.learnMore} />
+              <ServiceCardGrid
+                rows={ungrouped}
+                locale={lang}
+                categorySlug={slug}
+                categoryIcon={category.icon}
+                media={media}
+                learnMore={dict.common.learnMore}
+              />
             ) : null}
           </div>
         </div>
@@ -265,49 +281,6 @@ export default async function CategoryPage({ params }: Params) {
         ]}
       />
     </>
-  );
-}
-
-function ServiceList({
-  rows,
-  lang,
-  categorySlug,
-  learnMore,
-}: {
-  rows: Array<{ id: number; slug: string; titleEn: string; titleAr: string; introEn: string; introAr: string }>;
-  lang: "en" | "ar";
-  categorySlug: string;
-  learnMore: string;
-}) {
-  return (
-    <ul className="grid gap-px overflow-hidden rounded-[var(--radius-md)] border border-line sm:grid-cols-2">
-      {rows.map((service, index) => (
-        <Reveal
-          as="li"
-          key={service.id}
-          delay={index * 40}
-          className="bg-[var(--surface)]"
-        >
-          <Link
-            href={localeHref(lang, `/services/${categorySlug}/${service.slug}`)}
-            className="group flex h-full flex-col p-5 transition-colors hover:bg-[var(--surface-raised)]"
-          >
-            <span className="font-display text-[0.98rem] font-semibold leading-snug text-strong">
-              {pick(lang, service.titleEn, service.titleAr)}
-            </span>
-            {pick(lang, service.introEn, service.introAr) ? (
-              <span className="mt-2 line-clamp-2 text-small text-muted">
-                {toPlainText(pick(lang, service.introEn, service.introAr), 150)}
-              </span>
-            ) : null}
-            <span className="mt-auto flex items-center gap-1.5 pt-4 text-[0.8rem] font-semibold text-muted transition-colors group-hover:text-[var(--color-peach)]">
-              {learnMore}
-              <Icon name="arrowRight" size={13} className="flip-rtl" />
-            </span>
-          </Link>
-        </Reveal>
-      ))}
-    </ul>
   );
 }
 
