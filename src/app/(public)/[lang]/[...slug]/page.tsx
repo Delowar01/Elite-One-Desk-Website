@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { SectionRenderer, buildBlockContext } from "@/components/site/section-renderer";
 import { PreviewBanner } from "@/components/site/preview-banner";
 import { isLocale } from "@/lib/i18n/config";
-import { getPage, getPublishedPages } from "@/lib/queries/content";
+import { getPage } from "@/lib/queries/content";
 import { resolvePageForRender } from "@/lib/preview";
 import { buildMetadata } from "@/lib/seo";
 
@@ -51,7 +51,17 @@ export default async function CmsPage({ params, searchParams }: Params) {
   );
 }
 
-export async function generateStaticParams() {
-  const pages = await getPublishedPages();
-  return pages.filter((p) => p.slug !== "home").map((p) => ({ slug: [p.slug] }));
-}
+/**
+ * No `generateStaticParams` here, deliberately.
+ *
+ * Every public route renders per request: the layout reads the CSP nonce from
+ * `headers()`, which opts the whole subtree out of prerendering. Enumerating
+ * paths from the database therefore produced a list nothing was ever built
+ * from — while making `next build` depend on the production schema. That is
+ * what broke the release adding `travel_packages.destination_id`: the build
+ * could not run until the column existed, and the column could not exist until
+ * the build had run. See DEPLOYMENT.md §9.2.
+ *
+ * If prerendering is ever wanted, the nonce has to be solved first, and the
+ * build's isolation from the database (deploy.sh step 7) reconsidered with it.
+ */

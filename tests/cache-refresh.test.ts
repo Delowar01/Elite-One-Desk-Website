@@ -110,13 +110,27 @@ test("B · the cutover alone changes nothing a visitor can see", async () => {
   );
 });
 
-test("C · restarting the application is not a refresh — the cache is on disk", async () => {
+test("C · restarting the application is not a refresh — it leaves a mixed site", async () => {
   await server.stop();
   server = await startServer(database, PORT, { reuse: true });
-  assert.deepEqual(
-    await snapshot(),
-    BEFORE,
-    "a restart re-reads the same on-disk cache, so it cannot be the cutover's last step",
+  const restarted = await snapshot();
+
+  // Not the refreshed site. That is the claim that matters, and it is the
+  // reason the cutover ends with a button rather than a `systemctl restart`.
+  assert.notDeepEqual(restarted, AFTER, "a restart must not be mistaken for a refresh");
+
+  // It is not the old site either, which is worse than either: some surfaces
+  // moved and some did not. The navigation is the one a visitor sees on every
+  // page, and it is still the old menu.
+  assert.equal(
+    restarted.menuOffersTourPackages,
+    false,
+    "the navigation is still the pre-cutover menu after a restart",
+  );
+  assert.equal(
+    restarted.servicesListsGeneral,
+    true,
+    "and still links to the category the cutover retired",
   );
 });
 
@@ -156,4 +170,20 @@ test("it is recorded in the activity log, like every other admin action", async 
   `;
   assert.ok(rows.length >= 1, "the refresh should be auditable");
   assert.match(rows[0]!.summary, /Refreshed every site cache/);
+});
+
+test("the sitemap followed the refresh too — it is read per request, not baked", async () => {
+  const page = await get(server.origin, "/sitemap.xml");
+  assert.equal(page.status, 200);
+  const site = /<loc>(https?:\/\/[^/]+)/.exec(page.html)?.[1] ?? "";
+  assert.ok(site, "the sitemap should contain absolute URLs");
+  assert.ok(
+    page.html.includes(`<loc>${site}/services/iqama-services</loc>`),
+    "the renamed category should be in the sitemap immediately after the refresh",
+  );
+  assert.ok(
+    !page.html.includes(`<loc>${site}/services/general-services</loc>`),
+    "and the retired one should be gone",
+  );
+  assert.ok(page.html.includes(`<loc>${site}/packages/egypt</loc>`), "as should the new destination");
 });

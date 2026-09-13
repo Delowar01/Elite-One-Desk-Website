@@ -14,10 +14,8 @@ import { getDictionary } from "@/lib/i18n/dictionary";
 import {
   getCatalog,
   getDestinationBySlug,
-  getDestinations,
   getPackageBySlug,
   getPackageCatalog,
-  getPackages,
 } from "@/lib/queries/catalog";
 import { getMediaMap } from "@/lib/queries/site";
 import { breadcrumbJsonLd, buildMetadata } from "@/lib/seo";
@@ -56,13 +54,6 @@ export async function generateMetadata({ params }: Params) {
     imageId: row.imageId,
     type: "article",
   });
-}
-
-export async function generateStaticParams() {
-  // Both halves of the shared namespace, so a destination page is prerendered
-  // on the same terms as a package page.
-  const [packages, destinations] = await Promise.all([getPackages(), getDestinations()]);
-  return [...destinations.map((d) => ({ slug: d.slug })), ...packages.map((p) => ({ slug: p.slug }))];
 }
 
 export default async function PackagePage({ params }: Params) {
@@ -217,3 +208,18 @@ export default async function PackagePage({ params }: Params) {
     </>
   );
 }
+
+/**
+ * No `generateStaticParams` here, deliberately.
+ *
+ * Every public route renders per request: the layout reads the CSP nonce from
+ * `headers()`, which opts the whole subtree out of prerendering. Enumerating
+ * paths from the database therefore produced a list nothing was ever built
+ * from — while making `next build` depend on the production schema. That is
+ * what broke the release adding `travel_packages.destination_id`: the build
+ * could not run until the column existed, and the column could not exist until
+ * the build had run. See DEPLOYMENT.md §9.2.
+ *
+ * If prerendering is ever wanted, the nonce has to be solved first, and the
+ * build's isolation from the database (deploy.sh step 7) reconsidered with it.
+ */

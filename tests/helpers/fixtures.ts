@@ -181,4 +181,10 @@ export function giveRestructured(label = "cutover"): string {
   return name;
 }
 
-export { LEGACY_SQL, FRESH_SQL, WORK };
+/** The checkout of `LEGACY_REF`, for tests that need to run the old release's code. */
+export function legacyTree(): string {
+  legacySql(); // builds the worktree if it is not there yet
+  return ensureLegacyTree();
+}
+
+export { LEGACY_SQL, FRESH_SQL, WORK, LEGACY_TREE };

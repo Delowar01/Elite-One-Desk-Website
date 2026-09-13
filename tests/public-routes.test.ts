@@ -16,6 +16,14 @@ import { get } from "./helpers/http";
 import { connect, dropDatabase, type Sql } from "./helpers/pg";
 import { startServer, type Server } from "./helpers/server";
 
+/**
+ * The sitemap writes absolute URLs from `NEXT_PUBLIC_SITE_URL`, which Next
+ * inlines at BUILD time — so it is the origin of whichever build is under test,
+ * not the port this server happens to be listening on. Read it back out of the
+ * document rather than assuming.
+ */
+const originOf = (xml: string) => /<loc>(https?:\/\/[^/]+)/.exec(xml)?.[1] ?? "";
+
 const LEGACY_PORT = 3411;
 const CUTOVER_PORT = 3412;
 const EMPTY_PORT = 3413;
@@ -531,5 +539,61 @@ describe("a published package under an unpublished destination", () => {
       assert.ok(egypt.html.includes(`href="/packages/${slug}"`), slug);
     }
     assert.ok(!egypt.html.includes('href="/packages/red-sea-sharm-el-sheikh"'));
+  });
+});
+
+/**
+ * The sitemap is generated per request now, not baked at build. These are the
+ * properties that had to survive that move.
+ */
+describe("the sitemap", () => {
+  test("answers, and lists the catalogue in both languages", async () => {
+    const page = await get(cutover.origin, "/sitemap.xml");
+    assert.equal(page.status, 200);
+    assert.match(page.html, /^<\?xml/);
+    const SITE = originOf(page.html);
+    assert.ok(SITE, "the sitemap should contain absolute URLs");
+
+    for (const url of [
+      "/services",
+      "/services/iqama-services",
+      "/services/travel-tourism/air-ticket-booking",
+      "/packages",
+      "/packages/egypt",
+      "/packages/cairo-and-giza-classic",
+      "/about",
+    ]) {
+      assert.ok(page.html.includes(`<loc>${SITE}${url}</loc>`), `${url} should be listed`);
+      assert.ok(page.html.includes(`<loc>${SITE}/ar${url}</loc>`), `/ar${url} should be listed`);
+    }
+
+    assert.match(page.html, /hreflang="ar"/, "the Arabic alternates should be attached");
+    assert.match(page.html, /hreflang="en"/);
+  });
+
+  test("excludes what it always excluded", async () => {
+    const page = await get(cutover.origin, "/sitemap.xml");
+    assert.ok(!page.html.includes("/search"), "search results are not content");
+    assert.ok(!page.html.includes("/admin"), "the admin is not content");
+    assert.ok(!page.html.includes("general-services"), "a retired category is gone, not listed");
+  });
+
+  test("a destination with no published packages is not listed", async () => {
+    const page = await get(emptyDestination.origin, "/sitemap.xml");
+    assert.equal(page.status, 200);
+    const SITE = originOf(page.html);
+    assert.ok(
+      !page.html.includes(`<loc>${SITE}/packages/egypt</loc>`),
+      "an empty destination has nothing to offer a crawler",
+    );
+    assert.ok(page.html.includes(`<loc>${SITE}/packages/cairo-and-giza-classic</loc>`));
+  });
+
+  test("before the cutover it lists the legacy catalogue, from the same build", async () => {
+    const page = await get(legacy.origin, "/sitemap.xml");
+    assert.equal(page.status, 200);
+    const SITE = originOf(page.html);
+    assert.ok(page.html.includes(`<loc>${SITE}/services/general-services</loc>`));
+    assert.ok(!page.html.includes(`<loc>${SITE}/services/iqama-services</loc>`));
   });
 });

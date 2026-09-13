@@ -57,11 +57,17 @@ directory lock.
 | `restructure.test.ts` | dry run writes nothing · the live run holds every invariant · `region` is never rewritten · a second run is a no-op · a late failure rolls everything back · four concurrent runs produce one cutover · enquiries and FAQs outlive the categories and services they were filed under · edited copy is reported rather than overwritten · a menu with any editor change — including nine that keep the row count at 24 — refuses the cutover |
 | `public-routes.test.ts` | 66 retired addresses, EN and AR, one 308 hop each to a page that answers 200 · before the cutover the same build serves them as pages instead · the four states `/packages` can be in · the copy that counts service groups, in both states and both languages · a published package under an unpublished destination |
 | `cache-refresh.test.ts` | the cutover alone changes nothing a visitor sees · a restart is not a refresh · pressing **Refresh caches** makes it live immediately |
+| `build-isolation.test.ts` | `next build` succeeds cold with PostgreSQL unreachable, contacts no database, prerenders nothing database-backed, and no catalogue route enumerates paths at build time |
+| `schema-compat.test.ts` | the previous release's table definitions still read the migrated schema · no migration drops, renames or narrows anything without an approval marker |
 | `admin-destinations.test.ts` | adding Nepal is data entry · the shared `/packages/<slug>` namespace is guarded from both sides · deleting a destination keeps its packages |
 
 ## Ports
 
-The server tests bind `3411`–`3414`, `3421` and `3431`. Each server runs from
+The server tests bind `3411`–`3414`, `3421` and `3431`. `build-isolation.test.ts`
+starts no server: it copies the working tree to `.data/test/build-isolation`,
+symlinks `node_modules` and builds there, so the real `.next` the other tests
+need is left alone — and so the build is genuinely cold, which is the only way
+this particular regression shows up. Each server runs from
 its own hard-linked copy of the build under `.data/test/servers/<port>`, because
 `unstable_cache` persists to disk beside the build and two servers sharing a
 directory would answer each other's questions.

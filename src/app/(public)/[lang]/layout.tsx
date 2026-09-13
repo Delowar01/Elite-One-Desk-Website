@@ -35,6 +35,12 @@ export const metadata: Metadata = {
   formatDetection: { telephone: false },
 };
 
+/**
+ * Locales only — no database. This is the one `generateStaticParams` the site
+ * keeps; the four that enumerated catalogue rows were removed, because nothing
+ * was ever built from them and they made the build depend on the production
+ * schema. See DEPLOYMENT.md §9.2.
+ */
 export function generateStaticParams() {
   return LOCALES.map((lang) => ({ lang }));
 }
@@ -49,7 +55,18 @@ export default async function PublicLayout({
   const { lang } = await params;
   if (!isLocale(lang)) notFound();
 
-  const [settings, headerList] = await Promise.all([getSettings(), headers()]);
+  // `headers()` first, on purpose, and not inside a `Promise.all` with the
+  // settings read.
+  //
+  // This call is what makes the whole public subtree render per request: during
+  // a build Next treats it as a dynamic-usage signal and abandons the render.
+  // Concurrently with `getSettings()`, the settings query had already been sent
+  // by the time that happened — so a build that needs no database still opened
+  // a connection to one and logged the failure when there was none to open. In
+  // sequence, the render is abandoned before the query is made. At request time
+  // `headers()` resolves immediately, so nothing is waiting on anything.
+  const headerList = await headers();
+  const settings = await getSettings();
   if (lang === "ar" && !settings.features.arabicEnabled) notFound();
 
   const dict = getDictionary(lang);

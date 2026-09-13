@@ -45,14 +45,6 @@ export async function generateMetadata({ params }: Params) {
   });
 }
 
-export async function generateStaticParams() {
-  const catalog = await getCatalog();
-  const bySlug = new Map(catalog.categories.map((c) => [c.id, c.slug]));
-  return catalog.services
-    .map((s) => ({ category: bySlug.get(s.categoryId), service: s.slug }))
-    .filter((p): p is { category: string; service: string } => Boolean(p.category));
-}
-
 /**
  * The service detail template (§12). Every block below disappears when its
  * field is empty, so a service with only an intro is a clean short page rather
@@ -370,3 +362,18 @@ export default async function ServicePage({ params }: Params) {
     </>
   );
 }
+
+/**
+ * No `generateStaticParams` here, deliberately.
+ *
+ * Every public route renders per request: the layout reads the CSP nonce from
+ * `headers()`, which opts the whole subtree out of prerendering. Enumerating
+ * paths from the database therefore produced a list nothing was ever built
+ * from — while making `next build` depend on the production schema. That is
+ * what broke the release adding `travel_packages.destination_id`: the build
+ * could not run until the column existed, and the column could not exist until
+ * the build had run. See DEPLOYMENT.md §9.2.
+ *
+ * If prerendering is ever wanted, the nonce has to be solved first, and the
+ * build's isolation from the database (deploy.sh step 7) reconsidered with it.
+ */

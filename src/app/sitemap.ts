@@ -6,6 +6,23 @@ import { getPackages, publishedDestinations, publishedSlugs } from "@/lib/querie
 import { getPublishedPages } from "@/lib/queries/content";
 import { getSettings } from "@/lib/settings";
 
+/**
+ * Generated per request, not at build.
+ *
+ * This is the only database-backed route Next would otherwise prerender, and
+ * prerendering it meant `next build` had to reach the production database — the
+ * dependency that deadlocked the release adding `package_destinations`. The
+ * build is now denied the database outright (deploy.sh step 7), so a sitemap
+ * built at build time could not be built at all.
+ *
+ * `force-dynamic` on this one metadata route and nowhere else. It is not a
+ * performance change worth worrying about: the loaders below are the same
+ * tagged `unstable_cache` functions the pages use, so a crawler's request costs
+ * a cache read, and an admin pressing Refresh caches makes the sitemap correct
+ * immediately instead of at the next hourly revalidation.
+ */
+export const dynamic = "force-dynamic";
+
 /** Search results and the admin never appear here; everything published does. */
 const SKIP = new Set(["search"]);
 

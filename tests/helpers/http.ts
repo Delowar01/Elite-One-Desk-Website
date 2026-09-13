@@ -29,8 +29,13 @@ export async function get(
     headers: options.cookie ? { cookie: options.cookie } : {},
     redirect: options.follow ? "follow" : "manual",
   });
-  const html = response.headers.get("content-type")?.includes("text/") ? await response.text() : "";
-  if (!html) await response.arrayBuffer().catch(() => undefined);
+  // Text, XML and JSON all come back as a string; anything else is drained so
+  // the connection is not left open. A sitemap is application/xml, which the
+  // earlier `text/` test missed entirely.
+  const type = response.headers.get("content-type") ?? "";
+  const readable = /text\/|xml|json/.test(type);
+  const html = readable ? await response.text() : "";
+  if (!readable) await response.arrayBuffer().catch(() => undefined);
   return { status: response.status, location: response.headers.get("location"), html };
 }
 

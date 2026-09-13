@@ -321,12 +321,15 @@ through cached loaders with a one-hour lifetime, and the cutover changed the
 database from outside the running application, so nothing told it to look
 again. Three things worth knowing about that cache:
 
-- **Restarting the service does not clear it.** It is written to
-  `.next/standalone/.next/cache`, on disk, and is read back on start. A
-  `systemctl restart` after the cutover leaves the site exactly as stale as it
-  was. (A *deployment* is different — step 13 swaps in a new runtime directory
-  with an empty cache — but the cutover happens after the deployment, against
-  a warm one.)
+- **Restarting the service is not a refresh, and is worse than not restarting.**
+  Part of the cache is written to `.next/standalone/.next/cache`, on disk, and
+  read back on start; part of it lives only in the process. So a `systemctl
+  restart` after the cutover leaves a *mixed* site: the catalogue routes pick up
+  the new data while the navigation and the index pages are still serving the
+  old, and a visitor can be shown a menu linking to a category the same site has
+  already retired. Press the button instead. (A *deployment* is different — step
+  13 swaps in a new runtime directory with an empty cache — but the cutover
+  happens after the deployment, against a warm one.)
 - **It is one process.** `instances: 1` in `deploy/ecosystem.config.js`, one
   `ExecStart` in the systemd unit. The refresh empties the only cache there is.
   If the site is ever run behind more than one instance, this step has to be
@@ -356,6 +359,121 @@ right, and a restore is a thing that already works.
 **Adding a destination afterwards.** Nepal, Turkey, Malaysia — none of them
 need any of this. Travel packages → Destinations → New, then file packages
 under it, then refresh the caches. No migration, no release.
+
+### 9.2 Why the build cannot reach the database
+
+**The invariant.** A release is fully compiled and verified while PostgreSQL is
+intentionally unavailable to the build. Only after that succeeds may production
+be backed up and migrated.
+
+`deploy.sh` hands `npm run build` an unreachable `DATABASE_URL`
+(`BUILD_DATABASE_URL`, `postgresql://invalid:invalid@127.0.0.1:1/invalid` —
+port 1 refuses instantly rather than hanging on a timeout). The assignment
+reaches that one command. The production `.env` in the build worktree is not
+edited, not read for this purpose and never printed, and the runtime the build
+produces uses it normally.
+
+**Why.** The release adding `travel_packages.destination_id` could not be built.
+The new code queried the column while collecting page data; the column did not
+exist, because the migration that adds it runs *after* a successful build. The
+build could not pass until production had migrated, and production could not
+migrate until the build had passed. Recovering meant applying the migration by
+hand — exactly the manual database edit a deployment must never depend on.
+
+Building against production was never intentional, and it bought nothing:
+
+- **Public pages are request-rendered.** `src/app/(public)/[lang]/layout.tsx`
+  reads the CSP nonce with `headers()`, which makes the whole subtree dynamic.
+  Before this change the build emitted one HTML file, `_not-found.html`. Nothing
+  public was ever prerendered.
+- **So database-backed `generateStaticParams` are intentionally absent.** Four of
+  them enumerated ~160 catalogue paths that nothing was built from. They are
+  gone. The locale-only one in the layout stays: it returns `LOCALES` and queries
+  nothing.
+- **`/sitemap.xml` is generated per request.** It was the one database-backed
+  route Next really did prerender. It now carries `export const dynamic =
+  "force-dynamic"` — that one metadata route and nowhere else — over the same
+  tagged loaders the pages use. It costs a cache read per crawl and is correct
+  the moment an editor publishes and the caches are refreshed, instead of at the
+  next hourly revalidation.
+- In the layout, `headers()` is awaited *before* `getSettings()` rather than
+  concurrently with it. Under `Promise.all` the settings query had already been
+  sent by the time the dynamic-usage signal aborted the render, so the build
+  still opened a connection. Sequentially, it does not.
+
+**Migrations still run after the build, deliberately.** The alternative —
+migrating first — means every release mutates production schema before anyone
+knows the release can build at all. The order stays: build, stamp, back up,
+migrate, seed, stage, stop, switch, start, health-check. There is no flag to
+reverse it.
+
+**If a future feature genuinely needs the database at build time: stop.** The
+deploy will fail at the build, before the backup, the migration, the seed or the
+runtime switch, with production untouched — which is the protection working, not
+a problem to route around. Do not point the build at production to make it pass.
+Bring it to review: either the feature does not need build-time data (it usually
+does not, because nothing is prerendered), or the release needs a deliberate
+two-step plan of its own, like the service restructure had.
+
+#### Migrations must be backward-compatible
+
+A migration runs at step 10 and the runtime switches at step 14. For the minutes
+in between, **the previous release is serving against the new schema**. So a
+routine migration may only expand:
+
+| Allowed in a routine release | Not allowed in the same release |
+|---|---|
+| add a table | drop a table the old runtime reads |
+| add a nullable column | drop a column the old runtime reads |
+| add a column with a safe default | rename a column the old runtime reads |
+| add an index | make an optional field required without a compatibility step |
+| add a constraint current data already satisfies | destructive type changes |
+| additive enum or data changes the old code tolerates | anything needing the new runtime live immediately |
+
+A contraction — dropping the column nobody reads any more — is legitimate, but it
+ships in a release *after* the one that stopped reading it. Two deploys, never
+one.
+
+Two automated guards, in `tests/schema-compat.test.ts`:
+
+1. The previous release's own table definitions are run against the migrated
+   schema. A dropped, renamed or retyped column fails here.
+2. New migration SQL is refused if it contains `DROP COLUMN`, `DROP TABLE`,
+   `RENAME`, `SET NOT NULL`, a type change or a dropped constraint or default,
+   unless the file carries `-- contract: approved <reason>`.
+
+Neither proves *semantic* compatibility: a column that still exists but now
+means something different, a default that changes behaviour, a backfill the old
+code mishandles. That stays engineering judgement and review.
+
+**The database is never rolled back automatically.** A failed release restores
+the previous *runtime*; the schema stays where the migration left it. That is
+why the backup at step 9 is mandatory and why the release stops if it fails.
+
+#### The seed is not a migration
+
+`npm run db:seed` also runs before the switch, so the same compatibility rule
+applies — and the seed is held to a stricter one, because it writes data rather
+than shape.
+
+- Inserts are safe when the old runtime can ignore them. Everything the seed adds
+  today is of that kind.
+- It is idempotent and does not overwrite: `onConflictDoNothing` for settings,
+  packages and destinations; explicit "already present — skipped" guards for
+  navigation, pages and FAQs; catalogue rows looked up by slug before insert;
+  imagery applied only `where image_id is null`. The taxonomy-state check makes
+  it decline the catalogue entirely on a pre-restructure database.
+- **One deliberate exception.** `seedRolesAndPermissions` uses
+  `onConflictDoUpdate` on `permissions.key`, rewriting `label` and `group_name`.
+  That is how a permission's wording is corrected — it is admin-facing text, not
+  content, no editor edits it, and both runtimes read permissions by `key`, so
+  neither is affected. Audited and left as it is. Any *new*
+  `onConflictDoUpdate` over existing production rows needs the same question
+  asked and answered in review.
+- Destructive deletes and renames are not appropriate in the seed at all.
+- One-off structural or content transformations belong in a deliberate script
+  with its own command and its own dry run — the pattern `scripts/restructure.ts`
+  sets.
 
 ### The release marker
 

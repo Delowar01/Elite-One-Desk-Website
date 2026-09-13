@@ -119,10 +119,18 @@ component — and the three can never drift apart.
 tag whitelist on the way in (`src/lib/cms/sanitize.ts`); everything else is
 escaped by React. Icons are keys into an in-code set. Section templates are ours.
 
-**Caching.** Pages render per request — the CSP nonce makes them dynamic — so the
-caching lives one level down: every data loader is cached and tagged, and
-publishing drops the tag. The result behaves like a static site that updates the
-instant someone presses Publish, with no build step in between.
+**Caching.** Pages render per request — the CSP nonce is read with `headers()`
+in the public layout, which makes the whole subtree dynamic — so the caching
+lives one level down: every data loader is cached and tagged, and publishing
+drops the tag. The result behaves like a static site that updates the instant
+someone presses Publish, with no build step in between.
+
+Because nothing public is prerendered, nothing enumerates catalogue rows at
+build time either: there are no database-backed `generateStaticParams`, and
+`/sitemap.xml` is generated per request. That is deliberate, and load-bearing —
+`next build` runs with PostgreSQL deliberately unreachable, so a release can be
+compiled and verified before production is backed up or migrated. See
+DEPLOYMENT.md §9.2.
 
 ## The admin panel
 

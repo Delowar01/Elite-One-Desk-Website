@@ -29,6 +29,9 @@
 #   2  fetch; compare the checkout AND the running runtime against the target
 #   3  build worktree at TARGET_SHA, with a copy of the production .env
 #   4  npm ci --include=dev, rebuild sharp, lint, typecheck, build
+#      (the build runs with PostgreSQL deliberately unreachable — see
+#       BUILD_DATABASE_URL; a release is fully compiled and verified before
+#       production may be backed up and migrated)
 #   5  stamp the built runtime with its release sha
 #   6  back up the database and uploads
 #   7  migrate and seed, from the verified build
@@ -134,6 +137,20 @@ PUBLIC_HEALTHCHECK_REQUIRED="${PUBLIC_HEALTHCHECK_REQUIRED:-1}"
 # died partway through.
 FORCE_REDEPLOY="${FORCE_REDEPLOY:-0}"
 
+# The database the BUILD is given. Deliberately unreachable: port 1 refuses
+# immediately, so a build that tries to query PostgreSQL fails in seconds rather
+# than hanging on a connect timeout.
+#
+# `next build` must not read production. It has no reason to — the CSP nonce
+# makes every public route render per request, so nothing is prerendered from
+# catalogue data — and when it did, a release could not be built until its own
+# migration had been applied, which could not happen until the build succeeded.
+# Overriding the variable for this one command turns "the build happens not to
+# need the database" into "the build cannot reach the database", which is a
+# property rather than a habit. Anything that reintroduces the dependency fails
+# here, before the backup, the migration, the seed or the runtime switch.
+BUILD_DATABASE_URL="${BUILD_DATABASE_URL:-postgresql://invalid:invalid@127.0.0.1:1/invalid}"
+
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 RUN_USER="$(id -un)"
 
@@ -172,6 +189,21 @@ as_app() {
     ( cd "${wd}" && "$@" )
   else
     sudo -u "${APP_USER}" -H bash -c "cd $(printf '%q' "${wd}") && $(printf '%q ' "$@")"
+  fi
+}
+
+# As above, with one environment variable set for that command and nothing else.
+# Used to hand the build an unreachable database: the assignment reaches only
+# this process, `.env` on disk is not touched, and Next leaves an already-set
+# variable alone rather than overwriting it from the file.
+as_app_env() {
+  local wd="$1"; shift
+  local assignment="$1"; shift
+  if [[ "${RUN_USER}" == "${APP_USER}" ]]; then
+    ( cd "${wd}" && env "${assignment}" "$@" )
+  else
+    sudo -u "${APP_USER}" -H bash -c \
+      "cd $(printf '%q' "${wd}") && env $(printf '%q' "${assignment}") $(printf '%q ' "$@")"
   fi
 }
 
@@ -636,9 +668,12 @@ as_app "${BUILD_DIR}" npm run lint
 log "Typechecking"
 as_app "${BUILD_DIR}" npm run typecheck
 
-log "Building"
-as_app "${BUILD_DIR}" npm run build
-info "build verified — production has not been touched yet"
+# The build, and only the build, is given an unreachable DATABASE_URL. The real
+# one stays in ${BUILD_DIR}/.env, unread and unprinted, for the runtime that
+# this build produces. See BUILD_DATABASE_URL above for why.
+log "Building (PostgreSQL deliberately unreachable)"
+as_app_env "${BUILD_DIR}" "DATABASE_URL=${BUILD_DATABASE_URL}" npm run build
+info "build verified with no database — production has not been touched yet"
 
 # --- 7. finish the standalone runtime inside the build -----------------------
 # `output: standalone` copies neither .next/static nor public; without them the
