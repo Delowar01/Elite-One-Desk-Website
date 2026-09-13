@@ -33,7 +33,10 @@ export function HeroBlock({ values, ctx }: BlockProps) {
   return (
     <section
       data-atmosphere="home"
-      className="relative overflow-clip pb-[clamp(3.5rem,6vw,6rem)] pt-[clamp(7rem,11vw,10.5rem)]"
+      // The top padding clears the fixed header and is part of the hero.
+      // The bottom padding is half of the gap to the section below it, and
+      // that gap is what was too big — see `.home-rhythm` in globals.css.
+      className="relative overflow-clip pb-[clamp(2.5rem,3.9vw,3.7rem)] pt-[clamp(7rem,11vw,10.5rem)]"
     >
       {background ? (
         <div className="pointer-events-none absolute inset-0 -z-20">

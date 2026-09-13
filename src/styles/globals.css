@@ -860,6 +860,29 @@
   .section { padding-block: var(--spacing-section); }
   .section-tight { padding-block: var(--spacing-section-tight); }
 
+  /* --- The homepage's own rhythm ----------------------------------------
+     Thirteen sections stacked, and every gap is paid for twice: each section
+     pads its own top and its own bottom, so two `.section` blocks put 88 + 88
+     between them at desktop. That reads as air on a page with three sections
+     and as a scroll between them on a page with thirteen.
+
+     Scoped by redefining the two tokens on a wrapper the homepage alone
+     renders, rather than by shrinking the tokens themselves. Custom properties
+     inherit, so `.section` and `.section-tight` pick the new figures up inside
+     this subtree and nowhere else — a service page, a category page, a
+     package page, /about, /contact and the panel are untouched, and there is
+     no second copy of the rules to keep in step.
+
+     The reduction is deliberately not uniform: roughly a quarter off at phone
+     width, where the gaps are already modest and the page is a column, rising
+     to about 36% at desktop, where the stretch actually is. The hero's own
+     bottom padding is the third contributor and is cut to match in
+     `blocks/hero.tsx` — that block is homepage-only by definition. ------- */
+  .home-rhythm {
+    --spacing-section: clamp(2.45rem, 1.55rem + 2.55vw, 3.5rem);
+    --spacing-section-tight: clamp(1.875rem, 1.25rem + 1.65vw, 2.4rem);
+  }
+
   /* Flips a decorative glyph (arrows, chevrons) with the writing direction. */
   .flip-rtl { transition: transform var(--duration-fast) var(--ease-out-soft); }
   [dir="rtl"] .flip-rtl { transform: scaleX(-1); }

@@ -32,7 +32,12 @@ export default async function HomePage({ params, searchParams }: Params) {
   return (
     <>
       {isPreview ? <PreviewBanner /> : null}
-      <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} />
+      {/* The homepage stacks thirteen sections, so it sets a tighter vertical
+          rhythm than the rest of the site — see `.home-rhythm` in globals.css.
+          A wrapper rather than a change to the tokens, so no other page moves. */}
+      <div className="home-rhythm">
+        <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} />
+      </div>
       <JsonLd
         data={[
           organization,
