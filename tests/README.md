@@ -53,15 +53,15 @@ directory lock.
 
 | | |
 |---|---|
-| `seed-state.test.ts` | the seed is safe on a fresh, legacy and restructured database — and the seed and the restructure produce the same catalogue, field for field |
-| `restructure.test.ts` | dry run writes nothing · the live run holds every invariant · `region` is never rewritten · a second run is a no-op · a late failure rolls everything back · four concurrent runs produce one cutover · enquiries outlive the categories they were filed under |
-| `public-routes.test.ts` | 66 retired addresses, EN and AR, one 308 hop each to a page that answers 200 · before the cutover the same build serves them as pages instead · the four states `/packages` can be in |
+| `seed-state.test.ts` | the seed is safe on a fresh, legacy and restructured database — and the seed and the restructure produce the same catalogue, field for field, copy included |
+| `restructure.test.ts` | dry run writes nothing · the live run holds every invariant · `region` is never rewritten · a second run is a no-op · a late failure rolls everything back · four concurrent runs produce one cutover · enquiries and FAQs outlive the categories and services they were filed under · edited copy is reported rather than overwritten |
+| `public-routes.test.ts` | 66 retired addresses, EN and AR, one 308 hop each to a page that answers 200 · before the cutover the same build serves them as pages instead · the four states `/packages` can be in · the copy that counts service groups, in both states and both languages · a published package under an unpublished destination |
 | `cache-refresh.test.ts` | the cutover alone changes nothing a visitor sees · a restart is not a refresh · pressing **Refresh caches** makes it live immediately |
 | `admin-destinations.test.ts` | adding Nepal is data entry · the shared `/packages/<slug>` namespace is guarded from both sides · deleting a destination keeps its packages |
 
 ## Ports
 
-The server tests bind `3411`–`3413`, `3421` and `3431`. Each server runs from
+The server tests bind `3411`–`3414`, `3421` and `3431`. Each server runs from
 its own hard-linked copy of the build under `.data/test/servers/<port>`, because
 `unstable_cache` persists to disk beside the build and two servers sharing a
 directory would answer each other's questions.

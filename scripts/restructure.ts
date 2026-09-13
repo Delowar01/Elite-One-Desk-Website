@@ -4,6 +4,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 import { db } from "../src/lib/db";
 import {
+  faqs,
   navigationItems,
   packageDestinations,
   pageSections,
@@ -97,6 +98,298 @@ const EGYPT = {
     "اكتشف مصر من خلال باقات سفر مختارة تشمل القاهرة والجيزة والنيل والأقصر وأسوان وشرم الشيخ والغردقة. اختر برنامجاً جاهزاً أو تواصل معنا لتخصيص رحلتك.",
   sortOrder: 0,
 };
+
+/**
+ * Homepage copy that counts the categories out loud.
+ *
+ * Two blocks say "six" in one form or another, and after the cutover there are
+ * five. They are editor-owned rows, though, not code — so each field is
+ * replaced only when it still holds exactly what the seed wrote. A value that
+ * has been edited since is somebody's work; it is left alone and named in the
+ * output instead, in both the dry run and the real thing.
+ *
+ * `was` is the value as the pre-restructure seed wrote it. It is frozen here on
+ * purpose: this is a record of what production holds, not a reference to a
+ * constant that will keep moving.
+ */
+type SectionRewrite = {
+  page: string;
+  blockType: string;
+  field: string;
+  was: unknown;
+  now: unknown;
+};
+
+const SECTION_REWRITES: SectionRewrite[] = [
+  {
+    page: "home",
+    blockType: "service-grid",
+    field: "title",
+    was: { en: "Six categories, one point of contact", ar: "ست فئات، ونقطة تواصل واحدة" },
+    now: {
+      en: "Five service groups, one point of contact",
+      ar: "خمس مجموعات خدمات، ونقطة تواصل واحدة",
+    },
+  },
+  {
+    page: "home",
+    blockType: "service-grid",
+    field: "intro",
+    was: {
+      en: "Each category has its own specialists. You still speak to one person.",
+      ar: "لكل فئة مختصوها. ومع ذلك تتحدث أنت إلى شخص واحد.",
+    },
+    now: {
+      en: "Each service group has its own specialists. You still speak to one person.",
+      ar: "لكل مجموعة خدمات مختصوها. ومع ذلك تتحدث أنت إلى شخص واحد.",
+    },
+  },
+  {
+    page: "home",
+    blockType: "service-grid",
+    field: "limit",
+    was: 6,
+    now: 5,
+  },
+  {
+    page: "home",
+    blockType: "one-desk",
+    field: "paths",
+    was: [
+      { label: { en: "Travel & tourism", ar: "السفر والسياحة" } },
+      { label: { en: "Business setup", ar: "تأسيس الأعمال" } },
+      { label: { en: "Company formation", ar: "تأسيس الشركات" } },
+      { label: { en: "Iqama & khidamat", ar: "الإقامة والمعاملات" } },
+      { label: { en: "Licence renewal", ar: "تجديد التراخيص" } },
+      { label: { en: "Government relations", ar: "العلاقات الحكومية" } },
+    ],
+    now: [
+      { label: { en: "Travel & Tourism", ar: "السفر والسياحة" } },
+      { label: { en: "Business Setup & Company Formation", ar: "تأسيس الأعمال والشركات" } },
+      { label: { en: "Iqama & Employee Services", ar: "خدمات الإقامة والموظفين" } },
+      { label: { en: "License Renewal & Compliance", ar: "تجديد التراخيص والامتثال" } },
+      { label: { en: "Government & General Services", ar: "الخدمات الحكومية والعامة" } },
+    ],
+  },
+  {
+    page: "home",
+    blockType: "quick-links",
+    field: "links",
+    was: [
+      { label: { en: "Plan a Trip", ar: "خطّط لرحلة" }, href: "/services/travel-tourism", icon: "plane" },
+      {
+        label: { en: "Visa Assistance", ar: "المساعدة في التأشيرات" },
+        href: "/services/travel-tourism/schengen-visa-assistance",
+        icon: "passport",
+      },
+      {
+        label: { en: "Investor Licence", ar: "رخصة المستثمر" },
+        href: "/services/business-setup/investor-license-assistance",
+        icon: "briefcase",
+      },
+      { label: { en: "Start a Company", ar: "تأسيس شركة" }, href: "/services/company-formation", icon: "building" },
+      { label: { en: "Iqama & Khidamat", ar: "الإقامة والمعاملات" }, href: "/services/general-services", icon: "idCard" },
+      { label: { en: "Renew a Licence", ar: "تجديد ترخيص" }, href: "/services/license-renewal", icon: "refresh" },
+      {
+        label: { en: "Premium Residency", ar: "الإقامة المميزة" },
+        href: "/services/government-relations/premium-residency-consultation",
+        icon: "shield",
+      },
+      {
+        label: { en: "TGA Services", ar: "خدمات النقل" },
+        href: "/services/government-relations/tga-license-consultation",
+        icon: "route",
+      },
+    ],
+    now: [
+      { label: { en: "Plan a Trip", ar: "خطّط لرحلة" }, href: "/services/travel-tourism", icon: "plane" },
+      {
+        label: { en: "Visa Assistance", ar: "المساعدة في التأشيرات" },
+        href: "/services/travel-tourism/schengen-visa-assistance",
+        icon: "passport",
+      },
+      {
+        label: { en: "Investor Licence", ar: "رخصة المستثمر" },
+        href: "/services/business-setup/investor-license-assistance",
+        icon: "briefcase",
+      },
+      {
+        label: { en: "Start a Company", ar: "تأسيس شركة" },
+        href: "/services/business-setup#company-formation-registration",
+        icon: "building",
+      },
+      {
+        label: { en: "Iqama & Employee Services", ar: "خدمات الإقامة والموظفين" },
+        href: "/services/iqama-services",
+        icon: "idCard",
+      },
+      { label: { en: "Renew a Licence", ar: "تجديد ترخيص" }, href: "/services/license-renewal", icon: "refresh" },
+      {
+        label: { en: "Premium Residency", ar: "الإقامة المميزة" },
+        href: "/services/government-relations/premium-residency-consultation",
+        icon: "shield",
+      },
+      {
+        label: { en: "TGA Services", ar: "خدمات النقل" },
+        href: "/services/government-relations/tga-license-consultation",
+        icon: "route",
+      },
+    ],
+  },
+  {
+    page: "home",
+    blockType: "why-us",
+    field: "points",
+    was: [
+      {
+        label: { en: "One point of contact", ar: "نقطة تواصل واحدة" },
+        text: {
+          en: "The same person across your travel, your company and your residency file.",
+          ar: "الشخص نفسه لسفرك وشركتك وملف إقامتك.",
+        },
+      },
+      {
+        label: { en: "Multiple service categories", ar: "فئات خدمات متعددة" },
+        text: {
+          en: "Six categories under one roof, so a request rarely has to go elsewhere.",
+          ar: "ست فئات تحت سقف واحد، فنادرًا ما يحتاج طلبك إلى جهة أخرى.",
+        },
+      },
+      {
+        label: { en: "Professional coordination", ar: "تنسيق مهني" },
+        text: {
+          en: "Documents prepared before a step opens, not after it has been rejected.",
+          ar: "المستندات تُجهَّز قبل بدء الخطوة، لا بعد رفضها.",
+        },
+      },
+      {
+        label: { en: "Saudi market knowledge", ar: "معرفة بالسوق السعودي" },
+        text: {
+          en: "Familiar with the portals, the sequencing and what each authority expects to see.",
+          ar: "إلمام بالبوابات وترتيب الخطوات وما تتوقعه كل جهة.",
+        },
+      },
+      {
+        label: { en: "Travel and business together", ar: "السفر والأعمال معًا" },
+        text: {
+          en: "An investor who also needs flights and a family visa is one conversation here.",
+          ar: "المستثمر الذي يحتاج أيضًا إلى تذاكر وتأشيرة عائلية هو محادثة واحدة هنا.",
+        },
+      },
+      {
+        label: { en: "Corporate and individual", ar: "للشركات والأفراد" },
+        text: {
+          en: "A single traveller and a company with fifty employees are both served properly.",
+          ar: "المسافر الفرد والشركة بخمسين موظفًا يُخدمان بالجودة نفسها.",
+        },
+      },
+    ],
+    now: [
+      {
+        label: { en: "One point of contact", ar: "نقطة تواصل واحدة" },
+        text: {
+          en: "The same person across your travel, your company and your residency file.",
+          ar: "الشخص نفسه لسفرك وشركتك وملف إقامتك.",
+        },
+      },
+      {
+        label: { en: "Multiple service categories", ar: "فئات خدمات متعددة" },
+        text: {
+          en: "Five service groups under one roof, so a request rarely has to go elsewhere.",
+          ar: "خمس مجموعات خدمات تحت سقف واحد، فنادرًا ما يحتاج طلبك إلى جهة أخرى.",
+        },
+      },
+      {
+        label: { en: "Professional coordination", ar: "تنسيق مهني" },
+        text: {
+          en: "Documents prepared before a step opens, not after it has been rejected.",
+          ar: "المستندات تُجهَّز قبل بدء الخطوة، لا بعد رفضها.",
+        },
+      },
+      {
+        label: { en: "Saudi market knowledge", ar: "معرفة بالسوق السعودي" },
+        text: {
+          en: "Familiar with the portals, the sequencing and what each authority expects to see.",
+          ar: "إلمام بالبوابات وترتيب الخطوات وما تتوقعه كل جهة.",
+        },
+      },
+      {
+        label: { en: "Travel and business together", ar: "السفر والأعمال معًا" },
+        text: {
+          en: "An investor who also needs flights and a family visa is one conversation here.",
+          ar: "المستثمر الذي يحتاج أيضًا إلى تذاكر وتأشيرة عائلية هو محادثة واحدة هنا.",
+        },
+      },
+      {
+        label: { en: "Corporate and individual", ar: "للشركات والأفراد" },
+        text: {
+          en: "A single traveller and a company with fifty employees are both served properly.",
+          ar: "المسافر الفرد والشركة بخمسين موظفًا يُخدمان بالجودة نفسها.",
+        },
+      },
+    ],
+  },
+];
+
+/**
+ * The one FAQ whose question names a category that stops existing.
+ *
+ * Treated as a single unit: all four columns are replaced, or none are. A
+ * half-replaced FAQ — a new question over an old answer — would be worse than
+ * either state.
+ */
+const FAQ_REWRITE = {
+  match: "What is the difference between General Services and visa services?",
+  was: {
+    questionAr: "ما الفرق بين الخدمات العامة وخدمات التأشيرات؟",
+    answerEn:
+      "<p>General Services — khidamat and Iqama — is residency and employee paperwork inside Saudi Arabia: issuing and renewing an Iqama, transfers, exit and re-entry, Muqeem and Qiwa. Visa services under Travel &amp; Tourism are about travelling abroad: Schengen, UK, US and other visit visas.</p>",
+    answerAr:
+      "<p>الخدمات العامة — الخدمات والإقامة — هي معاملات الإقامة والموظفين داخل المملكة: إصدار الإقامة وتجديدها ونقل الكفالة والخروج والعودة ومقيم وقوى. أما خدمات التأشيرات ضمن السفر والسياحة فتخص السفر إلى الخارج: شنغن وبريطانيا وأمريكا وغيرها.</p>",
+  },
+  now: {
+    questionEn: "What is the difference between Iqama & Employee Services and visa services?",
+    questionAr: "ما الفرق بين خدمات الإقامة والموظفين وخدمات التأشيرات؟",
+    answerEn:
+      "<p>Iqama &amp; Employee Services covers residency and employee paperwork inside Saudi Arabia: issuing and renewing an Iqama, transfers, exit and re-entry, Muqeem and Qiwa. Visa services under Travel &amp; Tourism are about travelling abroad: Schengen, UK, US and other visit visas.</p>",
+    answerAr:
+      "<p>خدمات الإقامة والموظفين تشمل معاملات الإقامة والموظفين داخل المملكة: إصدار الإقامة وتجديدها ونقل الخدمات والخروج والعودة ومقيم وقوى. أما خدمات التأشيرات ضمن السفر والسياحة فتخص السفر إلى الخارج: شنغن وبريطانيا وأمريكا وغيرها.</p>",
+  },
+} satisfies { match: string; was: Record<string, string>; now: Record<string, string> };
+
+/**
+ * Where a service-scoped FAQ goes when the service it is attached to is one of
+ * the twelve duplicates being deleted. `faqs.service_id` cascades, so without
+ * this the FAQ would go with it, silently.
+ *
+ * Only the seven whose replacement is another service are listed. The other
+ * five moved to a package or to the Egypt destination, where a service-scoped
+ * FAQ has nothing to attach to — the cutover stops rather than guess, and says
+ * which ones and why.
+ */
+const FAQ_SERVICE_MOVES: Record<string, string> = {
+  "egypt-flight-booking": "air-ticket-booking",
+  "cairo-hotel-packages": "hotel-reservation",
+  "airport-pickup-and-drop-off": "airport-transfer",
+  "group-tour-package": "group-tour-packages",
+  "family-tour-package": "family-tour-packages",
+  "customized-egypt-tour-package": "customized-travel-itinerary",
+};
+
+/** Sorted-key JSON, so two equal values compare equal whatever their key order. */
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
+}
+
+const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
+
+/** Editor-owned values the cutover found changed and therefore did not touch. */
+const customised: string[] = [];
 
 /**
  * Addresses stored inside section content, not in the catalogue. Only whole
@@ -196,6 +489,120 @@ async function idOfSubcategory(tx: Tx, slug: string) {
   return row?.id ?? null;
 }
 
+/**
+ * Rewrites the homepage copy that counts categories, field by field, and only
+ * where the stored value is still exactly what the seed wrote.
+ *
+ * `draft` is handled the same way and independently: pending editor work is as
+ * much theirs as published work is.
+ */
+async function rewriteSections(tx: Tx) {
+  let changed = 0;
+  for (const rewrite of SECTION_REWRITES) {
+    const rows = await tx
+      .select({ id: pageSections.id, published: pageSections.published, draft: pageSections.draft })
+      .from(pageSections)
+      .innerJoin(pages, eq(pages.id, pageSections.pageId))
+      .where(and(eq(pages.slug, rewrite.page), eq(pageSections.blockType, rewrite.blockType)));
+
+    if (rows.length === 0) {
+      customised.push(`${rewrite.page}/${rewrite.blockType} — no such section, nothing to update`);
+      continue;
+    }
+
+    for (const row of rows) {
+      const next: { published?: Record<string, unknown>; draft?: Record<string, unknown> } = {};
+      for (const column of ["published", "draft"] as const) {
+        const values = row[column] as Record<string, unknown> | null;
+        if (!values || !(rewrite.field in values)) continue;
+        if (!same(values[rewrite.field], rewrite.was)) {
+          customised.push(
+            `${rewrite.page}/${rewrite.blockType}.${rewrite.field} (${column}) — edited since it was seeded, left as it is`,
+          );
+          continue;
+        }
+        next[column] = { ...values, [rewrite.field]: rewrite.now };
+      }
+      if (Object.keys(next).length === 0) continue;
+      await tx.update(pageSections).set({ ...next, updatedAt: new Date() }).where(eq(pageSections.id, row.id));
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
+/** All four columns or none — see FAQ_REWRITE. */
+async function rewriteFaqText(tx: Tx) {
+  const [row] = await tx
+    .select()
+    .from(faqs)
+    .where(eq(faqs.questionEn, FAQ_REWRITE.match))
+    .limit(1);
+  if (!row) return 0;
+
+  const untouched =
+    row.questionAr === FAQ_REWRITE.was.questionAr &&
+    row.answerEn === FAQ_REWRITE.was.answerEn &&
+    row.answerAr === FAQ_REWRITE.was.answerAr;
+  if (!untouched) {
+    customised.push(
+      `the “General Services vs visa services” FAQ — edited since it was seeded, left as it is (its question still names a category that no longer exists; update it in the panel)`,
+    );
+    return 0;
+  }
+
+  await tx.update(faqs).set({ ...FAQ_REWRITE.now, updatedAt: new Date() }).where(eq(faqs.id, row.id));
+  return 1;
+}
+
+/**
+ * `faqs.category_id` and `faqs.service_id` both cascade, so anything the
+ * cutover deletes would take its FAQs with it without a word. Re-point them
+ * first; where there is nowhere sensible to point, stop and say so rather than
+ * delete somebody's answer.
+ */
+async function protectCategoryFaqs(tx: Tx, companyId: number, businessId: number) {
+  const moved = await tx
+    .update(faqs)
+    .set({ categoryId: businessId, updatedAt: new Date() })
+    .where(eq(faqs.categoryId, companyId))
+    .returning({ id: faqs.id });
+  return moved.length;
+}
+
+async function protectServiceFaqs(tx: Tx, travelId: number) {
+  const attached = await tx
+    .select({ id: faqs.id, question: faqs.questionEn, slug: services.slug })
+    .from(faqs)
+    .innerJoin(services, eq(services.id, faqs.serviceId))
+    .where(and(eq(services.categoryId, travelId), inArray(services.slug, DELETE_SERVICE_SLUGS)));
+  if (attached.length === 0) return 0;
+
+  const stranded = attached.filter((row) => !FAQ_SERVICE_MOVES[row.slug]);
+  assert(
+    stranded.length === 0,
+    `${stranded.length} FAQ(s) are attached to a service that becomes a package or a destination, ` +
+      `where a service FAQ cannot follow: ${stranded
+        .map((row) => `“${row.question}” (${row.slug})`)
+        .join(", ")}. Move or delete them in the panel, then run this again.`,
+  );
+
+  for (const row of attached) {
+    const target = FAQ_SERVICE_MOVES[row.slug]!;
+    const [replacement] = await tx
+      .select({ id: services.id })
+      .from(services)
+      .where(and(eq(services.categoryId, travelId), eq(services.slug, target)))
+      .limit(1);
+    assert(replacement, `the replacement service ${target} is missing`);
+    await tx
+      .update(faqs)
+      .set({ serviceId: replacement.id, updatedAt: new Date() })
+      .where(eq(faqs.id, row.id));
+  }
+  return attached.length;
+}
+
 /* -------------------------------------------------------------------------- */
 /* The cutover                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -213,10 +620,10 @@ async function cutover(tx: Tx) {
     lock table
       service_categories, service_subcategories, services,
       package_destinations, travel_packages,
-      navigation_items, page_sections
+      navigation_items, page_sections, faqs
     in share row exclusive mode
   `);
-  step("locks acquired (advisory + 7 tables, share row exclusive)");
+  step("locks acquired (advisory + 8 tables, share row exclusive)");
 
   // --- 1. preconditions ----------------------------------------------------
   const state = await taxonomyState(tx);
@@ -324,8 +731,15 @@ async function cutover(tx: Tx) {
     .where(eq(services.categoryId, companyId));
   assert(left === 0, `${left} services still reference company-formation`);
 
+  // faqs.category_id cascades, so anything filed under Company Formation has to
+  // move before the row it points at disappears.
+  const movedFaqs = await protectCategoryFaqs(tx, companyId, businessId);
+
   await tx.delete(serviceCategories).where(eq(serviceCategories.id, companyId));
-  step("Company Formation merged into Business Setup (5 services, 1 subcategory)");
+  step(
+    `Company Formation merged into Business Setup (5 services, 1 subcategory` +
+      `${movedFaqs ? `, ${movedFaqs} FAQ${movedFaqs === 1 ? "" : "s"}` : ""})`,
+  );
 
   // --- 5. renames and titles ----------------------------------------------
   await tx
@@ -340,7 +754,11 @@ async function cutover(tx: Tx) {
 
   await tx
     .update(serviceSubcategories)
-    .set({ titleEn: "Iqama & Employee Services", updatedAt: new Date() })
+    .set({
+      titleEn: "Iqama & Employee Services",
+      titleAr: "خدمات الإقامة والموظفين",
+      updatedAt: new Date(),
+    })
     .where(eq(serviceSubcategories.slug, "khidamat-iqama"));
 
   for (const [slug, title] of Object.entries(CATEGORY_TITLES)) {
@@ -398,11 +816,16 @@ async function cutover(tx: Tx) {
     .returning({ id: pageSections.id });
   step(`${retyped.length} section(s) retyped to destination-feature`);
 
-  // The homepage quick links are stored hrefs, and two of them name a category
-  // that is about to stop existing. Left alone they would still work — the
-  // route redirects — but the site would be linking to its own redirect from
-  // its most prominent block, which is a thing to fix rather than to ship.
-  // Matched with the surrounding quotes so only a whole href is replaced.
+  // The copy first, because it replaces whole values and has to recognise them
+  // exactly as the old seed wrote them — hrefs included.
+  const rewritten = await rewriteSections(tx);
+  const faqRewritten = await rewriteFaqText(tx);
+
+  // Then any retired address still stored in a section an editor has changed
+  // since. Left alone they would still work — the route redirects — but the
+  // site would be linking to its own redirect from its most prominent block,
+  // which is a thing to fix rather than to ship. Matched with the surrounding
+  // quotes so only a whole href is replaced.
   for (const [from, to] of Object.entries(SECTION_HREF_MOVES)) {
     for (const column of ["published", "draft"] as const) {
       await tx.execute(sql`
@@ -415,7 +838,16 @@ async function cutover(tx: Tx) {
   }
   step("stored links to the retired categories repointed");
 
+  step(
+    `homepage copy updated for five service groups (${rewritten} section field${rewritten === 1 ? "" : "s"}` +
+      `, ${faqRewritten} FAQ)`,
+  );
+
   // --- 8. deletions, last --------------------------------------------------
+  // Same cascade, on faqs.service_id this time.
+  const rehomedFaqs = await protectServiceFaqs(tx, travelId);
+  if (rehomedFaqs) step(`${rehomedFaqs} FAQ(s) moved to the surviving service`);
+
   const deleted = await tx
     .delete(services)
     .where(and(eq(services.categoryId, travelId), inArray(services.slug, DELETE_SERVICE_SLUGS)))
@@ -549,7 +981,49 @@ async function cutover(tx: Tx) {
     if (match) assert(categorySlugs.has(match[1]!), `navigation points at a missing category: ${href}`);
   }
 
+  // Nothing is still sitting on the exact wording the old seed wrote: either it
+  // was replaced above, or an editor had already changed it and it was reported.
+  const [{ staleFaq }] = await tx
+    .select({ staleFaq: sql<number>`count(*)::int` })
+    .from(faqs)
+    .where(
+      and(
+        eq(faqs.questionEn, FAQ_REWRITE.match),
+        eq(faqs.questionAr, FAQ_REWRITE.was.questionAr),
+        eq(faqs.answerEn, FAQ_REWRITE.was.answerEn),
+        eq(faqs.answerAr, FAQ_REWRITE.was.answerAr),
+      ),
+    );
+  assert(staleFaq === 0, "the General Services FAQ still holds its seeded wording");
+
+  for (const rewrite of SECTION_REWRITES) {
+    const rows = await tx
+      .select({ published: pageSections.published })
+      .from(pageSections)
+      .innerJoin(pages, eq(pages.id, pageSections.pageId))
+      .where(and(eq(pages.slug, rewrite.page), eq(pageSections.blockType, rewrite.blockType)));
+    for (const row of rows) {
+      const values = (row.published ?? {}) as Record<string, unknown>;
+      assert(
+        !(rewrite.field in values) || !same(values[rewrite.field], rewrite.was),
+        `${rewrite.page}/${rewrite.blockType}.${rewrite.field} still holds its seeded value`,
+      );
+    }
+  }
+
+  const [{ orphanFaqs }] = await tx
+    .select({ orphanFaqs: sql<number>`count(*)::int` })
+    .from(faqs)
+    .where(and(isNull(faqs.categoryId), isNull(faqs.serviceId), eq(faqs.scope, "category")));
+  assert(orphanFaqs === 0, `${orphanFaqs} category FAQ(s) lost the category they belonged to`);
+
   step("all invariants hold");
+
+  if (customised.length) {
+    log();
+    log("  Editor-owned content left untouched — check these by hand:");
+    for (const note of customised) log(`    · ${note}`);
+  }
 }
 
 /* -------------------------------------------------------------------------- */

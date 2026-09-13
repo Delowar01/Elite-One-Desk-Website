@@ -220,6 +220,72 @@ describe("the seed and the restructure agree", () => {
     }
   });
 
+  test("identical copy in the blocks that describe the catalogue", async () => {
+    const values = async (sql: Sql, blockType: string) => {
+      const [row] = await sql`
+        select s.published
+          from page_sections s join pages p on p.id = s.page_id
+         where p.slug = 'home' and s.block_type = ${blockType}
+      `;
+      return row?.published as Record<string, unknown> | undefined;
+    };
+
+    for (const blockType of ["service-grid", "one-desk", "why-us", "quick-links"]) {
+      assert.deepEqual(
+        await values(fresh, blockType),
+        await values(cutover, blockType),
+        `${blockType} differs between a fresh install and a restructured one`,
+      );
+    }
+
+    const grid = (await values(cutover, "service-grid"))!;
+    assert.deepEqual(grid.title, {
+      en: "Five service groups, one point of contact",
+      ar: "خمس مجموعات خدمات، ونقطة تواصل واحدة",
+    });
+    assert.equal(grid.limit, 5, "the grid should show the five groups");
+
+    const paths = (await values(cutover, "one-desk"))!.paths as Array<{ label: { en: string } }>;
+    assert.deepEqual(
+      paths.map((path) => path.label.en),
+      [
+        "Travel & Tourism",
+        "Business Setup & Company Formation",
+        "Iqama & Employee Services",
+        "License Renewal & Compliance",
+        "Government & General Services",
+      ],
+    );
+  });
+
+  test("identical FAQs, and none of them names a retired category", async () => {
+    const list = (sql: Sql) =>
+      sql`select question_en, question_ar, answer_en, answer_ar from faqs order by sort_order, id`;
+    assert.deepEqual(await list(fresh), await list(cutover));
+
+    const rows = await list(cutover);
+    const text = JSON.stringify(rows);
+    // The answer is stored as HTML, so the ampersand is an entity in the column.
+    assert.ok(
+      text.includes("Iqama &amp; Employee Services covers residency"),
+      "the rewritten answer should be in place",
+    );
+    assert.ok(!/difference between General Services/.test(text));
+    assert.ok(!text.includes("ما الفرق بين الخدمات العامة"));
+  });
+
+  test("the Iqama subcategory carries the approved Arabic in both", async () => {
+    const title = async (sql: Sql) => {
+      const [row] = await sql`
+        select title_en, title_ar from service_subcategories where slug = 'khidamat-iqama'
+      `;
+      return row;
+    };
+    const expected = { title_en: "Iqama & Employee Services", title_ar: "خدمات الإقامة والموظفين" };
+    assert.deepEqual({ ...(await title(fresh))! }, expected);
+    assert.deepEqual({ ...(await title(cutover))! }, expected);
+  });
+
   test("identical destinations, and the same four packages inside Egypt", async () => {
     const destinations = (sql: Sql) =>
       sql`select slug, title_en, title_ar, summary_en, summary_ar from package_destinations order by slug`;

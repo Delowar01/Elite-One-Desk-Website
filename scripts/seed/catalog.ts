@@ -169,7 +169,7 @@ export const CATALOG: SeedCategory[] = [
       {
         slug: "khidamat-iqama",
         title: "Iqama & Employee Services",
-        titleAr: "خدمات الإقامة والمعاملات",
+        titleAr: "خدمات الإقامة والموظفين",
         summary: "Residency, dependants and employee documentation, including Muqeem, Qiwa and Absher Business.",
         preset: "iqama",
         services: [

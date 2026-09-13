@@ -6,10 +6,11 @@
  * the same time. They lock, so it would be correct either way — but doing it
  * once, up front, is faster and says plainly what the slow part is.
  */
-import { freshSql, legacySql } from "./helpers/fixtures";
+import { discardFixtures, freshSql, legacySql } from "./helpers/fixtures";
 import { LEGACY_REF, PG_BASE } from "./helpers/env";
 
 const started = Date.now();
+if (process.env.REBUILD_FIXTURES) discardFixtures();
 console.log(`· postgres        ${PG_BASE}`);
 console.log(`· legacy ref      ${LEGACY_REF}`);
 console.log("· building fixtures (cached in .data/test — REBUILD_FIXTURES=1 to redo)");

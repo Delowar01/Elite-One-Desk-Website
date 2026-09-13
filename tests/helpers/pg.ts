@@ -20,9 +20,28 @@ export function recreateDatabase(name: string): void {
   if (created.status !== 0) throw new Error(`could not create ${name}: ${created.stderr}`);
 }
 
+/**
+ * Retried, and checked.
+ *
+ * `with (force)` terminates other sessions, but a subprocess the test spawned
+ * may still be on its way out when teardown runs, and a drop that loses that
+ * race used to fail silently and leave a database behind for the next run to
+ * trip over.
+ */
 export function dropDatabase(name: string): void {
   assertTestDatabase(name);
-  run("psql", [maintenance, "-c", `drop database if exists "${name}" with (force)`]);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const dropped = run("psql", [
+      maintenance,
+      "-v",
+      "ON_ERROR_STOP=1",
+      "-c",
+      `drop database if exists "${name}" with (force)`,
+    ]);
+    if (dropped.status === 0) return;
+    spawnSync("sleep", ["0.3"]);
+  }
+  console.warn(`[tests] could not drop ${name}; drop it by hand`);
 }
 
 export function dumpDatabase(name: string, file: string): void {

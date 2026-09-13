@@ -19,14 +19,18 @@ import { startServer, type Server } from "./helpers/server";
 const LEGACY_PORT = 3411;
 const CUTOVER_PORT = 3412;
 const EMPTY_PORT = 3413;
+const HIDDEN_PORT = 3414;
 
 let legacyDb = "";
 let cutoverDb = "";
 let emptyDb = "";
+let hiddenDb = "";
 let legacy: Server;
 let cutover: Server;
 /** A site where somebody has created a destination but not filled it yet. */
 let emptyDestination: Server;
+/** A site with a published package filed under an unpublished destination. */
+let hiddenDestination: Server;
 let legacySql: Sql;
 
 /** Every English address the release retires. Built from the data, not typed out. */
@@ -37,15 +41,32 @@ before(async () => {
   cutoverDb = giveRestructured("routes_cutover");
   emptyDb = giveRestructured("routes_empty");
 
+  hiddenDb = giveRestructured("routes_hidden");
+
   const emptySql = connect(emptyDb);
   await emptySql`update travel_packages set destination_id = null`;
   await emptySql.end({ timeout: 5 });
 
+  // Egypt stays published and keeps three packages; a second destination is
+  // created unpublished, and one published package is filed under it.
+  const hiddenSql = connect(hiddenDb);
+  await hiddenSql`
+    insert into package_destinations (slug, title_en, title_ar, is_published, sort_order)
+    values ('nepal', 'Nepal', 'نيبال', false, 1)
+  `;
+  await hiddenSql`
+    update travel_packages
+       set destination_id = (select id from package_destinations where slug = 'nepal')
+     where slug = 'red-sea-sharm-el-sheikh'
+  `;
+  await hiddenSql.end({ timeout: 5 });
+
   legacySql = connect(legacyDb);
-  [legacy, cutover, emptyDestination] = await Promise.all([
+  [legacy, cutover, emptyDestination, hiddenDestination] = await Promise.all([
     startServer(legacyDb, LEGACY_PORT),
     startServer(cutoverDb, CUTOVER_PORT),
     startServer(emptyDb, EMPTY_PORT),
+    startServer(hiddenDb, HIDDEN_PORT),
   ]);
 
   const moved = await legacySql<{ category: string; slug: string }[]>`
@@ -62,9 +83,14 @@ before(async () => {
 });
 
 after(async () => {
-  await Promise.all([legacy?.stop(), cutover?.stop(), emptyDestination?.stop()]);
+  await Promise.all([
+    legacy?.stop(),
+    cutover?.stop(),
+    emptyDestination?.stop(),
+    hiddenDestination?.stop(),
+  ]);
   await legacySql?.end({ timeout: 5 });
-  for (const name of [legacyDb, cutoverDb, emptyDb]) if (name) dropDatabase(name);
+  for (const name of [legacyDb, cutoverDb, emptyDb, hiddenDb]) if (name) dropDatabase(name);
 });
 
 /** Where an English source address should land. */
@@ -301,5 +327,209 @@ describe("the new pages are built to the same responsive rules as the old ones",
       assert.deepEqual(fixed, [], `${path} should not pin a width`);
       assert.ok(!/min-width:\s*\d{3,}px/.test(page.html), `${path} should not set a min-width`);
     }
+  });
+});
+
+/**
+ * The site says out loud how many service groups it has. These are the words
+ * that went stale silently last time: the catalogue moved and the sentence
+ * above it did not.
+ */
+describe("the copy follows the catalogue, not the release", () => {
+  const SIX = {
+    en: "Six categories covering travel, business, residency, licensing and government-related support.",
+    ar: "ست فئات رئيسية تغطي السفر والأعمال والإقامة والتراخيص والدعم المرتبط بالجهات الحكومية.",
+  };
+  const FIVE = {
+    en: "Five service groups covering travel, business setup and company formation, residency and employee services, licensing and government support.",
+    ar: "خمس مجموعات خدمات تغطي السفر، وتأسيس الأعمال والشركات، وخدمات الإقامة والموظفين، والتراخيص، والخدمات الحكومية.",
+  };
+  const SEO_SIX = {
+    en: "Every Elite One Desk service: travel and tourism, business setup, company formation, general services, licence renewal and government relations.",
+    ar: "جميع خدمات إيليت ون ديسك: السفر والسياحة، تأسيس الأعمال، تسجيل الشركات، الخدمات العامة، تجديد الرخص والعلاقات الحكومية.",
+  };
+  const SEO_FIVE = {
+    en: "Every Elite One Desk service: travel and tourism, business setup and company formation, Iqama and employee services, license renewal and compliance, and government and general services.",
+    ar: "جميع خدمات إيليت ون ديسك: السفر والسياحة، تأسيس الأعمال والشركات، خدمات الإقامة والموظفين، تجديد التراخيص والامتثال، والخدمات الحكومية والعامة.",
+  };
+
+  const description = (html: string) =>
+    /<meta name="description" content="([^"]*)"/.exec(html)?.[1] ?? "";
+
+  const decode = (value: string) =>
+    value
+      .replace(/&quot;/g, '"')
+      .replace(/&#x27;/g, "'")
+      .replace(/&amp;/g, "&");
+
+  test("before the cutover /services still reads exactly as it always has", async () => {
+    const english = await get(legacy.origin, "/services");
+    assert.ok(english.html.includes(SIX.en), "the legacy English intro must be untouched");
+    assert.ok(!english.html.includes(FIVE.en));
+    assert.equal(decode(description(english.html)), SEO_SIX.en);
+
+    const arabic = await get(legacy.origin, "/ar/services");
+    assert.ok(arabic.html.includes(SIX.ar), "the legacy Arabic intro must be untouched");
+    assert.equal(decode(description(arabic.html)), SEO_SIX.ar);
+  });
+
+  test("after the cutover /services says five service groups, in both languages", async () => {
+    const english = await get(cutover.origin, "/services");
+    assert.ok(english.html.includes(FIVE.en), "the five-group intro should be live");
+    assert.ok(!english.html.includes(SIX.en), "nothing should still say six categories");
+    assert.ok(!/Six categories/.test(english.html));
+
+    const arabic = await get(cutover.origin, "/ar/services");
+    assert.ok(arabic.html.includes(FIVE.ar));
+    assert.ok(!arabic.html.includes("ست فئات"));
+  });
+
+  test("after the cutover the /services description uses the final taxonomy wording", async () => {
+    assert.equal(decode(description((await get(cutover.origin, "/services")).html)), SEO_FIVE.en);
+    assert.equal(
+      decode(description((await get(cutover.origin, "/ar/services")).html)),
+      SEO_FIVE.ar,
+    );
+  });
+
+  test("the homepage stops counting six of anything", async () => {
+    for (const path of ["/", "/ar"]) {
+      const page = await get(cutover.origin, path);
+      assert.equal(page.status, 200, path);
+      assert.ok(!/Six categories/.test(page.html), `${path} still says “Six categories”`);
+      assert.ok(!page.html.includes("ست فئات"), `${path} still says “ست فئات”`);
+    }
+
+    const english = await get(cutover.origin, "/");
+    assert.ok(english.html.includes("Five service groups, one point of contact"));
+    assert.ok(english.html.includes("Each service group has its own specialists."));
+    assert.ok(english.html.includes("Five service groups under one roof"));
+
+    const arabic = await get(cutover.origin, "/ar");
+    assert.ok(arabic.html.includes("خمس مجموعات خدمات، ونقطة تواصل واحدة"));
+    assert.ok(arabic.html.includes("لكل مجموعة خدمات مختصوها"));
+  });
+
+  test("the homepage path list is exactly the five final service groups", async () => {
+    const FINAL = [
+      { en: "Travel &amp; Tourism", ar: "السفر والسياحة" },
+      { en: "Business Setup &amp; Company Formation", ar: "تأسيس الأعمال والشركات" },
+      { en: "Iqama &amp; Employee Services", ar: "خدمات الإقامة والموظفين" },
+      { en: "License Renewal &amp; Compliance", ar: "تجديد التراخيص والامتثال" },
+      { en: "Government &amp; General Services", ar: "الخدمات الحكومية والعامة" },
+    ];
+    const RETIRED = ["Iqama &amp; khidamat", "Licence renewal", "Government relations", "Company formation"];
+
+    // Scoped to the list itself. "Licence renewal" is also an ordinary sentence
+    // elsewhere on the page — about renewing an investor licence — and the
+    // audit is about retired structural labels, not the words themselves.
+    const pathList = (html: string) => {
+      const match = /<ul class="relative z-10 flex flex-col gap-3">[\s\S]*?<\/ul>/.exec(html);
+      assert.ok(match, "the one-desk path list should be on the page");
+      return match[0];
+    };
+
+    const english = pathList((await get(cutover.origin, "/")).html);
+    for (const group of FINAL) assert.ok(english.includes(group.en), group.en);
+    for (const gone of RETIRED) assert.ok(!english.includes(gone), `${gone} is still listed`);
+    assert.equal((english.match(/<li>/g) ?? []).length, 5, "exactly five groups");
+
+    const arabic = pathList((await get(cutover.origin, "/ar")).html);
+    for (const group of FINAL) assert.ok(arabic.includes(group.ar), group.ar);
+    assert.ok(!arabic.includes("الإقامة والمعاملات"), "the old Iqama label is still listed");
+    assert.equal((arabic.match(/<li>/g) ?? []).length, 5, "exactly five groups");
+  });
+
+  test("the quick links name the group the way the rest of the site does", async () => {
+    const english = await get(cutover.origin, "/");
+    assert.ok(english.html.includes("Iqama &amp; Employee Services"));
+    assert.ok(!english.html.includes("Iqama &amp; Khidamat"), "the retired label is still offered");
+
+    const arabic = await get(cutover.origin, "/ar");
+    assert.ok(arabic.html.includes("خدمات الإقامة والموظفين"));
+    assert.ok(!arabic.html.includes("الإقامة والمعاملات"));
+  });
+
+  test("no link in the default homepage content points at a retired category", async () => {
+    for (const path of ["/", "/ar"]) {
+      const page = await get(cutover.origin, path);
+      for (const retired of ["/services/company-formation", "/services/general-services"]) {
+        assert.ok(
+          !page.html.includes(`href="${retired}"`) && !page.html.includes(`href="/ar${retired}"`),
+          `${path} links to ${retired}`,
+        );
+      }
+    }
+  });
+
+  test("the FAQ no longer names a category that does not exist", async () => {
+    const english = await get(cutover.origin, "/");
+    assert.ok(
+      english.html.includes("What is the difference between Iqama &amp; Employee Services and visa services?"),
+      "the rewritten question should be live",
+    );
+    assert.ok(!/difference between General Services/.test(english.html));
+
+    const arabic = await get(cutover.origin, "/ar");
+    assert.ok(arabic.html.includes("ما الفرق بين خدمات الإقامة والموظفين وخدمات التأشيرات؟"));
+    assert.ok(!arabic.html.includes("ما الفرق بين الخدمات العامة"));
+  });
+
+  test("the Iqama subcategory heading is the approved Arabic", async () => {
+    const arabic = await get(cutover.origin, "/ar/services/iqama-services");
+    assert.equal(arabic.status, 200);
+    assert.ok(arabic.html.includes("خدمات الإقامة والموظفين"));
+    assert.ok(!arabic.html.includes("خدمات الإقامة والمعاملات"));
+  });
+});
+
+/**
+ * A destination an editor has unpublished is them saying "this place is not
+ * ready to show" — not "hide these packages". The rule is that a published
+ * package is always somewhere on the catalogue.
+ */
+describe("a published package under an unpublished destination", () => {
+  test("falls into Build your own rather than disappearing", async () => {
+    const page = await get(hiddenDestination.origin, "/packages");
+    assert.equal(page.status, 200);
+
+    assert.ok(page.html.includes('href="/packages/egypt"'), "Egypt is still a group");
+    assert.ok(!page.html.includes('href="/packages/nepal"'), "the unpublished one is not offered");
+    assert.ok(page.html.includes("Build your own"), "the ungrouped section should be rendered");
+    assert.ok(
+      page.html.includes('href="/packages/red-sea-sharm-el-sheikh"'),
+      "the package must still be on the catalogue somewhere",
+    );
+    assert.ok(page.html.includes('href="/packages/custom-itinerary"'));
+  });
+
+  test("the same in Arabic", async () => {
+    const page = await get(hiddenDestination.origin, "/ar/packages");
+    assert.equal(page.status, 200);
+    assert.ok(page.html.includes("صمّم رحلتك"), "the Arabic ungrouped heading");
+    assert.ok(page.html.includes('href="/ar/packages/red-sea-sharm-el-sheikh"'));
+    assert.ok(!page.html.includes('href="/ar/packages/nepal"'));
+  });
+
+  test("the unpublished destination has no page of its own, and the package still does", async () => {
+    assert.equal((await get(hiddenDestination.origin, "/packages/nepal")).status, 404);
+    assert.equal((await get(hiddenDestination.origin, "/ar/packages/nepal")).status, 404);
+    assert.equal(
+      (await get(hiddenDestination.origin, "/packages/red-sea-sharm-el-sheikh")).status,
+      200,
+    );
+    assert.equal(
+      (await get(hiddenDestination.origin, "/ar/packages/red-sea-sharm-el-sheikh")).status,
+      200,
+    );
+  });
+
+  test("Egypt keeps the three packages that are still filed under it", async () => {
+    const egypt = await get(hiddenDestination.origin, "/packages/egypt");
+    assert.equal(egypt.status, 200);
+    for (const slug of ["cairo-and-giza-classic", "nile-cruise-luxor-aswan", "egypt-family-programme"]) {
+      assert.ok(egypt.html.includes(`href="/packages/${slug}"`), slug);
+    }
+    assert.ok(!egypt.html.includes('href="/packages/red-sea-sharm-el-sheikh"'));
   });
 });

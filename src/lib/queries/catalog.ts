@@ -115,9 +115,13 @@ export const getDestinations = unstable_cache(
 export async function getPackageCatalog() {
   const [rows, destinations] = await Promise.all([getPackages(), getDestinations()]);
 
+  // `getDestinations` returns published destinations only, so this set is
+  // exactly the ones a visitor can reach.
+  const visible = new Set(destinations.map((destination) => destination.id));
+
   const byDestination = new Map<number, PackageRow[]>();
   for (const row of rows) {
-    if (row.destinationId == null) continue;
+    if (row.destinationId == null || !visible.has(row.destinationId)) continue;
     const list = byDestination.get(row.destinationId) ?? [];
     list.push(row);
     byDestination.set(row.destinationId, list);
@@ -131,8 +135,18 @@ export async function getPackageCatalog() {
     packages: rows,
     destinations,
     grouped,
-    /** Packages belonging to no destination — "Anywhere" is not a place. */
-    ungrouped: rows.filter((row) => row.destinationId == null),
+    /**
+     * Packages the destination grouping cannot show: the ones filed under no
+     * destination, and the ones whose destination is unpublished or gone.
+     *
+     * The rule is that a published package is always in the catalogue. An
+     * unpublished destination is an editor saying "this place is not ready to
+     * show", not "hide these four packages" — and the alternative, filtering by
+     * `destinationId == null` alone, made a published package vanish from
+     * /packages while its own page kept answering, which is the kind of
+     * disappearance nobody notices until a customer asks where it went.
+     */
+    ungrouped: rows.filter((row) => row.destinationId == null || !visible.has(row.destinationId)),
     destinationMode: grouped.length > 0,
   };
 }

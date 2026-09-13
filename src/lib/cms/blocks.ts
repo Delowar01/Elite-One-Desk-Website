@@ -166,7 +166,7 @@ export const BLOCKS: BlockDef[] = [
   {
     type: "service-grid",
     name: "Main services",
-    description: "The six core categories, drawn live from Service Categories.",
+    description: "The service groups, drawn live from Service Categories.",
     scope: "home",
     fields: [
       localisedText("eyebrow", "Eyebrow"),

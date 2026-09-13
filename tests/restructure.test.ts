@@ -228,6 +228,137 @@ describe("enquiries", () => {
   });
 });
 
+describe("editor-owned content", () => {
+  const LEGACY_FAQ = "What is the difference between General Services and visa services?";
+
+  test("copy the seed wrote is updated; copy an editor changed is reported and left", async () => {
+    const name = legacy("content_custom");
+    const sql = open(name);
+
+    await sql`
+      update page_sections
+         set published = jsonb_set(published, '{title,en}', '"Our services, one desk"')
+       where block_type = 'service-grid'
+    `;
+    await sql`update faqs set answer_en = '<p>Edited by an admin.</p>' where question_en = ${LEGACY_FAQ}`;
+
+    const result = restructure(name);
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /Editor-owned content left untouched/);
+    assert.match(result.output, /home\/service-grid\.title \(published\) — edited since it was seeded/);
+    assert.match(result.output, /General Services vs visa services” FAQ — edited since it was seeded/);
+
+    const [grid] = await sql<{ published: Record<string, unknown> }[]>`
+      select published from page_sections where block_type = 'service-grid'
+    `;
+    const title = grid!.published.title as { en: string };
+    assert.equal(title.en, "Our services, one desk", "the edit must survive the cutover");
+
+    // The fields beside it were still seeded values, so they did move.
+    assert.equal(grid!.published.limit, 5);
+    const intro = grid!.published.intro as { en: string };
+    assert.match(intro.en, /Each service group has its own specialists/);
+
+    const [faq] = await sql<{ question_en: string; answer_en: string }[]>`
+      select question_en, answer_en from faqs where answer_en = '<p>Edited by an admin.</p>'
+    `;
+    assert.equal(faq!.question_en, LEGACY_FAQ, "a half-rewritten FAQ would be worse than neither");
+  });
+
+  test("untouched copy is rewritten, and nothing is reported", async () => {
+    const name = legacy("content_clean");
+    const sql = open(name);
+
+    const result = restructure(name);
+    assert.equal(result.code, 0, result.output);
+    assert.ok(!/Editor-owned content left untouched/.test(result.output), result.output);
+    assert.match(result.output, /homepage copy updated for five service groups \(6 section fields, 1 FAQ\)/);
+
+    const [faq] = await sql<{ question_en: string; question_ar: string; answer_en: string }[]>`
+      select question_en, question_ar, answer_en from faqs
+       where question_en like 'What is the difference%'
+    `;
+    assert.equal(
+      faq!.question_en,
+      "What is the difference between Iqama & Employee Services and visa services?",
+    );
+    assert.equal(faq!.question_ar, "ما الفرق بين خدمات الإقامة والموظفين وخدمات التأشيرات؟");
+    assert.match(faq!.answer_en, /^<p>Iqama &amp; Employee Services covers residency/);
+  });
+});
+
+describe("FAQs are not collateral", () => {
+  test("a FAQ filed under Company Formation moves to Business Setup rather than cascading away", async () => {
+    const name = legacy("faq_category");
+    const sql = open(name);
+
+    const [company] = await sql<{ id: number }[]>`
+      select id from service_categories where slug = 'company-formation'
+    `;
+    await sql`
+      insert into faqs (scope, category_id, question_en, question_ar, answer_en)
+      values ('category', ${company!.id}, 'How long does registration take?', 'كم يستغرق التسجيل؟', '<p>It depends.</p>')
+    `;
+
+    const result = restructure(name);
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /1 FAQ\)/, "the move should be reported");
+
+    const [row] = await sql<{ slug: string | null; question_en: string }[]>`
+      select c.slug, f.question_en
+        from faqs f left join service_categories c on c.id = f.category_id
+       where f.question_en = 'How long does registration take?'
+    `;
+    assert.ok(row, "the FAQ must still exist");
+    assert.equal(row!.slug, "business-setup", "and be filed where its subcategory went");
+  });
+
+  test("a FAQ on a deleted duplicate service follows the service that replaces it", async () => {
+    const name = legacy("faq_service");
+    const sql = open(name);
+
+    const [duplicate] = await sql<{ id: number }[]>`
+      select id from services where slug = 'egypt-flight-booking'
+    `;
+    await sql`
+      insert into faqs (scope, service_id, question_en, answer_en)
+      values ('service', ${duplicate!.id}, 'Can you book the flights too?', '<p>Yes.</p>')
+    `;
+
+    const result = restructure(name);
+    assert.equal(result.code, 0, result.output);
+    assert.match(result.output, /1 FAQ\(s\) moved to the surviving service/);
+
+    const [row] = await sql<{ slug: string | null }[]>`
+      select s.slug from faqs f left join services s on s.id = f.service_id
+       where f.question_en = 'Can you book the flights too?'
+    `;
+    assert.ok(row, "the FAQ must still exist");
+    assert.equal(row!.slug, "air-ticket-booking");
+  });
+
+  test("a FAQ on a service that becomes a destination stops the run instead of vanishing", async () => {
+    const name = legacy("faq_stranded");
+    const sql = open(name);
+
+    const [duplicate] = await sql<{ id: number }[]>`
+      select id from services where slug = 'cairo-city-tour'
+    `;
+    await sql`
+      insert into faqs (scope, service_id, question_en, answer_en)
+      values ('service', ${duplicate!.id}, 'Is the museum included?', '<p>Yes.</p>')
+    `;
+    const before = dumpData(name);
+
+    const result = restructure(name);
+    assert.equal(result.code, 1);
+    assert.match(result.output, /becomes a package or a destination/);
+    assert.match(result.output, /Is the museum included\?/);
+    assert.match(result.output, /Move or delete them in the panel/);
+    assert.equal(dumpData(name), before, "nothing was written");
+  });
+});
+
 describe("atomicity", () => {
   test("a failure late in the run leaves the database byte-identical", async () => {
     const name = legacy("rollback_late");

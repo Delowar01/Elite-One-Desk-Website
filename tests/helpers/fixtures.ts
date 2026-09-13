@@ -125,20 +125,26 @@ function withLock(name: string, build: () => void): void {
 const fileFor = (name: string) => (name === "legacy" ? LEGACY_SQL : FRESH_SQL);
 const needsBuild = (name: string) => !existsSync(fileFor(name));
 
-const rebuilt = new Set<string>();
+/**
+ * Throws the cached dumps and the legacy checkout away so the next call
+ * rebuilds them.
+ *
+ * Only `tests/prepare.ts` calls it, and deliberately: `npm test` runs one
+ * process per file, so a "rebuild" that each of them acted on would have five
+ * processes deleting the same worktree while the others were reading it.
+ * Rebuilding is a thing the run does once, before the files start.
+ */
+export function discardFixtures(): void {
+  rmSync(LEGACY_SQL, { force: true });
+  rmSync(FRESH_SQL, { force: true });
+  rmSync(LEGACY_TREE, { recursive: true, force: true });
+}
 
 function ensure(name: "legacy" | "fresh"): string {
-  const file = fileFor(name);
-  // `REBUILD_FIXTURES` discards a cached dump, but only once per process.
-  if (process.env.REBUILD_FIXTURES && !rebuilt.has(name)) {
-    rebuilt.add(name);
-    rmSync(file, { force: true });
-    if (name === "legacy") rmSync(LEGACY_TREE, { recursive: true, force: true });
-  }
   if (needsBuild(name)) {
     withLock(name, name === "legacy" ? buildLegacySql : buildFreshSql);
   }
-  return file;
+  return fileFor(name);
 }
 
 export const legacySql = () => ensure("legacy");

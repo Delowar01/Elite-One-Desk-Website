@@ -10,22 +10,65 @@ import { getDictionary } from "@/lib/i18n/dictionary";
 import { getCatalog } from "@/lib/queries/catalog";
 import { getMediaMap } from "@/lib/queries/site";
 import { buildMetadata } from "@/lib/seo";
+import { isLegacyTaxonomy } from "@/lib/taxonomy-state";
 
 type Params = { params: Promise<{ lang: string }> };
+
+/**
+ * This page says in words how many groups the catalogue has, so the words have
+ * to follow the data rather than the release.
+ *
+ * One build serves both states: before the cutover the database still holds the
+ * six legacy categories and this page reads exactly as it always has; after it,
+ * the approved five-group wording. The test is the shared taxonomy-state check,
+ * not a count of rows — an editor adding a seventh category must not push the
+ * site back into its old sentence.
+ */
+const COPY = {
+  legacy: {
+    intro: {
+      en: "Six categories covering travel, business, residency, licensing and government-related support.",
+      ar: "ست فئات رئيسية تغطي السفر والأعمال والإقامة والتراخيص والدعم المرتبط بالجهات الحكومية.",
+    },
+    description: {
+      en: "Every Elite One Desk service: travel and tourism, business setup, company formation, general services, licence renewal and government relations.",
+      ar: "جميع خدمات إيليت ون ديسك: السفر والسياحة، تأسيس الأعمال، تسجيل الشركات، الخدمات العامة، تجديد الرخص والعلاقات الحكومية.",
+    },
+  },
+  restructured: {
+    intro: {
+      en: "Five service groups covering travel, business setup and company formation, residency and employee services, licensing and government support.",
+      ar: "خمس مجموعات خدمات تغطي السفر، وتأسيس الأعمال والشركات، وخدمات الإقامة والموظفين، والتراخيص، والخدمات الحكومية.",
+    },
+    description: {
+      en: "Every Elite One Desk service: travel and tourism, business setup and company formation, Iqama and employee services, license renewal and compliance, and government and general services.",
+      ar: "جميع خدمات إيليت ون ديسك: السفر والسياحة، تأسيس الأعمال والشركات، خدمات الإقامة والموظفين، تجديد التراخيص والامتثال، والخدمات الحكومية والعامة.",
+    },
+  },
+} as const;
+
+/** `getCatalog` is cached and already loaded by the page, so this is free. */
+async function copyForCatalogue() {
+  const { categories, subcategories } = await getCatalog();
+  return isLegacyTaxonomy(
+    categories.map((category) => category.slug),
+    subcategories.map((subcategory) => subcategory.slug),
+  )
+    ? COPY.legacy
+    : COPY.restructured;
+}
 
 export async function generateMetadata({ params }: Params) {
   const { lang } = await params;
   if (!isLocale(lang)) return {};
+  const copy = await copyForCatalogue();
   return buildMetadata({
     locale: lang,
     path: "/services",
     entityType: "page",
     entityKey: "services",
     title: lang === "ar" ? "الخدمات" : "Services",
-    description:
-      lang === "ar"
-        ? "جميع خدمات إيليت ون ديسك: السفر والسياحة، تأسيس الأعمال، تسجيل الشركات، الخدمات العامة، تجديد الرخص والعلاقات الحكومية."
-        : "Every Elite One Desk service: travel and tourism, business setup, company formation, general services, licence renewal and government relations.",
+    description: pick(lang, copy.description.en, copy.description.ar),
   });
 }
 
@@ -40,7 +83,11 @@ export default async function ServicesPage({ params }: Params) {
   if (!isLocale(lang)) notFound();
 
   const dict = getDictionary(lang);
-  const [catalog, media] = await Promise.all([getCatalog(), getMediaMap()]);
+  const [catalog, media, copy] = await Promise.all([
+    getCatalog(),
+    getMediaMap(),
+    copyForCatalogue(),
+  ]);
 
   return (
     <>
@@ -56,11 +103,7 @@ export default async function ServicesPage({ params }: Params) {
               ? "كل ما تحتاجه — من مكتب واحد"
               : "Everything you need, handled from one desk"}
           </h1>
-          <p className="lede mt-5 max-w-2xl">
-            {lang === "ar"
-              ? "ست فئات رئيسية تغطي السفر والأعمال والإقامة والتراخيص والدعم المرتبط بالجهات الحكومية."
-              : "Six categories covering travel, business, residency, licensing and government-related support."}
-          </p>
+          <p className="lede mt-5 max-w-2xl">{pick(lang, copy.intro.en, copy.intro.ar)}</p>
         </div>
       </section>
 
