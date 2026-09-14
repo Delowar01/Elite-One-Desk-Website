@@ -8,10 +8,14 @@
  *
  * Two checks, and they cover different things. The first runs the previous
  * release's own table definitions — the commit named in `deploy/previous-release`,
- * not the historical `LEGACY_REF` fixture — against the migrated schema — it catches a
- * dropped, renamed or retyped column, which is the common mistake. The second
- * reads the migration SQL and refuses destructive DDL outright unless somebody
- * marked it as a deliberate contraction.
+ * not the historical `LEGACY_REF` fixture — against the migrated schema. It reads
+ * every table, which catches a dropped, renamed or retyped column; and it then
+ * writes, which catches the other half. The old runtime keeps saving during
+ * those minutes, with a column list that omits everything added since, so a new
+ * NOT NULL column whose default does not cover an old INSERT breaks production
+ * in a way no SELECT would reveal. The second check reads the migration SQL and
+ * refuses destructive DDL outright unless somebody marked it as a deliberate
+ * contraction.
  *
  * Neither proves semantic compatibility: a column that still exists but now
  * means something different, a default that changes behaviour, a backfill the
@@ -52,7 +56,7 @@ describe("the release in production can still read the migrated schema", () => {
     assert.equal(ancestor.status, 0, `${sha} is not an ancestor of HEAD — is it really deployed?`);
   });
 
-  test("every table that release defines is still readable", () => {
+  test("every table that release defines is still readable, and still writable", () => {
     // The schema and data THIS release produces: migrate then seed, which is
     // deploy steps 10 and 11. The probe below is the old runtime at step 12,
     // reading it before the switch at step 14.
@@ -68,6 +72,7 @@ describe("the release in production can still read the migrated schema", () => {
     writeFileSync(
       probe,
       [
+        'import { eq } from "drizzle-orm";',
         'import { drizzle } from "drizzle-orm/postgres-js";',
         'import postgres from "postgres";',
         'import * as schema from "./src/lib/db/schema";',
@@ -87,9 +92,52 @@ describe("the release in production can still read the migrated schema", () => {
         "    failures.push(`${name}: ${(error as Error).message}`);",
         "  }",
         "}",
+        "",
+        "// Reading is not the whole job. Between migrate and switch the old",
+        "// runtime is also SAVING: it inserts section rows and updates drafts",
+        "// with its own column list, which omits every column added since. A",
+        "// NOT NULL column without a usable default would fail here and only",
+        "// here — a SELECT would not have noticed.",
+        "try {",
+        "  const [page] = await db.select().from(schema.pages).limit(1);",
+        "  if (!page) throw new Error(\"the fixture has no pages\");",
+        "  const existing = await db.select().from(schema.pageSections).limit(1);",
+        "  if (!existing.length) throw new Error(\"the fixture has no sections\");",
+        "",
+        "  // Insert, naming only the columns this release knows about.",
+        "  const [inserted] = await db",
+        "    .insert(schema.pageSections)",
+        "    .values({",
+        "      pageId: page.id,",
+        "      blockType: \"rich-text\",",
+        "      position: 9999,",
+        "      isPublished: false,",
+        "      published: { title: { en: \"compat\", ar: \"\" } },",
+        "    })",
+        "    .returning({ id: schema.pageSections.id });",
+        "",
+        "  // Save a draft, then publish it, the way the admin does.",
+        "  await db",
+        "    .update(schema.pageSections)",
+        "    .set({ draft: { title: { en: \"draft\", ar: \"\" } }, updatedAt: new Date() })",
+        "    .where(eq(schema.pageSections.id, inserted!.id));",
+        "  await db",
+        "    .update(schema.pageSections)",
+        "    .set({",
+        "      published: { title: { en: \"published\", ar: \"\" } },",
+        "      draft: null,",
+        "      isPublished: true,",
+        "      updatedAt: new Date(),",
+        "    })",
+        "    .where(eq(schema.pageSections.id, inserted!.id));",
+        "",
+        "  await db.delete(schema.pageSections).where(eq(schema.pageSections.id, inserted!.id));",
+        "} catch (error) {",
+        "  failures.push(`writes: ${(error as Error).message}`);",
+        "}",
         "await sql.end();",
         'if (failures.length) { console.error("INCOMPATIBLE\\n" + failures.join("\\n")); process.exit(1); }',
-        'console.log(`COMPATIBLE ${checked} tables`);',
+        'console.log(`COMPATIBLE ${checked} tables, reads and writes`);',
       ].join("\n"),
       "utf8",
     );
@@ -106,7 +154,8 @@ describe("the release in production can still read the migrated schema", () => {
       0,
       `the release at ${compatRef()} cannot read the schema this one produces:\n${output}`,
     );
-    assert.match(output, /COMPATIBLE \d+ tables/);
+    assert.match(output, /COMPATIBLE \d+ tables, reads and writes/);
+    console.log(`  ${/COMPATIBLE.*/.exec(output)?.[0]} @ ${compatRef().slice(0, 7)}`);
     // A probe that checked nothing would pass silently.
     const checked = Number(/COMPATIBLE (\d+) tables/.exec(output)?.[1] ?? "0");
     assert.ok(checked >= 10, `only ${checked} tables were probed — the probe found no schema`);

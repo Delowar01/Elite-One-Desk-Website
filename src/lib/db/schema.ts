@@ -253,7 +253,35 @@ export const pageSections = pgTable(
     /** One of the fixed block types in lib/cms/blocks.ts — never free markup. */
     blockType: varchar("block_type", { length: 48 }).notNull(),
     position: integer("position").notNull().default(0),
+    /**
+     * Whether the live site draws this section. Visibility, not membership —
+     * see `isDraftOnly`, which is the other question and a different one.
+     */
     isPublished: boolean("is_published").notNull().default(true),
+    /**
+     * Whether this row is part of the page's established composition at all.
+     *
+     * `false` — an ordinary section. It belongs to the page as published,
+     * whether it is visible (`isPublished`) or deliberately hidden.
+     * `true` — the row exists only because of a pending structural draft: a
+     * block added in the visual editor and not published yet, or a section a
+     * version restore brought back. It is not part of the published page.
+     *
+     * The two are not the same question and neither can be inferred from the
+     * other. A hidden established section and a pending new one both sit at
+     * `isPublished = false`, both may have empty published values, and both may
+     * carry a draft — so `isPublished`, emptiness, position and draft presence
+     * are all ambiguous, and code that guesses gets it wrong in the direction
+     * that deletes somebody's hidden section. This column says which it is, and
+     * it is the only thing that says so.
+     *
+     * What reads it: `capturePageSnapshot`, which records the published
+     * composition and so takes `isDraftOnly = false` — hidden sections
+     * included, pending ones not. Batch 8 and 10 add the rest: discarding a
+     * structural draft may remove draft-only rows and must never remove an
+     * established hidden one; publishing one clears the flag.
+     */
+    isDraftOnly: boolean("is_draft_only").notNull().default(false),
     /** What the live site renders. */
     published: jsonb("published").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
     /** Pending edits. Never rendered publicly; visible in preview mode only. */

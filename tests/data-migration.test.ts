@@ -523,17 +523,34 @@ process.exit(0);
     assert.equal(rows[0]!.n, 0);
   });
 
-  test("applyRestorePlan will not write to a section of another page", async () => {
+  test("a plan naming a foreign section is refused whole, and writes nothing", async () => {
     const name = giveFresh("restore_foreign_section");
     const sql = open(name);
 
-    // A plan built wrongly — one that names a section belonging to another page
-    // — must change nothing, even though it never comes out of
-    // `planRestoreFrom` that way. This is the low-level service's own guard.
+    /**
+     * The plan below is one no planner produces: it names a section of the
+     * ABOUT page in a restore of the HOME page, in `drafts` **and** in `order`.
+     *
+     * `order` is the half that matters and the half that was missed. Scoping
+     * each UPDATE by `page_id` already stopped the foreign row being written
+     * to — but the page's `draft_structure` is built from `plan.order`, so the
+     * foreign id sailed into HOME's structure regardless, and HOME would then
+     * have been carrying a pointer to somebody else's section.
+     *
+     * The answer is fail-closed: one stranger abandons the whole plan before a
+     * single statement runs. So this asserts absence everywhere — no draft on
+     * either page, no structure, no revision moved, no recreated row.
+     */
+    const before = await sql<{ n: number }[]>`select count(*)::int as n from page_sections`;
+
     const out = probeValue<{
-      updated: number[];
+      result: { ok: boolean; reason?: string; sectionIds?: number[] };
+      missingSection: { ok: boolean; reason?: string; sectionIds?: number[] };
       foreign: { id: number; draft: Values; revision: number };
       own: { id: number; draft: Values; revision: number };
+      homePage: { draftStructure: Values; revision: number };
+      aboutId: number;
+      sections: number;
     }>(
       name,
       `
@@ -558,15 +575,34 @@ const [homeSection] = await pick(home.id);
 const [aboutSection] = await pick(about.id);
 
 const draft = { headline: { en: "SHOULD NOT LAND", ar: "" } };
+const styles = { v: 1, nodes: {} };
+
 const result = await applyRestorePlan({
   pageId: home.id,
   drafts: [
-    { sectionId: aboutSection.id, draft, draftStyles: { v: 1, nodes: {} }, draftAnimation: "fade-up" },
-    { sectionId: homeSection.id, draft, draftStyles: { v: 1, nodes: {} }, draftAnimation: "fade-up" },
+    { sectionId: homeSection.id, draft, draftStyles: styles, draftAnimation: "fade-up" },
+    { sectionId: aboutSection.id, draft, draftStyles: styles, draftAnimation: "fade-up" },
   ],
+  // A recreate entry too, so the test can prove no inserted row survives the
+  // abandoned transaction.
+  recreate: [
+    { blockType: "rich-text", draft, draftStyles: styles, draftAnimation: "fade-up", visible: true },
+  ],
+  untouched: [],
+  order: [
+    { kind: "existing", sectionId: homeSection.id, visible: true },
+    { kind: "existing", sectionId: aboutSection.id, visible: true },
+    { kind: "recreate", index: 0, visible: true },
+  ],
+});
+
+// A section that has been deleted since the plan was made is the same answer.
+const missingSection = await applyRestorePlan({
+  pageId: home.id,
+  drafts: [{ sectionId: 2147483000, draft, draftStyles: styles, draftAnimation: "fade-up" }],
   recreate: [],
   untouched: [],
-  order: [{ kind: "existing", sectionId: homeSection.id, visible: true }],
+  order: [{ kind: "existing", sectionId: 2147483000, visible: true }],
 });
 
 const readOne = async (id: number) => {
@@ -577,28 +613,53 @@ const readOne = async (id: number) => {
     .limit(1);
   return row;
 };
+const [homePage] = await db
+  .select({ draftStructure: pages.draftStructure, revision: pages.revision })
+  .from(pages)
+  .where(eq(pages.id, home.id))
+  .limit(1);
+const all = await db.select({ id: pageSections.id }).from(pageSections);
 
 emit({
-  updated: result.updated,
+  result,
+  missingSection,
   foreign: await readOne(aboutSection.id),
   own: await readOne(homeSection.id),
+  homePage,
+  aboutId: aboutSection.id,
+  sections: all.length,
 });
 process.exit(0);
 `,
     );
 
+    // Refused by name, and it says which sections were the problem.
+    assert.equal(out.result.ok, false, "an invalid plan was applied");
+    assert.equal(out.result.reason, "unowned_sections");
+    assert.deepEqual(out.result.sectionIds, [out.aboutId]);
+    assert.deepEqual(out.missingSection, { ok: false, reason: "unowned_sections", sectionIds: [2147483000] });
+
+    // The foreign section is untouched …
     assert.equal(out.foreign.draft, null, "a plan for one page wrote into another page's section");
     assert.equal(out.foreign.revision, 0, "a foreign section's revision moved");
-    assert.deepEqual(out.updated, [out.own.id], "only the plan's own page should be reported updated");
-    assert.deepEqual(out.own.draft, { headline: { en: "SHOULD NOT LAND", ar: "" } });
-    assert.equal(out.own.revision, 1);
 
-    const [foreign] = await sql<{ n: number }[]>`
-      select count(*)::int as n from page_sections s
-        join pages p on p.id = s.page_id
-       where p.slug = 'about' and s.draft is not null
+    // … and so is the plan's *own* section: the rejection is atomic, not partial.
+    assert.equal(out.own.draft, null, "a rejected plan was partly applied");
+    assert.equal(out.own.revision, 0, "a rejected plan moved a revision");
+
+    // The page structure never saw the foreign id, and the page did not move.
+    assert.equal(out.homePage.draftStructure, null, "a rejected plan wrote a draft structure");
+    assert.equal(out.homePage.revision, 0, "a rejected plan bumped the page revision");
+
+    // And no recreated row survived the abandoned transaction.
+    assert.equal(out.sections, before[0]!.n, "a rejected plan left a section behind");
+
+    const [after] = await sql<{ drafts: number; structures: number }[]>`
+      select
+        (select count(*)::int from page_sections where draft is not null) as drafts,
+        (select count(*)::int from pages where draft_structure is not null) as structures
     `;
-    assert.equal(foreign!.n, 0);
+    assert.deepEqual(after, { drafts: 0, structures: 0 });
   });
 });
 
@@ -816,6 +877,7 @@ const snapshot = await capturePageSnapshot(page.id);
 await db.delete(pageSections).where(eq(pageSections.id, section.id));
 const plan = await planRestore(page.id, snapshot);
 const applied = await applyRestorePlan(plan, { userId: alice });
+if (!applied.ok) throw new Error("the restore was refused: " + applied.reason);
 
 const [someExisting] = await db
   .select({ updatedBy: pageSections.updatedBy })
@@ -883,5 +945,207 @@ process.exit(0);
       select updated_by from pages where slug = 'home'
     `;
     assert.equal(row!.updated_by, alice);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a hidden section and a pending one are not the same thing", () => {
+  /**
+   * Both sit at `is_published = false`, both can carry a draft, and both can
+   * have empty published values — so nothing about the row says which it is
+   * except `is_draft_only`. What hangs on getting it right: a snapshot of the
+   * published page must keep the hidden section (and keep it hidden), and must
+   * not contain a section nobody has published yet; and when Batch 8 discards a
+   * structural draft, the hidden one must survive and the pending one may not.
+   */
+  test("a hidden established section is in the snapshot, hidden; a draft-only one is not", async () => {
+    const name = giveFresh("draft_only_snapshot");
+    const sql = open(name);
+
+    const out = probeValue<{
+      hiddenId: number;
+      draftOnlyId: number;
+      snapshot: { sourceSectionId: number; visible: boolean; blockType: string }[];
+      defaults: { isDraftOnly: boolean };
+    }>(
+      name,
+      `
+import { asc, eq } from "drizzle-orm";
+
+import { emptyValues } from "@/lib/cms/values";
+import { getBlock } from "@/lib/cms/blocks";
+import { db } from "@/lib/db";
+import { pageSections, pages } from "@/lib/db/schema";
+import { capturePageSnapshot } from "@/lib/versions";
+
+const [page] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
+const live = await db
+  .select()
+  .from(pageSections)
+  .where(eq(pageSections.pageId, page.id))
+  .orderBy(asc(pageSections.position), asc(pageSections.id));
+
+// An established section the editor has hidden. Nothing else about it changes.
+await db
+  .update(pageSections)
+  .set({ isPublished: false })
+  .where(eq(pageSections.id, live[1].id));
+
+// A pending one, shaped the way a restore or a new editor block shapes it.
+const block = getBlock("rich-text");
+const [pending] = await db
+  .insert(pageSections)
+  .values({
+    pageId: page.id,
+    blockType: "rich-text",
+    position: 999,
+    isPublished: false,
+    isDraftOnly: true,
+    published: emptyValues(block),
+    draft: { title: { en: "NOT PUBLISHED YET", ar: "" } },
+  })
+  .returning({ id: pageSections.id });
+
+const snapshot = await capturePageSnapshot(page.id);
+
+// And the column's default, which is what every row written before this
+// migration — and by the previous release — lands on.
+const [anyExisting] = await db
+  .select({ isDraftOnly: pageSections.isDraftOnly })
+  .from(pageSections)
+  .where(eq(pageSections.id, live[0].id))
+  .limit(1);
+
+emit({
+  hiddenId: live[1].id,
+  draftOnlyId: pending.id,
+  snapshot: snapshot.sections.map((section) => ({
+    sourceSectionId: section.sourceSectionId,
+    visible: section.visible,
+    blockType: section.blockType,
+  })),
+  defaults: anyExisting,
+});
+process.exit(0);
+`,
+    );
+
+    const byId = new Map(out.snapshot.map((section) => [section.sourceSectionId, section]));
+
+    // The hidden section is in the snapshot, and its hiddenness is the fact
+    // history has to keep — restoring this version must put it back hidden,
+    // not leave it out.
+    const hidden = byId.get(out.hiddenId);
+    assert.ok(hidden, "a hidden established section was dropped from the snapshot");
+    assert.equal(hidden.visible, false, "the snapshot forgot that the section was hidden");
+
+    // The pending one was never part of the published page, so it is not in a
+    // snapshot of it.
+    assert.ok(
+      !byId.has(out.draftOnlyId),
+      "a section nobody has published reached a snapshot of the published page",
+    );
+
+    // Filtering on `isPublished` would have got both of these wrong.
+    assert.equal(out.defaults.isDraftOnly, false, "an established row did not default to established");
+
+    const [counts] = await sql<{ established: number; pending: number }[]>`
+      select
+        count(*) filter (where is_draft_only = false)::int as established,
+        count(*) filter (where is_draft_only)::int as pending
+      from page_sections s join pages p on p.id = s.page_id
+      where p.slug = 'home'
+    `;
+    assert.equal(counts!.pending, 1);
+    assert.equal(out.snapshot.length, counts!.established);
+  });
+
+  test("a section a restore brings back is draft-only until somebody publishes it", async () => {
+    const name = giveFresh("draft_only_restore");
+    const sql = open(name);
+
+    const out = probeValue<{
+      deletedId: number;
+      recreated: number[];
+      row: { isDraftOnly: boolean; isPublished: boolean; blockType: string; draft: Values };
+      secondSnapshot: number[];
+      firstSnapshot: number[];
+      inStructure: boolean;
+    }>(
+      name,
+      `
+import { asc, eq } from "drizzle-orm";
+
+import { db } from "@/lib/db";
+import { pageSections, pages } from "@/lib/db/schema";
+import { capturePageSnapshot, restoreVersionToDraft, savePageVersion } from "@/lib/versions";
+
+const [page] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
+const live = await db
+  .select()
+  .from(pageSections)
+  .where(eq(pageSections.pageId, page.id))
+  .orderBy(asc(pageSections.position), asc(pageSections.id));
+
+const firstSnapshot = await capturePageSnapshot(page.id);
+const versionId = await savePageVersion({ pageId: page.id, label: "before the delete" });
+
+const deleted = live[2];
+await db.delete(pageSections).where(eq(pageSections.id, deleted.id));
+
+const restored = await restoreVersionToDraft(versionId, page.id);
+if (!restored.ok) throw new Error("the restore was refused: " + restored.reason);
+
+const [row] = await db
+  .select({
+    isDraftOnly: pageSections.isDraftOnly,
+    isPublished: pageSections.isPublished,
+    blockType: pageSections.blockType,
+    draft: pageSections.draft,
+  })
+  .from(pageSections)
+  .where(eq(pageSections.id, restored.recreated[0]))
+  .limit(1);
+
+// A snapshot taken now is of the page as published — which no longer includes
+// the deleted section, and does not yet include the pending replacement.
+const secondSnapshot = await capturePageSnapshot(page.id);
+const [pageRow] = await db.select().from(pages).where(eq(pages.id, page.id)).limit(1);
+const structure = pageRow.draftStructure ?? { sections: [] };
+
+emit({
+  deletedId: deleted.id,
+  recreated: restored.recreated,
+  row,
+  firstSnapshot: firstSnapshot.sections.map((s) => s.sourceSectionId),
+  secondSnapshot: secondSnapshot.sections.map((s) => s.sourceSectionId),
+  inStructure: structure.sections.some((s) => s.sectionId === restored.recreated[0]),
+});
+process.exit(0);
+`,
+    );
+
+    assert.equal(out.recreated.length, 1, "the deleted section was not recreated");
+    const recreated = out.recreated[0]!;
+
+    assert.equal(out.row.isDraftOnly, true, "a restored section was treated as established");
+    assert.equal(out.row.isPublished, false, "a restore published a section");
+    assert.ok(out.row.draft, "the recreated section carries no draft");
+
+    // It is where a pending section belongs: in the draft structure, and out of
+    // the published composition.
+    assert.ok(out.inStructure, "the recreated section is not in the draft order");
+    assert.ok(out.firstSnapshot.includes(out.deletedId), "the original was not in the first snapshot");
+    assert.ok(
+      !out.secondSnapshot.includes(recreated),
+      "a restored section reached a snapshot before anybody published it",
+    );
+    assert.ok(!out.secondSnapshot.includes(out.deletedId), "a deleted section is still in the snapshot");
+
+    const [row] = await sql<{ is_draft_only: boolean; is_published: boolean }[]>`
+      select is_draft_only, is_published from page_sections where id = ${recreated}
+    `;
+    assert.deepEqual(row, { is_draft_only: true, is_published: false });
   });
 });

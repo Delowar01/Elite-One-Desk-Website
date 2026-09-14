@@ -1,0 +1,1 @@
+ALTER TABLE "page_sections" ADD COLUMN "is_draft_only" boolean DEFAULT false NOT NULL;
