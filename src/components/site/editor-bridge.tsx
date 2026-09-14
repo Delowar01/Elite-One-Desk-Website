@@ -142,10 +142,40 @@ export function EditorBridge({
     /* State: the two elements we are tracking, and nothing else.        */
     /* ---------------------------------------------------------------- */
 
-    let hovered: Element | null = null;
-    let selected: Element | null = null;
-    let selectedRect: Rect | null = null;
-    let boundsFrame = 0;
+    /**
+     * What is being tracked, and where it was last seen.
+     *
+     * The rectangle is remembered alongside the element so a re-measurement can
+     * be compared against it — that is what makes this quiet. Without it, every
+     * scrolled pixel would be a message; with it, a message is sent only when
+     * the box has actually moved.
+     */
+    type Tracked = { element: Element; address: string; rect: Rect | null };
+
+    let hover: Tracked | null = null;
+    let selection: Tracked | null = null;
+
+    /**
+     * Watches the boxes of whatever is tracked, and nothing else.
+     *
+     * This is what notices an element that has stopped — or started — being
+     * measurable without anybody scrolling: hidden by a class, collapsed
+     * inside a container, revealed when its parent opens. A `display: none`
+     * reports zero and the outline goes; the box coming back reports a size
+     * again and the outline returns. Position is somebody else's job — scroll,
+     * resize and the settle loop cover that.
+     */
+    const boxes = new ResizeObserver(() => schedule());
+
+    const watch = (element: Element | null, previous: Element | null) => {
+      if (previous && previous !== element) boxes.unobserve(previous);
+      if (element && element !== previous) boxes.observe(element);
+    };
+
+    const track = (element: Element): Tracked | null => {
+      const address = element.getAttribute("data-eod-address");
+      return address ? { element, address, rect: rectOf(element) } : null;
+    };
 
     const announce = () => {
       post({
@@ -160,53 +190,182 @@ export function EditorBridge({
       post({ type: "canvas.structure", sections: readStructure() });
     };
 
-    const sendHover = (element: Element | null) => {
-      if (element === hovered) return;
-      hovered = element;
-      if (!element) return post({ type: "canvas.hover", node: null, rect: null });
-      const node = describe(element);
-      const rect = rectOf(element);
-      post(node && rect ? { type: "canvas.hover", node, rect } : { type: "canvas.hover", node: null, rect: null });
+    const clearHover = () => {
+      if (!hover) return;
+      watch(null, hover.element);
+      hover = null;
+      post({ type: "canvas.hover", node: null, rect: null });
     };
 
-    const sendSelection = (element: Element | null) => {
-      selected = element;
-      selectedRect = element ? rectOf(element) : null;
-      if (!element) return post({ type: "canvas.selection", node: null, rect: null });
-      const node = describe(element);
-      if (!node || !selectedRect) {
-        selected = null;
-        selectedRect = null;
-        return post({ type: "canvas.selection", node: null, rect: null });
+    const setHover = (element: Element | null) => {
+      if (element === hover?.element) return;
+      if (!element) return clearHover();
+
+      const next = track(element);
+      const node = next ? describe(element) : null;
+      const previous = hover?.element ?? null;
+      if (!next || !node || !next.rect) {
+        watch(null, previous);
+        hover = null;
+        return post({ type: "canvas.hover", node: null, rect: null });
       }
-      post({ type: "canvas.selection", node, rect: selectedRect });
+      watch(element, previous);
+      hover = next;
+      post({ type: "canvas.hover", node, rect: next.rect });
+      stabilise();
+    };
+
+    const clearSelection = () => {
+      watch(null, selection?.element ?? null);
+      selection = null;
+      post({ type: "canvas.selection", node: null, rect: null });
+    };
+
+    const setSelection = (element: Element | null) => {
+      if (!element) return clearSelection();
+
+      const next = track(element);
+      const node = next ? describe(element) : null;
+      if (!next || !node || !next.rect) return clearSelection();
+
+      watch(element, selection?.element ?? null);
+      selection = next;
+      post({ type: "canvas.selection", node, rect: next.rect });
+      stabilise();
     };
 
     /**
-     * The selected element has probably moved. Coalesced to one frame, because
-     * this is driven by scrolling and a message per scroll event would be a
-     * message per pixel.
+     * Re-measures what is being tracked. Returns whether anything moved.
+     *
+     * The distinction this function exists to keep, and the reason it is not
+     * one branch:
+     *
+     *   **Disconnected** — the element is no longer in the document. It is not
+     *   selected any more, because it is not anything any more, and the editor
+     *   is told so with a proper `canvas.selection null`. Sending only a null
+     *   rectangle here was the defect: the outline vanished while the inspector
+     *   went on describing a node that had ceased to exist, and the Layers row
+     *   stayed lit.
+     *
+     *   **Connected but unmeasurable** — still in the document, momentarily
+     *   measuring nothing: mid-transition, inside a collapsed container, a
+     *   reveal that has not run. That is a drawing problem, not a selection
+     *   one. The overlay goes away for those frames; the selection does not,
+     *   and the outline comes back when the element does.
      */
-    const syncBounds = () => {
-      if (boundsFrame) return;
-      boundsFrame = window.requestAnimationFrame(() => {
-        boundsFrame = 0;
-        if (!selected) return;
-        // Gone from the document — an element that unmounted while selected.
-        if (!selected.isConnected) {
-          const address = selected.getAttribute("data-eod-address");
-          selected = null;
-          selectedRect = null;
-          if (address) post({ type: "canvas.bounds", address, rect: null });
-          return;
+    const measure = (): boolean => {
+      let moved = false;
+
+      if (hover) {
+        if (!hover.element.isConnected) {
+          clearHover();
+          moved = true;
+        } else {
+          const rect = rectOf(hover.element);
+          if (!sameRect(rect, hover.rect)) {
+            moved = true;
+            hover.rect = rect;
+            const node = describe(hover.element);
+            // The protocol says a hover is a node and a rectangle or neither,
+            // so a hovered element that has stopped being measurable is simply
+            // not hovered. There is nothing to draw and nothing to describe.
+            if (node && rect) post({ type: "canvas.hover", node, rect });
+            else clearHover();
+          }
         }
-        const rect = rectOf(selected);
-        if (sameRect(rect, selectedRect)) return;
-        selectedRect = rect;
-        const address = selected.getAttribute("data-eod-address");
-        if (!address) return;
-        post(rect ? { type: "canvas.bounds", address, rect } : { type: "canvas.bounds", address, rect: null });
-      });
+      }
+
+      if (selection) {
+        if (!selection.element.isConnected) {
+          clearSelection();
+          return true;
+        }
+        const rect = rectOf(selection.element);
+        if (!sameRect(rect, selection.rect)) {
+          moved = true;
+          selection.rect = rect;
+          post(
+            rect
+              ? { type: "canvas.bounds", address: selection.address, rect }
+              : { type: "canvas.bounds", address: selection.address, rect: null },
+          );
+        }
+      }
+
+      return moved;
+    };
+
+    /* ---------------------------------------------------------------- */
+    /* Keeping up with things that move                                  */
+    /* ---------------------------------------------------------------- */
+
+    /** Consecutive frames without movement before the settle loop stops. */
+    const STABLE_FRAMES = 3;
+    /** However lively the page is, the loop is over by then. */
+    const SETTLE_MS = 900;
+
+    let frame = 0;
+    let settleUntil = 0;
+    let stableFrames = 0;
+
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(tick);
+    };
+
+    function tick() {
+      frame = 0;
+      const moved = measure();
+      if (!hover && !selection) return;
+      if (Date.now() >= settleUntil) return;
+      stableFrames = moved ? 0 : stableFrames + 1;
+      if (stableFrames < STABLE_FRAMES) schedule();
+    }
+
+    /**
+     * Watch for a few frames, because the thing just selected may still be
+     * moving.
+     *
+     * A CSS transform or one of the site's own reveal transitions moves an
+     * element without firing scroll or resize, so an outline drawn once at the
+     * moment of the click ends up beside the element rather than on it. This
+     * follows it until it has held still for three frames, and gives up after
+     * `SETTLE_MS` whatever happens — there is no permanent animation loop here,
+     * and nothing runs at all while nothing is tracked.
+     */
+    function stabilise() {
+      settleUntil = Date.now() + SETTLE_MS;
+      stableFrames = 0;
+      schedule();
+    }
+
+    /**
+     * The one observer, and it is deliberately almost nothing.
+     *
+     * A selected element can be removed without a scroll, a resize or a pointer
+     * move — and then nothing would ever notice, because every other signal
+     * here is driven by something the visitor did. `childList` on the subtree is
+     * the narrowest question that answers "did anything appear or disappear",
+     * the callback does no work beyond asking for a frame, and it only runs at
+     * all while something is being tracked. It is not a page scanner and it
+     * exists only inside an authorised canvas.
+     */
+    const observer = new MutationObserver(() => {
+      if (hover || selection) schedule();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    /**
+     * A transform moves an element without firing scroll, resize or a mutation,
+     * and without changing its size — so none of the signals above see it. The
+     * browser does announce the transition itself, though, and these events
+     * bubble, so one listener covers the page.
+     *
+     * Cheaper than watching for movement: the handler re-arms the settle loop
+     * and returns, and the loop stops three still frames later. When nothing is
+     * tracked it does not even do that.
+     */
+    const onMotion = () => {
+      if (hover || selection) stabilise();
     };
 
     /* ---------------------------------------------------------------- */
@@ -220,8 +379,8 @@ export function EditorBridge({
       return target.closest(SELECTABLE);
     };
 
-    const onPointerMove = (event: PointerEvent) => sendHover(closestNode(event.target));
-    const onPointerLeave = () => sendHover(null);
+    const onPointerMove = (event: PointerEvent) => setHover(closestNode(event.target));
+    const onPointerLeave = () => setHover(null);
 
     const onClick = (event: MouseEvent) => {
       // A modified click is the browser's, not ours: open-in-new-tab still
@@ -234,7 +393,7 @@ export function EditorBridge({
       // editing, mid-edit, because they aimed at a heading.
       event.preventDefault();
       event.stopPropagation();
-      sendSelection(element);
+      setSelection(element);
     };
 
     // Nothing in the canvas should ever be submitted: the enquiry form is part
@@ -261,18 +420,22 @@ export function EditorBridge({
           if (!element) {
             // The address is well formed but nothing on this page answers to
             // it — a layer from a document that has since been replaced.
-            sendSelection(null);
+            setSelection(null);
             return;
           }
           if (message.scrollIntoView) {
             element.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
           }
-          sendSelection(element);
+          setSelection(element);
+          // A smooth scroll is still travelling when this returns, so the
+          // rectangle measured a moment ago is already out of date. The settle
+          // loop follows it the rest of the way.
+          stabilise();
           return;
         }
         case "editor.clearSelection":
-          sendHover(null);
-          sendSelection(null);
+          setHover(null);
+          setSelection(null);
           return;
       }
     };
@@ -291,14 +454,21 @@ export function EditorBridge({
       resizeFrame = window.requestAnimationFrame(() => {
         resizeFrame = 0;
         announce();
-        syncBounds();
+        // A width change re-lays out the page, and the reflow is not
+        // instantaneous, so this follows the element rather than measuring it
+        // once and hoping.
+        stabilise();
       });
     };
 
     window.addEventListener("message", onMessage);
     window.addEventListener("resize", onResize);
-    // Capture, so a scroll inside any container counts, not only the document's.
-    window.addEventListener("scroll", syncBounds, { capture: true, passive: true });
+    for (const type of ["transitionrun", "transitionend", "animationstart", "animationend"]) {
+      document.addEventListener(type, onMotion, { capture: true, passive: true });
+    }
+    // Capture, so a scroll inside any container counts, not only the
+    // document's. One frame per batch of events, not one message per pixel.
+    window.addEventListener("scroll", schedule, { capture: true, passive: true });
     document.addEventListener("pointermove", onPointerMove, { passive: true });
     document.addEventListener("pointerleave", onPointerLeave);
     document.addEventListener("click", onClick, { capture: true });
@@ -309,12 +479,17 @@ export function EditorBridge({
     return () => {
       window.removeEventListener("message", onMessage);
       window.removeEventListener("resize", onResize);
-      window.removeEventListener("scroll", syncBounds, { capture: true });
+      window.removeEventListener("scroll", schedule, { capture: true });
       document.removeEventListener("pointermove", onPointerMove);
       document.removeEventListener("pointerleave", onPointerLeave);
       document.removeEventListener("click", onClick, { capture: true });
       document.removeEventListener("submit", onSubmit, { capture: true });
-      if (boundsFrame) window.cancelAnimationFrame(boundsFrame);
+      for (const type of ["transitionrun", "transitionend", "animationstart", "animationend"]) {
+        document.removeEventListener(type, onMotion, { capture: true });
+      }
+      observer.disconnect();
+      boxes.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
     };
   }, [bridgeId, pageId, slug, locale]);

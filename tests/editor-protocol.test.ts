@@ -294,6 +294,21 @@ describe("version 2: structure, hover, selection and bounds", () => {
     }
   });
 
+  /**
+   * The two "nothing" messages do not mean the same thing, and the handlers
+   * must not treat them as if they did.
+   *
+   *   `canvas.selection` with a null node — the node is gone from the document.
+   *   Nothing is selected any more: no overlay, no inspector, no lit layer.
+   *
+   *   `canvas.bounds` with a null rect — the node is still there and cannot be
+   *   measured this frame: mid-transition, collapsed, not yet revealed. The
+   *   overlay goes; the selection stays, and the outline returns when the
+   *   element does.
+   *
+   * Collapsing the second into the first empties the inspector because an
+   * animation was halfway through.
+   */
   test("bounds names an address and a rectangle, or an address and nothing", () => {
     assert.deepEqual(
       readCanvasMessage(wrap({ type: "canvas.bounds", address: NODE.address, rect: RECT }), {
@@ -311,6 +326,14 @@ describe("version 2: structure, hover, selection and bounds", () => {
       readCanvasMessage(wrap({ type: "canvas.bounds", address: "div > p", rect: RECT }), { bridgeId: BRIDGE }),
       null,
     );
+
+    // A bounds message never carries a node, so it can never be read as an
+    // answer to "what is selected" — only to "where is it".
+    const bounds = readCanvasMessage(
+      wrap({ type: "canvas.bounds", address: NODE.address, rect: null }),
+      { bridgeId: BRIDGE },
+    );
+    assert.ok(bounds && !("node" in bounds));
   });
 });
 

@@ -91,7 +91,19 @@ export function VisualCanvas({
   const [loads, setLoads] = useState(0);
   const [stage, setStage] = useState({ width: 0, height: 0 });
   const [hover, setHover] = useState<{ node: EditorNodeMeta; rect: Rect } | null>(null);
-  const [selection, setSelection] = useState<{ node: EditorNodeMeta; rect: Rect } | null>(null);
+  /**
+   * The selected node, and where it is — which are two different facts.
+   *
+   * `rect` is nullable on purpose. A node that is still on the page but
+   * momentarily measures nothing — mid-transition, inside something collapsed,
+   * a reveal that has not run — has no box to draw and is still the selected
+   * node. Dropping the whole selection for a bad measurement would empty the
+   * inspector because an animation was halfway through; keeping the node and
+   * losing only the rectangle means the outline returns by itself when the
+   * element does. A node that has genuinely left the document arrives as
+   * `canvas.selection null` instead, and that clears everything.
+   */
+  const [selection, setSelection] = useState<{ node: EditorNodeMeta; rect: Rect | null } | null>(null);
 
   /**
    * A new document gets a new bridge id, every time.
@@ -161,9 +173,10 @@ export function VisualCanvas({
           onSelection(message.node);
           return;
         case "canvas.bounds":
+          // Only ever the rectangle. Whether something is selected at all is
+          // `canvas.selection`'s to say, and this message never answers it.
           setSelection((current) => {
             if (!current || current.node.address !== message.address) return current;
-            if (!message.rect) return null;
             return { node: current.node, rect: message.rect };
           });
           return;
@@ -270,7 +283,7 @@ export function VisualCanvas({
           {hover && (!selection || selection.node.address !== hover.node.address) ? (
             <Outline rect={toOverlayRect(hover.rect, view)} viewport={viewport} tone="hover" />
           ) : null}
-          {selection ? (
+          {selection?.rect ? (
             <Outline
               rect={toOverlayRect(selection.rect, view)}
               viewport={viewport}
