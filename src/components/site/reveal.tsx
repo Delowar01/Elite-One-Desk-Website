@@ -11,6 +11,17 @@ type Props = {
   className?: string;
   /** Staggers direct children instead of moving the wrapper itself. */
   stagger?: number;
+  /**
+   * Plain data attributes to put on the element this renders.
+   *
+   * The Visual Editor marks a repeatable row by wrapping it, and a great many
+   * rows on this site are wrapped by a `Reveal` already. Adding a second
+   * element around each one purely to hold two attributes would change the
+   * layout of eleven blocks; passing them through does not. Strings only, and
+   * only ever `data-*` — this is a client component, and a prop it is given
+   * crosses the serialisation boundary.
+   */
+  nodeAttrs?: Record<string, string | undefined>;
 };
 
 const VARIANT_CLASS: Record<string, string> = {
@@ -36,6 +47,7 @@ export function Reveal({
   variant = "fade-up",
   className = "",
   stagger,
+  nodeAttrs,
 }: Props) {
   const ref = useRef<HTMLElement>(null);
   const [shown, setShown] = useState(false);
@@ -74,6 +86,7 @@ export function Reveal({
       className={classes}
       data-shown={shown ? "true" : "false"}
       style={style}
+      {...nodeAttrs}
     >
       {children}
     </Tag>

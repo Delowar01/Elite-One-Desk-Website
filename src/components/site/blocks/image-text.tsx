@@ -5,15 +5,17 @@ import { Reveal } from "@/components/site/reveal";
 import { Icon } from "@/components/ui/icon";
 import { mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
+import { editorNode } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
-export function ImageTextBlock({ values, ctx }: BlockProps) {
+export function ImageTextBlock({ values, ctx, editor }: BlockProps) {
   const { locale } = ctx;
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const imageSide = str(values, "imageSide", "start");
   const ctaHref = str(values, "ctaHref");
   const ctaLabel = text(values, "ctaLabel", locale);
   const body = text(values, "body", locale);
+  const node = editorNode(editor);
 
   return (
     <section className="section-tight">
@@ -27,7 +29,10 @@ export function ImageTextBlock({ values, ctx }: BlockProps) {
             variant="slide-in"
             className={imageSide === "end" ? "lg:order-2" : undefined}
           >
-            <div className="overflow-hidden rounded-[var(--radius-lg)] border border-line">
+            <div
+              className="overflow-hidden rounded-[var(--radius-lg)] border border-line"
+              {...node("field:image")}
+            >
               <MediaImage
                 media={image}
                 locale={locale}
@@ -41,15 +46,29 @@ export function ImageTextBlock({ values, ctx }: BlockProps) {
 
         <Reveal>
           {text(values, "eyebrow", locale) ? (
-            <p className="eyebrow mb-4">{text(values, "eyebrow", locale)}</p>
+            <p className="eyebrow mb-4" {...node("field:eyebrow")}>
+              {text(values, "eyebrow", locale)}
+            </p>
           ) : null}
           {text(values, "title", locale) ? (
-            <h2 className="mb-5 text-[length:var(--text-h2)]">{text(values, "title", locale)}</h2>
+            <h2 className="mb-5 text-[length:var(--text-h2)]" {...node("field:title")}>
+              {text(values, "title", locale)}
+            </h2>
           ) : null}
-          {body ? <div className="prose-eod" dangerouslySetInnerHTML={{ __html: body }} /> : null}
+          {body ? (
+            <div
+              className="prose-eod"
+              {...node("field:body")}
+              dangerouslySetInnerHTML={{ __html: body }}
+            />
+          ) : null}
           {ctaLabel && ctaHref ? (
             <div className="mt-7">
-              <Link href={localeHref(locale, ctaHref)} className="btn btn-ghost">
+              <Link
+                href={localeHref(locale, ctaHref)}
+                className="btn btn-ghost"
+                {...node("field:ctaLabel")}
+              >
                 {ctaLabel}
                 <Icon name="arrowRight" size={16} className="flip-rtl" />
               </Link>

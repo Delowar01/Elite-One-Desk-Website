@@ -48,7 +48,7 @@ export default async function CmsPage({ params, searchParams }: Params) {
     <>
       {/* Suppressed inside the Visual Editor only — see the homepage route. */}
       {isPreview && !editor ? <PreviewBanner /> : null}
-      <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} />
+      <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} editorMode={Boolean(editor)} />
       {editor ? (
         <EditorBridge bridgeId={editor.bridgeId} pageId={page.id} slug={page.slug} locale={lang} />
       ) : null}

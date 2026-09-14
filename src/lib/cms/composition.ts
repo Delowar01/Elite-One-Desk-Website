@@ -38,6 +38,20 @@ export type ComposedSection = {
   animation: string;
   values: Record<string, unknown>;
   isDraft: boolean;
+  /**
+   * Whether this row exists only because of a pending structural draft. Not
+   * rendered differently — it is here so the editor's Layers panel can say
+   * "new" about a section nobody has published, which `visible` cannot.
+   */
+  isDraftOnly: boolean;
+  /**
+   * The visibility this section would have once published. In preview it comes
+   * from the structural draft when there is one, because that is the intent
+   * being previewed, and from the row otherwise. Either way it is *intent*, not
+   * whether the section is on screen — a hidden section is still drawn in
+   * preview so the editor can reach it.
+   */
+  visible: boolean;
 };
 
 const published = (row: CompositionRow): ComposedSection => ({
@@ -46,14 +60,18 @@ const published = (row: CompositionRow): ComposedSection => ({
   animation: row.animation,
   values: row.published ?? {},
   isDraft: false,
+  isDraftOnly: false,
+  visible: true,
 });
 
-const editing = (row: CompositionRow): ComposedSection => ({
+const editing = (row: CompositionRow, visible = row.isPublished): ComposedSection => ({
   id: row.id,
   blockType: row.blockType,
   animation: row.animation,
   values: (row.draft ?? row.published) ?? {},
   isDraft: Boolean(row.draft),
+  isDraftOnly: row.isDraftOnly,
+  visible,
 });
 
 /**
@@ -98,7 +116,7 @@ export function composePreview(
   rows: readonly CompositionRow[],
   structure: DraftStructure | null,
 ): ComposedSection[] {
-  if (!structure) return rows.map(editing);
+  if (!structure) return rows.map((row) => editing(row));
 
   const owned = new Map(rows.map((row) => [row.id, row]));
   const seen = new Set<number>();
@@ -108,7 +126,9 @@ export function composePreview(
     const row = owned.get(entry.sectionId);
     if (!row || seen.has(row.id)) continue;
     seen.add(row.id);
-    out.push(editing(row));
+    // The draft's own intent, not the row's current flag: the point of the
+    // document is that it says what publishing it would do.
+    out.push(editing(row, entry.visible));
   }
   return out;
 }

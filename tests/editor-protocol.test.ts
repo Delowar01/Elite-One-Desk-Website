@@ -30,6 +30,24 @@ import {
 } from "@/lib/visual-editor/viewport";
 
 const BRIDGE = "0123456789abcdef0123456789abcdef";
+const RECT = { x: 10, y: 20, width: 300, height: 40 };
+const NODE = {
+  address: "section:7/field:links/item:i_aaaaaaaaaa/field:label",
+  kind: "field" as const,
+  sectionId: 7,
+  blockType: "quick-links",
+  relativePath: "field:links/item:i_aaaaaaaaaa/field:label",
+  text: "Plan a Trip",
+};
+const SECTION = {
+  address: "section:7",
+  sectionId: 7,
+  blockType: "quick-links",
+  position: 1,
+  isDraft: false,
+  isDraftOnly: false,
+  visible: true,
+};
 const READY = {
   type: "canvas.ready" as const,
   pageId: 7,
@@ -107,6 +125,15 @@ describe("the editor reads only what the canvas is allowed to say", () => {
     }
   });
 
+  test("this build speaks version 2, and a version 1 canvas is not half-understood", () => {
+    assert.equal(PROTOCOL_VERSION, 2);
+    // A document served by the previous release answers in v1. Selection did
+    // not exist there, so the two simply do not recognise each other — which is
+    // the outcome that cannot go subtly wrong.
+    assert.equal(readCanvasMessage(wrap(READY, { v: 1 }), { bridgeId: BRIDGE }), null);
+    assert.equal(readEditorMessage(wrap({ type: "editor.ping", at: 1 }, { v: 1 }), { bridgeId: BRIDGE }), null);
+  });
+
   test("a message carrying another bridge id is rejected — that is what makes a stale frame harmless", () => {
     const other = "f".repeat(32);
     assert.equal(readCanvasMessage(wrap(READY), { bridgeId: other }), null);
@@ -152,19 +179,202 @@ describe("the editor reads only what the canvas is allowed to say", () => {
 
 /* -------------------------------------------------------------------------- */
 
+describe("version 2: structure, hover, selection and bounds", () => {
+  test("a structure message is read entry by entry", () => {
+    const message = readCanvasMessage(wrap({ type: "canvas.structure", sections: [SECTION] }), {
+      bridgeId: BRIDGE,
+    });
+    assert.deepEqual(message, { type: "canvas.structure", sections: [SECTION] });
+  });
+
+  test("one malformed entry loses a row, not the whole panel", () => {
+    const message = readCanvasMessage(
+      wrap({
+        type: "canvas.structure",
+        sections: [
+          SECTION,
+          { ...SECTION, address: "div > p" },
+          { ...SECTION, sectionId: 9 },
+          { ...SECTION, visible: "yes" },
+          null,
+          "nope",
+        ],
+      }),
+      { bridgeId: BRIDGE },
+    );
+    assert.deepEqual(message, { type: "canvas.structure", sections: [SECTION] });
+  });
+
+  test("a section entry has to be a section, not a field pretending", () => {
+    for (const over of [
+      { address: "section:7/field:title" },
+      { address: "field:title" },
+      { sectionId: 0 },
+      { blockType: "" },
+      { position: -1 },
+      { position: 1.5 },
+      { isDraft: 1 },
+      { isDraftOnly: null },
+    ]) {
+      const message = readCanvasMessage(
+        wrap({ type: "canvas.structure", sections: [{ ...SECTION, ...over }] }),
+        { bridgeId: BRIDGE },
+      );
+      assert.deepEqual(message, { type: "canvas.structure", sections: [] }, JSON.stringify(over));
+    }
+  });
+
+  test("hover and selection carry a node and a rectangle, or nothing", () => {
+    for (const type of ["canvas.hover", "canvas.selection"] as const) {
+      assert.deepEqual(readCanvasMessage(wrap({ type, node: NODE, rect: RECT }), { bridgeId: BRIDGE }), {
+        type,
+        node: NODE,
+        rect: RECT,
+      });
+      assert.deepEqual(readCanvasMessage(wrap({ type, node: null, rect: null }), { bridgeId: BRIDGE }), {
+        type,
+        node: null,
+        rect: null,
+      });
+      // Half a message is not a message.
+      assert.equal(readCanvasMessage(wrap({ type, node: NODE, rect: null }), { bridgeId: BRIDGE }), null);
+      assert.equal(readCanvasMessage(wrap({ type, rect: RECT }), { bridgeId: BRIDGE }), null);
+    }
+  });
+
+  test("node metadata is rebuilt field by field, and the two halves must agree", () => {
+    for (const over of [
+      { address: "div > p" },
+      { address: "field:title" },
+      { address: "" },
+      { kind: "anything" },
+      { kind: "" },
+      // The section id beside the address has to be the one inside it.
+      { sectionId: 8 },
+      { sectionId: 0 },
+      // The relative path has to be the address without its section.
+      { relativePath: "field:title" },
+      { relativePath: "" },
+      { blockType: "" },
+      { blockType: "x".repeat(60) },
+      // A section node cannot have a path.
+      { kind: "section" },
+    ]) {
+      assert.equal(
+        readCanvasMessage(wrap({ type: "canvas.hover", node: { ...NODE, ...over }, rect: RECT }), {
+          bridgeId: BRIDGE,
+        }),
+        null,
+        JSON.stringify(over),
+      );
+    }
+  });
+
+  test("a rectangle has to be finite, sized and sane", () => {
+    for (const rect of [
+      { x: 0, y: 0, width: 0, height: 10 },
+      { x: 0, y: 0, width: 10, height: 0 },
+      { x: Number.NaN, y: 0, width: 10, height: 10 },
+      { x: 0, y: Number.POSITIVE_INFINITY, width: 10, height: 10 },
+      { x: 0, y: 0, width: Number.NaN, height: 10 },
+      { x: 0, y: 0, width: 10, height: Number.NEGATIVE_INFINITY },
+      { x: "0", y: 0, width: 10, height: 10 },
+      // An element inside an animating container can measure absurdly for one
+      // frame, and an overlay drawn from it covers the editor.
+      { x: 0, y: 0, width: 5_000_000, height: 10 },
+      { x: -9_000_000, y: 0, width: 10, height: 10 },
+      null,
+      "big",
+    ]) {
+      assert.equal(
+        readCanvasMessage(wrap({ type: "canvas.hover", node: NODE, rect }), { bridgeId: BRIDGE }),
+        null,
+        JSON.stringify(rect),
+      );
+    }
+  });
+
+  test("bounds names an address and a rectangle, or an address and nothing", () => {
+    assert.deepEqual(
+      readCanvasMessage(wrap({ type: "canvas.bounds", address: NODE.address, rect: RECT }), {
+        bridgeId: BRIDGE,
+      }),
+      { type: "canvas.bounds", address: NODE.address, rect: RECT },
+    );
+    assert.deepEqual(
+      readCanvasMessage(wrap({ type: "canvas.bounds", address: NODE.address, rect: null }), {
+        bridgeId: BRIDGE,
+      }),
+      { type: "canvas.bounds", address: NODE.address, rect: null },
+    );
+    assert.equal(
+      readCanvasMessage(wrap({ type: "canvas.bounds", address: "div > p", rect: RECT }), { bridgeId: BRIDGE }),
+      null,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
 describe("the canvas reads only what the editor is allowed to say", () => {
-  test("a ping is accepted; nothing else is", () => {
+  test("ping, select and clear are the whole vocabulary", () => {
     assert.deepEqual(readEditorMessage(wrap({ type: "editor.ping", at: 9 }), { bridgeId: BRIDGE }), {
       type: "editor.ping",
       at: 9,
     });
+    assert.deepEqual(
+      readEditorMessage(wrap({ type: "editor.select", address: "section:7", scrollIntoView: true }), {
+        bridgeId: BRIDGE,
+      }),
+      { type: "editor.select", address: "section:7", scrollIntoView: true },
+    );
+    // Absent means no, rather than unknown.
+    assert.deepEqual(
+      readEditorMessage(wrap({ type: "editor.select", address: "section:7" }), { bridgeId: BRIDGE }),
+      { type: "editor.select", address: "section:7", scrollIntoView: false },
+    );
+    assert.deepEqual(readEditorMessage(wrap({ type: "editor.clearSelection" }), { bridgeId: BRIDGE }), {
+      type: "editor.clearSelection",
+    });
+  });
+
+  test("nothing that writes anything is in it — however plausible it sounds", () => {
+    // This batch selects. A canvas that honoured any of these would be editing
+    // the page from a message, which is not a thing that exists yet.
     for (const message of [
-      { type: "editor.select", address: "section:1" },
-      { type: "editor.write", values: {} },
+      { type: "editor.setContent", address: "section:7/field:title", value: "x" },
+      { type: "editor.setStyle", address: "section:7", tokens: {} },
+      { type: "editor.setMedia", address: "section:7/field:image", mediaId: 3 },
+      { type: "editor.reorder", from: 0, to: 1 },
+      { type: "editor.delete", address: "section:7" },
+      { type: "editor.publish" },
+      { type: "editor.save" },
       { type: "canvas.ready" },
+      { type: "" },
+      { type: 1 },
+    ]) {
+      assert.equal(readEditorMessage(wrap(message), { bridgeId: BRIDGE }), null, JSON.stringify(message));
+    }
+  });
+
+  test("a select has to name an address the parser accepts", () => {
+    for (const address of ["", "div > p", "field:title", "section:0", "section:7/field:a@ar", 42, null]) {
+      assert.equal(
+        readEditorMessage(wrap({ type: "editor.select", address, scrollIntoView: true }), {
+          bridgeId: BRIDGE,
+        }),
+        null,
+        JSON.stringify(address),
+      );
+    }
+  });
+
+  test("a malformed ping is not a ping", () => {
+    for (const message of [
       { type: "editor.ping" },
       { type: "editor.ping", at: "now" },
       { type: "editor.ping", at: -1 },
+      { type: "editor.ping", at: 1.5 },
     ]) {
       assert.equal(readEditorMessage(wrap(message), { bridgeId: BRIDGE }), null, JSON.stringify(message));
     }

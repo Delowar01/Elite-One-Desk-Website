@@ -6,6 +6,7 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
+import { editorNode, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -13,7 +14,7 @@ import type { BlockProps } from "./context";
  * from the rest — an inset panel on its own ground, so it reads as a priority
  * rather than another row in the list.
  */
-export function FeaturedServiceBlock({ values, ctx }: BlockProps) {
+export function FeaturedServiceBlock({ values, ctx, editor }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("featured-service")!;
   const pointFields = def.fields.find((f) => f.name === "points")!.itemFields ?? [];
@@ -21,6 +22,7 @@ export function FeaturedServiceBlock({ values, ctx }: BlockProps) {
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const ctaHref = str(values, "ctaHref", "/contact");
   const ctaLabel = text(values, "ctaLabel", locale);
+  const node = editorNode(editor);
 
   return (
     <section className="section-tight">
@@ -50,14 +52,24 @@ export function FeaturedServiceBlock({ values, ctx }: BlockProps) {
               }`}
             >
               <div>
-                <p className="eyebrow">{text(values, "eyebrow", locale)}</p>
-                <h2 className="mt-4 text-[length:var(--text-h2)]">{text(values, "title", locale)}</h2>
-                <p className="lede mt-5 max-w-xl">{text(values, "body", locale)}</p>
+                <p className="eyebrow" {...node("field:eyebrow")}>
+                  {text(values, "eyebrow", locale)}
+                </p>
+                <h2 className="mt-4 text-[length:var(--text-h2)]" {...node("field:title")}>
+                  {text(values, "title", locale)}
+                </h2>
+                <p className="lede mt-5 max-w-xl" {...node("field:body")}>
+                  {text(values, "body", locale)}
+                </p>
 
                 {points.length ? (
                   <ul className={`mt-8 grid gap-x-8 gap-y-3 sm:grid-cols-2 ${image ? "" : "lg:grid-cols-3"}`}>
                     {points.map((point) => (
-                      <li key={point.label} className="flex items-start gap-2.5 text-small text-body">
+                      <li
+                        key={point.label}
+                        className="flex items-start gap-2.5 text-small text-body"
+                        {...node(itemPath("points", point), "item")}
+                      >
                         <Icon
                           name="check"
                           size={15}
@@ -72,7 +84,11 @@ export function FeaturedServiceBlock({ values, ctx }: BlockProps) {
 
                 {ctaLabel ? (
                   <div className="mt-9">
-                    <Link href={localeHref(locale, ctaHref)} className="btn btn-primary">
+                    <Link
+                      href={localeHref(locale, ctaHref)}
+                      className="btn btn-primary"
+                      {...node("field:ctaLabel")}
+                    >
                       {ctaLabel}
                       <Icon name="arrowRight" size={17} className="flip-rtl" />
                     </Link>
@@ -81,7 +97,10 @@ export function FeaturedServiceBlock({ values, ctx }: BlockProps) {
               </div>
 
               {image ? (
-                <div className="relative overflow-hidden rounded-[var(--radius-lg)] border border-line">
+                <div
+                  className="relative overflow-hidden rounded-[var(--radius-lg)] border border-line"
+                  {...node("field:image")}
+                >
                   <MediaImage
                     media={image}
                     locale={locale}

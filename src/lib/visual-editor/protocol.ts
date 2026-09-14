@@ -1,4 +1,7 @@
+import { formatAddress, formatNodePath, parseAddress } from "@/lib/cms/address";
 import { LOCALES, type Locale } from "@/lib/i18n/config";
+import { isUsableRect, type Rect } from "./overlay";
+import type { EditorNodeKind } from "./render";
 
 /**
  * The only language the Visual Editor and its canvas speak.
@@ -19,8 +22,9 @@ import { LOCALES, type Locale } from "@/lib/i18n/config";
  *   · **A place for secrets.** No cookie, CSRF token, password or key ever
  *     travels in a payload or an iframe URL. A `postMessage` is readable by any
  *     script in the receiving document.
- *   · **Finished.** Batch 3 is a page-level handshake only. Selection, styles
- *     and content commands arrive in later batches and will raise the version.
+ *   · **Finished.** Version 2 adds selection: what the page is made of, what
+ *     the pointer is over, what is selected and where it sits. Content, style
+ *     and motion commands arrive in later batches and will raise it again.
  *
  * Both ends check origin and source as well as the fields below; neither alone
  * is enough. See `bridgeOrigin` for why the origin is the window's own.
@@ -28,8 +32,19 @@ import { LOCALES, type Locale } from "@/lib/i18n/config";
 
 export const EDITOR_CHANNEL = "eod.visual-editor";
 
-/** Raised whenever a message shape changes. A mismatch is silence, not a guess. */
-export const PROTOCOL_VERSION = 1;
+/**
+ * Raised whenever a message shape changes. A mismatch is silence, not a guess.
+ *
+ * 1 — the page-level handshake.
+ * 2 — selection: structure, hover, selection, bounds, and the editor's own
+ *     `select` / `clearSelection`.
+ *
+ * Bumped rather than extended in place: a canvas document served by an older
+ * build must not answer a newer editor with a message the editor will read
+ * half of. The two simply do not recognise each other, which is the outcome
+ * that cannot go subtly wrong.
+ */
+export const PROTOCOL_VERSION = 2;
 
 /* -------------------------------------------------------------------------- */
 /* Bridge ids                                                                 */
@@ -57,6 +72,56 @@ export function newBridgeId(): string {
 /* Messages                                                                   */
 /* -------------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------- */
+/* Nodes                                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One thing an editor can point at.
+ *
+ * Identity is the stable address and nothing else. No `outerHTML`, no class
+ * list, no CSS selector, no DOM index — those are descriptions of how the page
+ * happens to be built today, and a selection that survives an edit cannot be
+ * built on any of them.
+ *
+ * `text` is a short plain-text excerpt of what the node currently shows, for
+ * the inspector to label a row by. It is text, trimmed and capped; it is never
+ * markup, and nothing is ever written back from it.
+ */
+export type EditorNodeMeta = {
+  address: string;
+  kind: EditorNodeKind;
+  sectionId: number;
+  blockType: string;
+  /** The address without its section — what Batch 2 persists a style under. */
+  relativePath: string;
+  text?: string;
+};
+
+/**
+ * One section of the page as the canvas actually rendered it.
+ *
+ * The canvas is the source of truth for Layers on purpose: it has been through
+ * the draft structure, the draft-only rows and the preview membership, so
+ * asking the database a second question could only produce a list that
+ * disagrees with what is on screen.
+ */
+export type EditorSectionMeta = {
+  address: string;
+  sectionId: number;
+  blockType: string;
+  /** Position in the rendered composition, from DOM order. */
+  position: number;
+  isDraft: boolean;
+  isDraftOnly: boolean;
+  /** The visibility this section would have once published. */
+  visible: boolean;
+};
+
+const MAX_TEXT = 120;
+const MAX_SECTIONS = 200;
+const MAX_RECT = 200_000;
+
 /**
  * The canvas announcing what it is.
  *
@@ -81,13 +146,53 @@ export type CanvasReady = {
 /** Liveness. The channel works in both directions, whatever else is true. */
 export type CanvasPong = { type: "canvas.pong"; at: number };
 
+/** What the page is made of, in the order it rendered. Sent with every ready. */
+export type CanvasStructure = { type: "canvas.structure"; sections: EditorSectionMeta[] };
+
+/** What the pointer is over, or nothing. Rect is in canvas-viewport space. */
+export type CanvasHover = { type: "canvas.hover"; node: EditorNodeMeta; rect: Rect } | {
+  type: "canvas.hover";
+  node: null;
+  rect: null;
+};
+
+/** What is selected, or nothing. */
+export type CanvasSelection =
+  | { type: "canvas.selection"; node: EditorNodeMeta; rect: Rect }
+  | { type: "canvas.selection"; node: null; rect: null };
+
+/**
+ * The selected node has moved.
+ *
+ * Its own message rather than a re-sent selection, because this fires on every
+ * scroll and resize: repeating the whole node each time would be sending the
+ * address, block type and excerpt over and over to say one rectangle changed.
+ * `rect: null` means the node is no longer measurable — gone, or collapsed.
+ */
+export type CanvasBounds =
+  | { type: "canvas.bounds"; address: string; rect: Rect }
+  | { type: "canvas.bounds"; address: string; rect: null };
+
 /** The canvas could not do something. One safe sentence, never an exception. */
 export type CanvasError = { type: "canvas.error"; message: string };
 
 export type EditorPing = { type: "editor.ping"; at: number };
 
-export type CanvasMessage = CanvasReady | CanvasPong | CanvasError;
-export type EditorMessage = EditorPing;
+/** Select by stable address — what a click on a Layers row sends. */
+export type EditorSelect = { type: "editor.select"; address: string; scrollIntoView: boolean };
+
+export type EditorClearSelection = { type: "editor.clearSelection" };
+
+export type CanvasMessage =
+  | CanvasReady
+  | CanvasPong
+  | CanvasError
+  | CanvasStructure
+  | CanvasHover
+  | CanvasSelection
+  | CanvasBounds;
+
+export type EditorMessage = EditorPing | EditorSelect | EditorClearSelection;
 
 export type Envelope<T> = {
   channel: typeof EDITOR_CHANNEL;
@@ -114,6 +219,85 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 
 const isInt = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0;
+
+const isSectionId = (value: unknown): value is number => isInt(value) && value > 0;
+
+const NODE_KINDS = new Set<string>(["section", "field", "item", "slot"]);
+
+/**
+ * A rectangle worth accepting.
+ *
+ * `isUsableRect` already refuses NaN, Infinity and zero size. The bound on top
+ * of it is not paranoia about a hostile canvas — it is the same origin — but
+ * about a measurement taken mid-transition: an element inside an animating
+ * container can report a width in the millions for one frame, and an overlay
+ * drawn from it paints over the whole editor.
+ */
+function readRect(value: unknown): Rect | null {
+  if (!isUsableRect(value)) return null;
+  const { x, y, width, height } = value;
+  if (Math.abs(x) > MAX_RECT || Math.abs(y) > MAX_RECT) return null;
+  if (width > MAX_RECT || height > MAX_RECT) return null;
+  return { x, y, width, height };
+}
+
+/**
+ * Node metadata, rebuilt field by field.
+ *
+ * The address is parsed with the Batch 2 parser rather than pattern-matched
+ * here, so there is exactly one definition of what an address is; and the
+ * section id inside it has to agree with the one alongside it, because two
+ * fields that can disagree are a bug waiting for the day they do.
+ */
+function readNode(value: unknown): EditorNodeMeta | null {
+  const source = asRecord(value);
+  if (!source) return null;
+
+  const { address, kind, sectionId, blockType, relativePath, text } = source;
+  if (typeof address !== "string") return null;
+  const parsed = parseAddress(address);
+  if (!parsed) return null;
+  if (typeof kind !== "string" || !NODE_KINDS.has(kind)) return null;
+  if (!isSectionId(sectionId) || sectionId !== parsed.sectionId) return null;
+  if (typeof blockType !== "string" || !blockType || blockType.length > 48) return null;
+  if (typeof relativePath !== "string" || !relativePath) return null;
+  // The relative half must be the address without its section, not a second
+  // opinion about where the node is.
+  if (relativePath !== formatNodePath(parsed.path)) return null;
+  if (kind === "section" && parsed.path.length) return null;
+
+  const meta: EditorNodeMeta = {
+    address: formatAddress(parsed.sectionId, parsed.path),
+    kind: kind as EditorNodeKind,
+    sectionId: parsed.sectionId,
+    blockType,
+    relativePath,
+  };
+  if (typeof text === "string" && text.trim()) meta.text = text.slice(0, MAX_TEXT);
+  return meta;
+}
+
+function readSection(value: unknown): EditorSectionMeta | null {
+  const source = asRecord(value);
+  if (!source) return null;
+  const parsed = typeof source.address === "string" ? parseAddress(source.address) : null;
+  if (!parsed || parsed.path.length) return null;
+  if (!isSectionId(source.sectionId) || source.sectionId !== parsed.sectionId) return null;
+  if (typeof source.blockType !== "string" || !source.blockType) return null;
+  if (!isInt(source.position)) return null;
+  if (typeof source.isDraft !== "boolean") return null;
+  if (typeof source.isDraftOnly !== "boolean") return null;
+  if (typeof source.visible !== "boolean") return null;
+  return {
+    address: formatAddress(parsed.sectionId, []),
+    sectionId: parsed.sectionId,
+    blockType: source.blockType,
+    position: source.position,
+    isDraft: source.isDraft,
+    isDraftOnly: source.isDraftOnly,
+    visible: source.visible,
+  };
+}
 
 /** The envelope, or null. Nothing inside it is trusted until the type is known. */
 function openEnvelope(data: unknown, expect: { bridgeId: string }): Record<string, unknown> | null {
@@ -156,20 +340,72 @@ export function readCanvasMessage(
       return typeof message.message === "string"
         ? { type: "canvas.error", message: message.message.slice(0, 300) }
         : null;
+    case "canvas.structure": {
+      if (!Array.isArray(message.sections)) return null;
+      if (message.sections.length > MAX_SECTIONS) return null;
+      const sections: EditorSectionMeta[] = [];
+      for (const entry of message.sections) {
+        const section = readSection(entry);
+        // One bad entry is not a bad page. Dropping it loses a Layers row;
+        // refusing the whole message loses the panel.
+        if (section) sections.push(section);
+      }
+      return { type: "canvas.structure", sections };
+    }
+    case "canvas.hover":
+    case "canvas.selection": {
+      const type = message.type;
+      if (message.node === null) return { type, node: null, rect: null };
+      const node = readNode(message.node);
+      const rect = readRect(message.rect);
+      if (!node || !rect) return null;
+      return { type, node, rect };
+    }
+    case "canvas.bounds": {
+      if (typeof message.address !== "string" || !parseAddress(message.address)) return null;
+      const address = message.address;
+      if (message.rect === null) return { type: "canvas.bounds", address, rect: null };
+      const rect = readRect(message.rect);
+      return rect ? { type: "canvas.bounds", address, rect } : null;
+    }
     default:
       return null;
   }
 }
 
-/** A message from the editor, as the canvas should read it. */
+/**
+ * A message from the editor, as the canvas should read it.
+ *
+ * Still a closed set, and still a short one: nothing here writes anything. An
+ * `editor.setContent` — or any other command that sounds plausible — falls
+ * through to `null`, because a message type is recognised by being listed, not
+ * by being well formed.
+ */
 export function readEditorMessage(
   data: unknown,
   expect: { bridgeId: string },
 ): EditorMessage | null {
   const message = openEnvelope(data, expect);
   if (!message) return null;
-  if (message.type !== "editor.ping") return null;
-  return isInt(message.at) ? { type: "editor.ping", at: message.at } : null;
+
+  switch (message.type) {
+    case "editor.ping":
+      return isInt(message.at) ? { type: "editor.ping", at: message.at } : null;
+    case "editor.select": {
+      if (typeof message.address !== "string") return null;
+      const parsed = parseAddress(message.address);
+      if (!parsed) return null;
+      return {
+        type: "editor.select",
+        address: formatAddress(parsed.sectionId, parsed.path),
+        scrollIntoView: message.scrollIntoView === true,
+      };
+    }
+    case "editor.clearSelection":
+      return { type: "editor.clearSelection" };
+    default:
+      return null;
+  }
 }
 
 /**

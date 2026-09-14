@@ -40,7 +40,7 @@ export default async function HomePage({ params, searchParams }: Params) {
           rhythm than the rest of the site — see `.home-rhythm` in globals.css.
           A wrapper rather than a change to the tokens, so no other page moves. */}
       <div className="home-rhythm">
-        <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} />
+        <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} editorMode={Boolean(editor)} />
       </div>
       {editor ? (
         <EditorBridge bridgeId={editor.bridgeId} pageId={page.id} slug={page.slug} locale={lang} />

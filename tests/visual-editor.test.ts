@@ -45,6 +45,10 @@ const rendered = (html: string): string[] =>
  */
 const hasBridge = (html: string): boolean => html.includes("bridgeId");
 
+/** Every editor address the server wrote into the markup, in document order. */
+const addresses = (html: string): string[] =>
+  [...html.matchAll(/data-eod-address="([^"]+)"/g)].map((match) => match[1]!);
+
 before(async () => {
   assert.ok(isBuilt(), BUILD_HINT);
   database = giveFresh("visual_editor");
@@ -112,6 +116,7 @@ describe("editor mode is a door inside preview, not beside it", () => {
     assert.equal(page.status, 200);
     assert.ok(!page.html.includes("Preview — showing"), "a visitor was shown drafts");
     assert.ok(!hasBridge(page.html), "a visitor was given the editor bridge");
+    assert.ok(!/data-eod-/.test(page.html), "a visitor was given editor markup");
 
     // And it is the same document an ordinary request produces.
     const plain = await get(server.origin, "/");
@@ -123,6 +128,8 @@ describe("editor mode is a door inside preview, not beside it", () => {
     assert.equal(page.status, 200);
     assert.match(page.html, /Preview — showing unpublished drafts/);
     assert.ok(!hasBridge(page.html), "a plain preview loaded the editor bridge");
+    // Selection is the editor's, not preview's: an ordinary preview is the site.
+    assert.ok(!/data-eod-/.test(page.html), "a plain preview was annotated");
   });
 
   test("an authorised canvas request drops the banner and carries the bridge", async () => {
@@ -146,6 +153,7 @@ describe("editor mode is a door inside preview, not beside it", () => {
       assert.equal(page.status, 200, bridge);
       assert.match(page.html, /Preview — showing unpublished drafts/, bridge);
       assert.ok(!hasBridge(page.html), bridge);
+      assert.ok(!/data-eod-/.test(page.html), bridge);
     }
   });
 
@@ -314,6 +322,119 @@ describe("the canvas honours a structural draft; the live site never does", () =
 
 /* -------------------------------------------------------------------------- */
 
+describe("the canvas is annotated; nothing else is", () => {
+  const canvas = (path = "/") =>
+    get(server.origin, `${path}?preview=1&editor=1&bridge=${BRIDGE}`, { cookie: owner });
+
+  test("every rendered section gets a root, and it is its database id", async () => {
+    const page = await canvas();
+    const roots = [...page.html.matchAll(/data-eod-kind="section"/g)];
+    assert.ok(roots.length >= 5, `${roots.length} section roots`);
+
+    const ids = await sql<{ id: number }[]>`
+      select s.id from page_sections s join pages p on p.id = s.page_id
+       where p.slug = 'home' and s.is_published order by s.position, s.id
+    `;
+    for (const row of ids) {
+      assert.ok(page.html.includes(`data-eod-address="section:${row.id}"`), `section ${row.id}`);
+      assert.ok(page.html.includes(`data-eod-section="${row.id}"`), `section ${row.id} id`);
+    }
+  });
+
+  test("fields are addressed relative to their section", async () => {
+    const found = addresses((await canvas()).html);
+    assert.ok(
+      found.some((address) => /^section:\d+\/field:headline$/.test(address)),
+      "the hero headline is not addressable",
+    );
+    assert.ok(
+      found.some((address) => /^section:\d+\/field:lead$/.test(address)),
+      "the hero lead is not addressable",
+    );
+    for (const address of found) {
+      assert.match(address, /^section:[1-9][0-9]*(\/.+)?$/, address);
+      assert.ok(!address.includes("@"), `${address} carries a locale`);
+      assert.ok(!/\[\d+\]/.test(address), `${address} carries an index`);
+    }
+  });
+
+  test("a repeatable row is addressed by its `_id`, matching what the database holds", async () => {
+    const [row] = await sql<{ published: Record<string, unknown> }[]>`
+      select s.published from page_sections s join pages p on p.id = s.page_id
+       where p.slug = 'home' and s.block_type = 'quick-links' limit 1
+    `;
+    const links = (row!.published.links ?? []) as Array<Record<string, unknown>>;
+    assert.ok(links.length >= 2, "the fixture has no quick links to address");
+
+    const html = (await canvas()).html;
+    for (const link of links) {
+      const id = String(link._id);
+      assert.match(id, /^i_[0-9A-Za-z]+$/);
+      assert.ok(html.includes(`/field:links/item:${id}"`), `row ${id} is not selectable`);
+      assert.ok(html.includes(`/field:links/item:${id}/field:label"`), `row ${id}'s label is not selectable`);
+    }
+  });
+
+  test("the address does not change with the language", async () => {
+    const english = addresses((await canvas("/")).html);
+    const arabic = addresses((await canvas("/ar")).html);
+    assert.deepEqual(arabic, english, "the editions disagree about what the page is made of");
+  });
+
+  test("a section root carries what Layers needs and nothing more", async () => {
+    const html = (await canvas()).html;
+    assert.match(html, /data-eod-draft="(true|false)"/);
+    assert.match(html, /data-eod-draft-only="(true|false)"/);
+    assert.match(html, /data-eod-visible="(true|false)"/);
+    // No markup, no classes, no selectors — identity is the address.
+    assert.ok(!/data-eod-(html|selector|class|index)=/.test(html));
+  });
+
+  test("a draft-only section is marked as one, and a hidden one as hidden", async () => {
+    const [page] = await sql<{ id: number }[]>`select id from pages where slug = 'about'`;
+    const [pending] = await sql<{ id: number }[]>`
+      insert into page_sections (page_id, block_type, position, is_published, is_draft_only, published, draft)
+      values (
+        ${page!.id}, 'rich-text', 900, false, true, '{}'::jsonb,
+        ${JSON.stringify({ title: { en: "PENDING", ar: "" }, body: { en: "<p>x</p>", ar: "" } })}::text::jsonb
+      )
+      returning id
+    `;
+    const [first] = await sql<{ id: number }[]>`
+      select id from page_sections where page_id = ${page!.id} and not is_draft_only order by position limit 1
+    `;
+    await sql`
+      update pages set draft_structure = ${JSON.stringify({
+        v: 1,
+        sections: [
+          { sectionId: first!.id, visible: false },
+          { sectionId: pending!.id, visible: true },
+        ],
+      })}::text::jsonb where id = ${page!.id}
+    `;
+
+    try {
+      const html = (await canvas("/about")).html;
+      const root = (id: number) => {
+        const at = html.indexOf(`data-eod-address="section:${id}"`);
+        assert.notEqual(at, -1, `section ${id} did not render`);
+        return html.slice(Math.max(0, at - 400), at + 200);
+      };
+      assert.match(root(pending!.id), /data-eod-draft-only="true"/);
+      assert.match(root(first!.id), /data-eod-visible="false"/);
+      assert.match(root(first!.id), /data-eod-draft-only="false"/);
+      // Layers is built from this, so a section the draft omits is simply not
+      // here to be listed.
+      assert.equal([...html.matchAll(/data-eod-kind="section"/g)].length, 2);
+    } finally {
+      await sql`update pages set draft_structure = null where id = ${page!.id}`;
+      await sql`delete from page_sections where id = ${pending!.id}`;
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
 describe("nothing a visitor sees has changed", () => {
   test("the ordinary pages answer as they always did, in both editions", async () => {
     for (const path of ["/", "/ar", "/about", "/ar/about", "/contact", "/privacy"]) {
@@ -321,7 +442,7 @@ describe("nothing a visitor sees has changed", () => {
       assert.equal(page.status, 200, path);
       assert.ok(!hasBridge(page.html), `${path} carries editor code`);
       assert.ok(!page.html.includes("Preview — showing"), `${path} carries a preview banner`);
-      assert.ok(!/data-editor-/.test(page.html), `${path} carries editor markup`);
+      assert.ok(!/data-eod-/.test(page.html), `${path} carries editor markup`);
     }
   });
 

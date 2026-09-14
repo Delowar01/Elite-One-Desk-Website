@@ -8,6 +8,7 @@ import { getBlock } from "@/lib/cms/blocks";
 import { itemMediaId, items, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
 import { imageForHref } from "@/lib/link-image";
+import { editorNode, itemFieldPath, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -25,12 +26,13 @@ import type { BlockProps } from "./context";
  * the homepage is the heaviest page on the site and this section is the last
  * place that should be adding observers to it.
  */
-export function QuickLinksBlock({ values, ctx }: BlockProps) {
+export function QuickLinksBlock({ values, ctx, editor }: BlockProps) {
   const { locale, media, catalog, packages, destinations } = ctx;
   const def = getBlock("quick-links")!;
   const fields = def.fields.find((f) => f.name === "links")!.itemFields ?? [];
   const links = items(values, "links", locale, fields);
   if (!links.length) return null;
+  const node = editorNode(editor);
 
   const catalogue = { ...catalog, packages, destinations };
 
@@ -38,6 +40,8 @@ export function QuickLinksBlock({ values, ctx }: BlockProps) {
     <section className="section-tight relative">
       <div className="shell shell-wide">
         <SectionHeading
+          editor={editor}
+          fields={{ eyebrow: "title", intro: "intro" }}
           eyebrow={text(values, "title", locale) || ctx.dict.sections.quickAccess}
           intro={text(values, "intro", locale)}
         />
@@ -48,14 +52,18 @@ export function QuickLinksBlock({ values, ctx }: BlockProps) {
               const chosen = itemMediaId(link, "image") ?? imageForHref(link.href, catalogue);
               const image = chosen ? media.get(chosen) ?? null : null;
               return (
-                <li key={`${link.href}-${index}`} className="min-w-0">
+                <li
+                  key={`${link.href}-${index}`}
+                  className="min-w-0"
+                  {...node(itemPath("links", link), "item")}
+                >
                   <Link
                     href={localeHref(locale, link.href || "/services")}
                     className="ql-card"
                     data-tint={index % 4}
                   >
                     {/* Decorative: the card names its own destination. */}
-                    <span className="ql-shot" aria-hidden>
+                    <span className="ql-shot" aria-hidden {...node(itemFieldPath("links", link, "image"))}>
                       {image ? (
                         <MediaImage
                           media={image}
@@ -72,7 +80,9 @@ export function QuickLinksBlock({ values, ctx }: BlockProps) {
                         <Icon name={link.icon || "sparkle"} size={16} />
                       </span>
                       <span className="ql-foot">
-                        <span className="ql-title">{link.label}</span>
+                        <span className="ql-title" {...node(itemFieldPath("links", link, "label"))}>
+                          {link.label}
+                        </span>
                         <Icon name="arrowRight" size={15} className="ql-arrow" />
                       </span>
                     </span>

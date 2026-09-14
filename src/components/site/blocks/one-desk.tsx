@@ -6,28 +6,36 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
+import { editorNode } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
-export function OneDeskBlock({ values, ctx }: BlockProps) {
+export function OneDeskBlock({ values, ctx, editor }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("one-desk")!;
   const fields = def.fields.find((f) => f.name === "paths")!.itemFields ?? [];
   const paths = items(values, "paths", locale, fields).map((p) => p.label);
   const ctaHref = str(values, "ctaHref");
   const ctaLabel = text(values, "ctaLabel", locale);
+  const node = editorNode(editor);
 
   return (
     <section className="section relative overflow-clip">
       <div className="shell shell-wide grid items-center gap-12 lg:grid-cols-[0.9fr_1.1fr] lg:gap-16">
         <div>
           <SectionHeading
+            editor={editor}
+            fields={{ eyebrow: "eyebrow", title: "title", intro: "body" }}
             eyebrow={text(values, "eyebrow", locale)}
             title={text(values, "title", locale)}
             intro={text(values, "body", locale)}
           />
           {ctaHref && ctaLabel ? (
             <div className="mt-8">
-              <Link href={localeHref(locale, ctaHref)} className="btn btn-ghost">
+              <Link
+                href={localeHref(locale, ctaHref)}
+                className="btn btn-ghost"
+                {...node("slot:cta", "slot")}
+              >
                 {ctaLabel}
                 <Icon name="arrowRight" size={16} className="flip-rtl" />
               </Link>

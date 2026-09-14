@@ -4,15 +4,17 @@ import { Reveal } from "@/components/site/reveal";
 import { Icon } from "@/components/ui/icon";
 import { bool, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
+import { editorNode } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
-export function FinalCtaBlock({ values, ctx }: BlockProps) {
+export function FinalCtaBlock({ values, ctx, editor }: BlockProps) {
   const { locale, dict, whatsappHref } = ctx;
   const title = text(values, "title", locale);
   const body = text(values, "body", locale);
   const ctaHref = str(values, "primaryCtaHref", "/contact");
   const ctaLabel = text(values, "primaryCtaLabel", locale) || dict.nav.primaryCta;
   const showWhatsapp = bool(values, "showWhatsapp", true) && Boolean(whatsappHref);
+  const node = editorNode(editor);
 
   return (
     <section className="section-tight">
@@ -33,11 +35,21 @@ export function FinalCtaBlock({ values, ctx }: BlockProps) {
             />
 
             <div className="relative mx-auto max-w-2xl">
-              <h2 className="text-[length:var(--text-h1)]">{title}</h2>
-              {body ? <p className="lede mx-auto mt-5 max-w-xl">{body}</p> : null}
+              <h2 className="text-[length:var(--text-h1)]" {...node("field:title")}>
+                {title}
+              </h2>
+              {body ? (
+                <p className="lede mx-auto mt-5 max-w-xl" {...node("field:body")}>
+                  {body}
+                </p>
+              ) : null}
 
               <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
-                <Link href={localeHref(locale, ctaHref)} className="btn btn-primary">
+                <Link
+                  href={localeHref(locale, ctaHref)}
+                  className="btn btn-primary"
+                  {...node("field:primaryCtaLabel")}
+                >
                   {ctaLabel}
                   <Icon name="arrowRight" size={17} className="flip-rtl" />
                 </Link>

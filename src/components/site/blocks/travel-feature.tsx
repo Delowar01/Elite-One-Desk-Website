@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
+import { editorNode, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -14,7 +15,7 @@ import type { BlockProps } from "./context";
  * wall of colourful destination cards — §49 rules out the ThemeForest travel
  * look, and the corporate ground has to survive the travel content.
  */
-export function TravelFeatureBlock({ values, ctx }: BlockProps) {
+export function TravelFeatureBlock({ values, ctx, editor }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("travel-feature")!;
   const fields = def.fields.find((f) => f.name === "capabilities")!.itemFields ?? [];
@@ -22,6 +23,7 @@ export function TravelFeatureBlock({ values, ctx }: BlockProps) {
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const ctaHref = str(values, "ctaHref", "/services/travel-tourism");
   const ctaLabel = text(values, "ctaLabel", locale);
+  const node = editorNode(editor);
 
   return (
     <section className="section relative">
@@ -32,7 +34,10 @@ export function TravelFeatureBlock({ values, ctx }: BlockProps) {
       >
         {image ? (
           <Reveal variant="slide-in" className="relative">
-            <div className="relative overflow-hidden rounded-[var(--radius-xl)] border border-line">
+            <div
+              className="relative overflow-hidden rounded-[var(--radius-xl)] border border-line"
+              {...node("field:image")}
+            >
               <MediaImage
                 media={image}
                 locale={locale}
@@ -54,6 +59,8 @@ export function TravelFeatureBlock({ values, ctx }: BlockProps) {
 
         <div>
           <SectionHeading
+            editor={editor}
+            fields={{ eyebrow: "eyebrow", title: "title", intro: "body" }}
             eyebrow={text(values, "eyebrow", locale)}
             title={text(values, "title", locale)}
             intro={text(values, "body", locale)}
@@ -62,7 +69,13 @@ export function TravelFeatureBlock({ values, ctx }: BlockProps) {
           {capabilities.length ? (
             <ul className="mt-9 flex flex-wrap gap-2">
               {capabilities.map((cap, index) => (
-                <Reveal as="li" key={cap.label} delay={index * 35} variant="fade">
+                <Reveal
+                  as="li"
+                  key={cap.label}
+                  delay={index * 35}
+                  variant="fade"
+                  nodeAttrs={node(itemPath("capabilities", cap), "item")}
+                >
                   <span className="inline-flex items-center rounded-full border border-line px-3.5 py-2 text-[0.82rem] text-body transition-colors hover:border-[color-mix(in_oklab,var(--color-peach)_55%,transparent)] hover:text-strong">
                     {cap.label}
                   </span>
@@ -73,7 +86,11 @@ export function TravelFeatureBlock({ values, ctx }: BlockProps) {
 
           {ctaLabel ? (
             <div className="mt-9">
-              <Link href={localeHref(locale, ctaHref)} className="btn btn-ghost">
+              <Link
+                href={localeHref(locale, ctaHref)}
+                className="btn btn-ghost"
+                {...node("field:ctaLabel")}
+              >
                 {ctaLabel}
                 <Icon name="arrowRight" size={16} className="flip-rtl" />
               </Link>

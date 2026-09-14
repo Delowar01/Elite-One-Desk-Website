@@ -11,6 +11,7 @@ import {
 import { getMediaMap } from "@/lib/queries/site";
 import type { RenderedSection } from "@/lib/queries/content";
 import { getSettings, whatsappLink } from "@/lib/settings";
+import { editorNodeAttrs, type EditorRender } from "@/lib/visual-editor/render";
 
 import { ContactDetailsBlock } from "./blocks/contact-details";
 import type { BlockContext, BlockProps } from "./blocks/context";
@@ -95,14 +96,26 @@ export async function buildBlockContext(locale: Locale): Promise<BlockContext> {
   };
 }
 
+/**
+ * `editorMode` is the one switch that turns the public renderer into a
+ * selectable canvas, and it is passed in from the server rather than sniffed.
+ *
+ * Nothing here reads `window`, a query string or a cookie: the decision was
+ * made in `resolvePageForRender`, behind the session check, and travels down as
+ * a prop. A block that worked it out for itself would be a block that could
+ * work it out wrongly — and the wrong answer is editor attributes on a public
+ * page.
+ */
 export async function SectionRenderer({
   sections,
   locale,
   ctx,
+  editorMode = false,
 }: {
   sections: RenderedSection[];
   locale: Locale;
   ctx?: BlockContext;
+  editorMode?: boolean;
 }) {
   const context = ctx ?? (await buildBlockContext(locale));
 
@@ -111,9 +124,29 @@ export async function SectionRenderer({
       {sections.map((section, index) => {
         const Renderer = RENDERERS[section.blockType];
         if (!Renderer) return null;
+
+        const editor: EditorRender = editorMode
+          ? { sectionId: section.id, blockType: section.blockType }
+          : null;
+
         return (
-          <div key={section.id} data-section={section.blockType} data-draft={section.isDraft || undefined}>
-            <Renderer values={section.values} ctx={context} index={index} />
+          <div
+            key={section.id}
+            data-section={section.blockType}
+            data-draft={section.isDraft || undefined}
+            {...editorNodeAttrs(editor, { kind: "section" })}
+            // Layers is built from what actually rendered, so the facts it
+            // needs travel with the element rather than being asked of the
+            // database a second time and risking a different answer.
+            {...(editorMode
+              ? {
+                  "data-eod-draft": String(section.isDraft),
+                  "data-eod-draft-only": String(section.isDraftOnly),
+                  "data-eod-visible": String(section.visible),
+                }
+              : {})}
+          >
+            <Renderer values={section.values} ctx={context} index={index} editor={editor} />
           </div>
         );
       })}

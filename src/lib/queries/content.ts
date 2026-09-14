@@ -17,6 +17,10 @@ export type RenderedSection = {
   values: Record<string, unknown>;
   /** True when this section is showing unpublished edits (preview only). */
   isDraft: boolean;
+  /** True when the row exists only because of a pending structural draft. */
+  isDraftOnly: boolean;
+  /** The visibility this section would have once published. */
+  visible: boolean;
 };
 
 export type RenderedPage = {

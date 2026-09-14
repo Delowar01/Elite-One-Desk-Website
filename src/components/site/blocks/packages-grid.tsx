@@ -8,7 +8,7 @@ import { num, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
 import type { BlockProps } from "./context";
 
-export function PackagesGridBlock({ values, ctx }: BlockProps) {
+export function PackagesGridBlock({ values, ctx, editor }: BlockProps) {
   const { locale, dict } = ctx;
   // A destination slug, or blank for every package. Resolved through the
   // destination list rather than stored as an id, so the block survives a
@@ -28,6 +28,8 @@ export function PackagesGridBlock({ values, ctx }: BlockProps) {
     <section className="section">
       <div className="shell shell-wide">
         <SectionHeading
+          editor={editor}
+          fields={{ eyebrow: "eyebrow", title: "title", intro: "intro" }}
           eyebrow={text(values, "eyebrow", locale)}
           title={text(values, "title", locale)}
           intro={text(values, "intro", locale)}
