@@ -28,6 +28,9 @@ export const ADMIN_NAV: AdminNavGroup[] = [
     title: "Content",
     items: [
       { href: "/admin/pages", label: "Pages & sections", icon: "fileText", permission: "content.view" },
+      // An additional interface over the same CMS, not a replacement for the
+      // screen above it: the two edit the same rows and both stay.
+      { href: "/admin/visual-editor", label: "Visual Editor", icon: "sparkle", permission: "content.view" },
       { href: "/admin/categories", label: "Service categories", icon: "layers", permission: "services.manage" },
       { href: "/admin/services", label: "Services", icon: "briefcase", permission: "services.manage" },
       { href: "/admin/packages/destinations", label: "Destinations", icon: "mapPin", permission: "packages.manage" },

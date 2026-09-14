@@ -3,6 +3,8 @@
 import { useState } from "react";
 
 import { Icon } from "@/components/ui/icon";
+import type { Locale } from "@/lib/i18n/config";
+import { previewPagePath } from "@/lib/page-path";
 
 const DEVICES = [
   { key: "desktop", label: "Desktop", width: 0, icon: "desk" },
@@ -14,14 +16,22 @@ const DEVICES = [
  * Live preview (§16). The frame loads the real public page with `?preview=1`,
  * so what is shown is the actual site — the same header, footer, fonts and
  * animations — rendered from drafts rather than from the published values.
+ *
+ * Deliberately still a simple page-preview tool rather than a second Visual
+ * Editor. The two share the one thing worth sharing — how a page's public
+ * address is built — and nothing else: a component trying to be both would end
+ * up serving neither well. Its Desktop remains "as wide as the panel allows",
+ * which is the right behaviour for a preview embedded in an admin screen; the
+ * editor's canvas has a fixed logical width because it is making layout
+ * decisions the panel's width must not influence.
  */
-export function PreviewFrame({ src, title }: { src: string; title: string }) {
+export function PreviewFrame({ slug, title }: { slug: string; title: string }) {
   const [device, setDevice] = useState<(typeof DEVICES)[number]["key"]>("desktop");
-  const [language, setLanguage] = useState<"en" | "ar">("en");
+  const [language, setLanguage] = useState<Locale>("en");
   const [nonce, setNonce] = useState(0);
 
   const width = DEVICES.find((d) => d.key === device)?.width ?? 0;
-  const url = `${language === "ar" ? "/ar" : ""}${src}${src.includes("?") ? "&" : "?"}preview=1&r=${nonce}`;
+  const url = previewPagePath(slug, language, { nonce });
 
   return (
     <div>

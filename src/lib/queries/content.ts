@@ -5,6 +5,8 @@ import { cache } from "react";
 import { and, asc, eq } from "drizzle-orm";
 
 import { TAGS } from "@/lib/cache";
+import { composePreview, composePublished, type CompositionRow } from "@/lib/cms/composition";
+import { readDraftStructure } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
 import { pageSections, pages, seoMetadata } from "@/lib/db/schema";
 
@@ -26,6 +28,21 @@ export type RenderedPage = {
   sections: RenderedSection[];
 };
 
+/**
+ * One query either way, composed differently.
+ *
+ * Both paths read the page's rows in `position` order and hand them to
+ * `lib/cms/composition`, which is where the rules live and where they are
+ * tested. The published path is unchanged by this batch: visible, established
+ * sections, published values. The preview path now also reads
+ * `pages.draft_structure`, so an editor sees the order and membership a
+ * structural draft intends rather than the live `position` order underneath it.
+ *
+ * `readDraftStructure` returns null for a column that is absent *or* unusable,
+ * and the null case falls back to the established order — so a damaged document
+ * shows the page as it stands rather than blanking it, while a genuinely empty
+ * one still means "publishing this leaves no sections".
+ */
 async function loadPage(slug: string, preview: boolean): Promise<RenderedPage | null> {
   const [page] = await db.select().from(pages).where(eq(pages.slug, slug)).limit(1);
   if (!page) return null;
@@ -36,9 +53,23 @@ async function loadPage(slug: string, preview: boolean): Promise<RenderedPage | 
     .where(
       preview
         ? eq(pageSections.pageId, page.id)
-        : and(eq(pageSections.pageId, page.id), eq(pageSections.isPublished, true)),
+        : and(
+            eq(pageSections.pageId, page.id),
+            eq(pageSections.isPublished, true),
+            eq(pageSections.isDraftOnly, false),
+          ),
     )
     .orderBy(asc(pageSections.position), asc(pageSections.id));
+
+  const composable: CompositionRow[] = rows.map((row) => ({
+    id: row.id,
+    blockType: row.blockType,
+    animation: row.animation,
+    published: row.published,
+    draft: row.draft,
+    isPublished: row.isPublished,
+    isDraftOnly: row.isDraftOnly,
+  }));
 
   return {
     id: page.id,
@@ -46,13 +77,9 @@ async function loadPage(slug: string, preview: boolean): Promise<RenderedPage | 
     titleEn: page.titleEn,
     titleAr: page.titleAr,
     isPublished: page.isPublished,
-    sections: rows.map((row) => ({
-      id: row.id,
-      blockType: row.blockType,
-      animation: row.animation,
-      values: (preview && row.draft ? row.draft : row.published) ?? {},
-      isDraft: Boolean(preview && row.draft),
-    })),
+    sections: preview
+      ? composePreview(composable, readDraftStructure(page.draftStructure))
+      : composePublished(composable),
   };
 }
 

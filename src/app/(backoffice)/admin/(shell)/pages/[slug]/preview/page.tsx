@@ -34,7 +34,7 @@ export default async function PreviewPage({ params }: { params: Promise<{ slug: 
           </Link>
         }
       />
-      <PreviewFrame src={page.slug === "home" ? "/" : `/${page.slug}`} title={page.titleEn} />
+      <PreviewFrame slug={page.slug} title={page.titleEn} />
     </>
   );
 }

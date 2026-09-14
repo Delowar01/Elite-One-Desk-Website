@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 
+import { EditorBridge } from "@/components/site/editor-bridge";
 import { JsonLd } from "@/components/site/json-ld";
 import { SectionRenderer, buildBlockContext } from "@/components/site/section-renderer";
 import { PreviewBanner } from "@/components/site/preview-banner";
@@ -22,7 +23,7 @@ export default async function HomePage({ params, searchParams }: Params) {
   const { lang } = await params;
   if (!isLocale(lang)) notFound();
 
-  const [{ page, isPreview }, ctx, organization] = await Promise.all([
+  const [{ page, isPreview, editor }, ctx, organization] = await Promise.all([
     resolvePageForRender("home", await searchParams),
     buildBlockContext(lang),
     organizationJsonLd(lang),
@@ -31,13 +32,19 @@ export default async function HomePage({ params, searchParams }: Params) {
 
   return (
     <>
-      {isPreview ? <PreviewBanner /> : null}
+      {/* The Visual Editor's own chrome already says where the admin is, and
+          the banner would sit inside the canvas pretending to be part of the
+          page. Every other preview keeps it. */}
+      {isPreview && !editor ? <PreviewBanner /> : null}
       {/* The homepage stacks thirteen sections, so it sets a tighter vertical
           rhythm than the rest of the site — see `.home-rhythm` in globals.css.
           A wrapper rather than a change to the tokens, so no other page moves. */}
       <div className="home-rhythm">
         <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} />
       </div>
+      {editor ? (
+        <EditorBridge bridgeId={editor.bridgeId} pageId={page.id} slug={page.slug} locale={lang} />
+      ) : null}
       <JsonLd
         data={[
           organization,

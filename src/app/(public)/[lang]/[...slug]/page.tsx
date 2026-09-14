@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 
+import { EditorBridge } from "@/components/site/editor-bridge";
 import { SectionRenderer, buildBlockContext } from "@/components/site/section-renderer";
 import { PreviewBanner } from "@/components/site/preview-banner";
 import { isLocale } from "@/lib/i18n/config";
@@ -38,15 +39,19 @@ export default async function CmsPage({ params, searchParams }: Params) {
   const { lang, slug } = await params;
   if (!isLocale(lang) || slug.length !== 1) notFound();
 
-  const { page, isPreview } = await resolvePageForRender(slug[0]!, await searchParams);
+  const { page, isPreview, editor } = await resolvePageForRender(slug[0]!, await searchParams);
   // An unpublished page is still viewable in preview, which is the point of it.
   if (!page || (!page.isPublished && !isPreview)) notFound();
 
   const ctx = await buildBlockContext(lang);
   return (
     <>
-      {isPreview ? <PreviewBanner /> : null}
+      {/* Suppressed inside the Visual Editor only — see the homepage route. */}
+      {isPreview && !editor ? <PreviewBanner /> : null}
       <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} />
+      {editor ? (
+        <EditorBridge bridgeId={editor.bridgeId} pageId={page.id} slug={page.slug} locale={lang} />
+      ) : null}
     </>
   );
 }

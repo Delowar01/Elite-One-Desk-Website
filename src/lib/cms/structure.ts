@@ -69,6 +69,32 @@ export function validateDraftStructure(input: unknown): DraftStructure {
 }
 
 /**
+ * A stored document this build can act on, or `null` when there is none.
+ *
+ * `validateDraftStructure` cannot answer this, and deliberately so: it rebuilds
+ * whatever it is handed into a valid document, so corrupt input and a genuinely
+ * empty draft both come back as `{ v: 1, sections: [] }`. Those two mean
+ * opposite things. An empty list is an editor saying "publish this and the page
+ * has no sections left"; corrupt JSON is a column nobody should be reading. If
+ * preview collapsed them, a damaged row would silently blank a page an editor
+ * was working on, and they would think they had deleted it.
+ *
+ * So: `null` for absent or unusable — the caller falls back to the established
+ * order, which is the safe reading — and a document for anything this build
+ * understands, empty list included. It never throws; a page must not fail to
+ * render because a JSON column is malformed.
+ */
+export function readDraftStructure(input: unknown): DraftStructure | null {
+  if (input === null || input === undefined) return null;
+  const source = asRecord(input);
+  const version = source.v;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) return null;
+  if (version > DRAFT_STRUCTURE_VERSION) return null;
+  if (!Array.isArray(source.sections)) return null;
+  return validateDraftStructure(source);
+}
+
+/**
  * The check the shape validator cannot make: every id has to be a section of
  * *this* page. Without it a submitted document could reorder — or, once Batch 8
  * publishes one, delete — a section belonging to somebody else's page.
