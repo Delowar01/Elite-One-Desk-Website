@@ -167,9 +167,62 @@ export function EditorBridge({
      */
     const boxes = new ResizeObserver(() => schedule());
 
-    const watch = (element: Element | null, previous: Element | null) => {
-      if (previous && previous !== element) boxes.unobserve(previous);
-      if (element && element !== previous) boxes.observe(element);
+    /**
+     * Notices a tracked element being taken out of the document with no other
+     * signal at all — no scroll, no resize, no pointer move. `childList` on the
+     * subtree is the narrowest question that answers "did anything appear or
+     * disappear", and the callback does no work beyond asking for a frame.
+     *
+     * Connected only while something is tracked. The callback would have done
+     * nothing anyway with nothing selected, but the browser still has to
+     * deliver every qualifying mutation to an attached observer, and a page
+     * nobody is pointing at should not be paying for that.
+     */
+    const tree = new MutationObserver(() => schedule());
+    let watchingTree = false;
+
+    /** Every element the box observer is currently watching. */
+    const observed = new Set<Element>();
+
+    /**
+     * Reconciles both observers with what is actually tracked.
+     *
+     * The invariant: the box observer watches exactly
+     * `union(hover.element, selection.element)` — and it has to be computed as
+     * a union rather than maintained by each owner, because `unobserve` is not
+     * reference counted. Hovering a card and then clicking it makes both owners
+     * point at one element; when the pointer leaves, an owner-by-owner cleanup
+     * calls `unobserve` on an element the *selection* still needs, and the
+     * outline silently stops noticing that element being hidden or shown. The
+     * mirror image happens when the selection moves on while the pointer is
+     * still resting on the old node.
+     *
+     * So neither owner touches an observer directly. They change what is
+     * tracked and call this, which is the only code that observes anything.
+     */
+    const syncObservers = () => {
+      const wanted = new Set<Element>();
+      if (hover) wanted.add(hover.element);
+      if (selection) wanted.add(selection.element);
+
+      for (const element of observed) {
+        if (wanted.has(element)) continue;
+        boxes.unobserve(element);
+        observed.delete(element);
+      }
+      for (const element of wanted) {
+        if (observed.has(element)) continue;
+        boxes.observe(element);
+        observed.add(element);
+      }
+
+      if (wanted.size && !watchingTree) {
+        tree.observe(document.body, { childList: true, subtree: true });
+        watchingTree = true;
+      } else if (!wanted.size && watchingTree) {
+        tree.disconnect();
+        watchingTree = false;
+      }
     };
 
     const track = (element: Element): Tracked | null => {
@@ -192,8 +245,8 @@ export function EditorBridge({
 
     const clearHover = () => {
       if (!hover) return;
-      watch(null, hover.element);
       hover = null;
+      syncObservers();
       post({ type: "canvas.hover", node: null, rect: null });
     };
 
@@ -203,21 +256,20 @@ export function EditorBridge({
 
       const next = track(element);
       const node = next ? describe(element) : null;
-      const previous = hover?.element ?? null;
       if (!next || !node || !next.rect) {
-        watch(null, previous);
         hover = null;
+        syncObservers();
         return post({ type: "canvas.hover", node: null, rect: null });
       }
-      watch(element, previous);
       hover = next;
+      syncObservers();
       post({ type: "canvas.hover", node, rect: next.rect });
       stabilise();
     };
 
     const clearSelection = () => {
-      watch(null, selection?.element ?? null);
       selection = null;
+      syncObservers();
       post({ type: "canvas.selection", node: null, rect: null });
     };
 
@@ -228,8 +280,8 @@ export function EditorBridge({
       const node = next ? describe(element) : null;
       if (!next || !node || !next.rect) return clearSelection();
 
-      watch(element, selection?.element ?? null);
       selection = next;
+      syncObservers();
       post({ type: "canvas.selection", node, rect: next.rect });
       stabilise();
     };
@@ -337,22 +389,6 @@ export function EditorBridge({
       stableFrames = 0;
       schedule();
     }
-
-    /**
-     * The one observer, and it is deliberately almost nothing.
-     *
-     * A selected element can be removed without a scroll, a resize or a pointer
-     * move — and then nothing would ever notice, because every other signal
-     * here is driven by something the visitor did. `childList` on the subtree is
-     * the narrowest question that answers "did anything appear or disappear",
-     * the callback does no work beyond asking for a frame, and it only runs at
-     * all while something is being tracked. It is not a page scanner and it
-     * exists only inside an authorised canvas.
-     */
-    const observer = new MutationObserver(() => {
-      if (hover || selection) schedule();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
 
     /**
      * A transform moves an element without firing scroll, resize or a mutation,
@@ -487,8 +523,9 @@ export function EditorBridge({
       for (const type of ["transitionrun", "transitionend", "animationstart", "animationend"]) {
         document.removeEventListener(type, onMotion, { capture: true });
       }
-      observer.disconnect();
+      tree.disconnect();
       boxes.disconnect();
+      observed.clear();
       if (frame) window.cancelAnimationFrame(frame);
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
     };
