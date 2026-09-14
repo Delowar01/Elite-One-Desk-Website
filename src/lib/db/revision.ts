@@ -24,20 +24,36 @@ import { pageSections, pages } from "@/lib/db/schema";
  * this", which is a different question and a worse guard: two saves by the same
  * person would look identical.
  *
- * No conflict UI exists yet; this is the primitive it will be built on.
+ * Every content writer names a revision: the Visual Editor's inspector, the
+ * ordinary section editor's form, publishing one section, discarding a draft,
+ * and publishing a whole page — which guards each section inside one
+ * transaction, so a page is published entirely or not at all. A writer that
+ * did not participate would make the others' guarantees worthless, because the
+ * counter only means anything if nothing moves the row without moving it.
  */
 
 export type GuardedUpdate =
   | { ok: true; revision: number }
   | { ok: false; reason: "conflict" | "missing" };
 
+/**
+ * Anything that can run a statement: the pool, or a transaction.
+ *
+ * Publishing a whole page has to guard every section and roll all of them back
+ * if one has moved underneath it, so the guard has to be usable inside a
+ * transaction. Taking the executor as an argument is the whole of what that
+ * needs — there is no second implementation of the check.
+ */
+export type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 async function guarded(
+  on: Executor,
   table: typeof pageSections | typeof pages,
   id: number,
   expected: number,
   values: Record<string, unknown>,
 ): Promise<GuardedUpdate> {
-  const updated = await db
+  const updated = await on
     .update(table)
     .set({
       ...values,
@@ -51,7 +67,7 @@ async function guarded(
 
   // Nothing matched. Which of the two it was changes what the caller should
   // say, and "this no longer exists" is not "somebody else changed it".
-  const [row] = await db.select({ id: table.id }).from(table).where(eq(table.id, id)).limit(1);
+  const [row] = await on.select({ id: table.id }).from(table).where(eq(table.id, id)).limit(1);
   return { ok: false, reason: row ? "conflict" : "missing" };
 }
 
@@ -60,11 +76,19 @@ export const updateSectionGuarded = (
   id: number,
   expectedRevision: number,
   values: Record<string, unknown>,
-): Promise<GuardedUpdate> => guarded(pageSections, id, expectedRevision, values);
+): Promise<GuardedUpdate> => guarded(db, pageSections, id, expectedRevision, values);
+
+/** The same inside a transaction, for an all-or-nothing write across sections. */
+export const updateSectionGuardedIn = (
+  on: Executor,
+  id: number,
+  expectedRevision: number,
+  values: Record<string, unknown>,
+): Promise<GuardedUpdate> => guarded(on, pageSections, id, expectedRevision, values);
 
 /** The same, for a page's own row — structure lives there. */
 export const updatePageGuarded = (
   id: number,
   expectedRevision: number,
   values: Record<string, unknown>,
-): Promise<GuardedUpdate> => guarded(pages, id, expectedRevision, values);
+): Promise<GuardedUpdate> => guarded(db, pages, id, expectedRevision, values);

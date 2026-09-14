@@ -22,7 +22,13 @@ export function SectionForm({
   previewHref,
 }: {
   csrf: string;
-  section: { id: number; animation: string; hasDraft: boolean; values: Record<string, unknown> };
+  section: {
+    id: number;
+    animation: string;
+    hasDraft: boolean;
+    values: Record<string, unknown>;
+    revision: number;
+  };
   block: BlockDef;
   media: MediaOption[];
   previewHref: string;
@@ -61,6 +67,12 @@ export function SectionForm({
       <AdminForm action={saveSectionDraft} className="admin-card p-5">
         <input type="hidden" name="_csrf" value={csrf} />
         <input type="hidden" name="id" value={section.id} />
+        {/*
+          The revision this screen was built from. Saving names it, so a save
+          that has been overtaken — by the Visual Editor, by a second tab, by a
+          colleague — is refused rather than silently winning.
+        */}
+        <input type="hidden" name="expectedRevision" value={section.revision} />
 
         <BlockEditor block={block} initial={section.values} media={media} />
 

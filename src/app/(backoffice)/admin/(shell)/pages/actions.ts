@@ -9,6 +9,7 @@ import {
   checkbox,
   fail,
   field,
+  numberField,
   ok,
   runAction,
   type ActionState,
@@ -19,6 +20,7 @@ import { getBlock } from "@/lib/cms/blocks";
 import { emptyValues } from "@/lib/cms/values";
 import { parseBlockPayload } from "@/lib/cms/validate";
 import { db } from "@/lib/db";
+import { updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -26,6 +28,34 @@ const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RESERVED = new Set([
   "admin", "api", "media", "services", "packages", "search", "home", "_next", "brand", "fonts",
 ]);
+
+/**
+ * What a lost race is called in front of an editor.
+ *
+ * Every content writer names the revision it read (`lib/db/revision.ts`), so a
+ * write that finds a different one has been overtaken — by the Visual Editor,
+ * by another browser tab, by a colleague. Saying so is the point of the guard:
+ * writing anyway is last-write-wins, which is how an hour of somebody else's
+ * work disappears without either of them noticing.
+ */
+const CONFLICT = {
+  save: "This section changed while you were editing it. Reload the page before saving.",
+  publish: "This section changed while you were looking at it. Reload the page before publishing.",
+  discard: "This section changed while you were looking at it. Reload the page before discarding.",
+  publishAll:
+    "A section on this page changed while you were publishing. Nothing was published — reload the page and try again.",
+  publishAllGone:
+    "A section on this page was deleted while you were publishing. Nothing was published — reload the page.",
+  gone: "That section no longer exists.",
+} as const;
+
+/** Thrown inside the publish-all transaction so the whole batch rolls back. */
+class PublishRace extends Error {
+  constructor(readonly reason: "conflict" | "missing") {
+    super(reason);
+    this.name = "PublishRace";
+  }
+}
 
 const refreshPage = (slug: string) => {
   revalidate(TAGS.pages);
@@ -211,14 +241,22 @@ export async function saveSectionDraft(_prev: ActionState, form: FormData): Prom
 
     const animation = field(form, "animation", 32) || section.animation;
 
-    await db
-      .update(pageSections)
-      .set(
-        publishNow
-          ? { published: values, draft: null, animation, isPublished: true, updatedAt: new Date() }
-          : { draft: values, animation, updatedAt: new Date() },
-      )
-      .where(eq(pageSections.id, id));
+    // The revision the form was built from. Required, not inferred: falling
+    // back to the row's current revision would make every save win, which is
+    // exactly the behaviour the guard exists to remove.
+    const expected = numberField(form, "expectedRevision", -1);
+    if (!Number.isInteger(expected) || expected < 0) {
+      return fail("The form could not be read. Reload the page and try again.");
+    }
+
+    const result = await updateSectionGuarded(id, expected, {
+      ...(publishNow
+        ? { published: values, draft: null, isPublished: true }
+        : { draft: values }),
+      animation,
+      updatedBy: session.user.id,
+    });
+    if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.save);
 
     const page = await pageOf(id);
     await logActivity(session, {
@@ -244,10 +282,15 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
     if (!section) return fail("That section no longer exists.");
     if (!section.draft) return fail("There is no draft to publish.");
 
-    await db
-      .update(pageSections)
-      .set({ published: section.draft, draft: null, isPublished: true, updatedAt: new Date() })
-      .where(eq(pageSections.id, id));
+    // Guarded on the revision this read saw: anything written between the read
+    // and the write would be published without ever having been looked at.
+    const result = await updateSectionGuarded(id, section.revision, {
+      published: section.draft,
+      draft: null,
+      isPublished: true,
+      updatedBy: session.user.id,
+    });
+    if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.publish);
 
     const page = await pageOf(id);
     await logActivity(session, {
@@ -265,7 +308,18 @@ export async function discardDraft(_prev: ActionState, form: FormData): Promise<
   return runAction("section-discard", async () => {
     const session = await guardAction("content.manage", form);
     const id = Number(form.get("id"));
-    await db.update(pageSections).set({ draft: null }).where(eq(pageSections.id, id));
+
+    const [section] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
+    if (!section) return fail(CONFLICT.gone);
+
+    // Throwing a draft away is a content write like any other: it has to lose
+    // the race rather than quietly delete an edit made a second ago.
+    const result = await updateSectionGuarded(id, section.revision, {
+      draft: null,
+      updatedBy: session.user.id,
+    });
+    if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.discard);
+
     const page = await pageOf(id);
     await logActivity(session, {
       action: "section.draft_discarded",
@@ -291,14 +345,28 @@ export async function publishAllDrafts(_prev: ActionState, form: FormData): Prom
       .where(and(eq(pageSections.pageId, pageId), sql`${pageSections.draft} is not null`));
     if (!drafts.length) return fail("There are no drafts waiting on this page.");
 
-    await db.transaction(async (tx) => {
-      for (const section of drafts) {
-        await tx
-          .update(pageSections)
-          .set({ published: section.draft!, draft: null, isPublished: true, updatedAt: new Date() })
-          .where(eq(pageSections.id, section.id));
+    // All or nothing. Each section is published only against the revision this
+    // read saw, and one section moving underneath us rolls the whole batch back
+    // — a half-published page is worse than an unpublished one, because nobody
+    // can tell by looking which half went out.
+    try {
+      await db.transaction(async (tx) => {
+        for (const section of drafts) {
+          const result = await updateSectionGuardedIn(tx, section.id, section.revision, {
+            published: section.draft!,
+            draft: null,
+            isPublished: true,
+            updatedBy: session.user.id,
+          });
+          if (!result.ok) throw new PublishRace(result.reason);
+        }
+      });
+    } catch (error) {
+      if (error instanceof PublishRace) {
+        return fail(error.reason === "missing" ? CONFLICT.publishAllGone : CONFLICT.publishAll);
       }
-    });
+      throw error;
+    }
 
     await logActivity(session, {
       action: "page.published",

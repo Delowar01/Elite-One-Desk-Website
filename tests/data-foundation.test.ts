@@ -912,8 +912,8 @@ describe("the entrance-animation control is still dead, and deliberately so", ()
     // then dropped: every block hard-codes its own `<Reveal variant>`.
     //
     // It is left alone on purpose. `saveSectionDraft` writes `animation`
-    // outside the draft document — see the `{ draft: values, animation, … }`
-    // branch below — so wiring the value through today would make saving a
+    // outside the draft document — on the same guarded write that stores the
+    // draft, see below — so wiring the value through today would make saving a
     // *draft* change the live page, which is the one thing a draft must not do.
     // Motion is Batch 9's, together with a draft column for it.
     //
@@ -933,6 +933,12 @@ describe("the entrance-animation control is still dead, and deliberately so", ()
 
   test("a draft save still writes it live — the reason the defect stays", () => {
     const actions = read("src/app/(backoffice)/admin/(shell)/pages/actions.ts");
-    assert.match(actions, /\{ draft: values, animation, updatedAt: new Date\(\) \}/);
+    // The one write `saveSectionDraft` makes, read out of the source: the
+    // draft goes in it, and so does `animation`, which is a published column.
+    const body = actions.slice(actions.indexOf("export async function saveSectionDraft"));
+    const write = body.slice(body.indexOf("updateSectionGuarded("), body.indexOf("if (!result.ok)"));
+    assert.ok(write.length > 0, "saveSectionDraft no longer makes one guarded write");
+    assert.match(write, /draft: values/);
+    assert.match(write, /\banimation\b/);
   });
 });

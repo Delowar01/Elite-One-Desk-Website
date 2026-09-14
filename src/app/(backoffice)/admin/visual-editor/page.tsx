@@ -3,7 +3,7 @@ import { asc } from "drizzle-orm";
 import { VisualEditorShell, type EditablePage } from "@/components/admin/visual-editor/shell";
 import { requirePermission } from "@/lib/auth/guard";
 import { db } from "@/lib/db";
-import { pages } from "@/lib/db/schema";
+import { media, pages } from "@/lib/db/schema";
 import { localeOrDefault, publicPathForPage } from "@/lib/page-path";
 import { deviceOrDefault } from "@/lib/visual-editor/viewport";
 
@@ -47,6 +47,27 @@ export default async function VisualEditorPage({
     .from(pages)
     .orderBy(asc(pages.kind), asc(pages.sortOrder), asc(pages.id));
 
+  /**
+   * The media library, once, for every image control in the inspector.
+   *
+   * The same query the ordinary section editor runs, and the same picker on the
+   * other end: the Visual Editor chooses from the library, it does not upload.
+   * One image store means one validator, one place a picture can be deleted
+   * from, and one honest answer to where a picture is used.
+   */
+  const library = await db
+    .select({
+      id: media.id,
+      filename: media.filename,
+      title: media.title,
+      altEn: media.altEn,
+      width: media.width,
+      height: media.height,
+      folder: media.folder,
+    })
+    .from(media)
+    .orderBy(asc(media.folder), asc(media.title));
+
   const editable: EditablePage[] = rows.map((row) => ({
     id: row.id,
     slug: row.slug,
@@ -70,6 +91,8 @@ export default async function VisualEditorPage({
         device: deviceOrDefault(query.device),
       }}
       canManage={session.permissions.has("content.manage")}
+      csrf={session.csrfToken}
+      media={library}
     />
   );
 }

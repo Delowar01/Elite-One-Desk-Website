@@ -68,7 +68,21 @@ directory lock.
 | `editor-protocol.test.ts` | the closed postMessage vocabulary at version 2 — a valid message is read, and a wrong channel, wrong protocol version (v1 included), wrong bridge id, wrong page, unknown type or malformed field is silence · structure, hover, selection and bounds are rebuilt field by field, with the address parsed and the section id beside it required to agree · an absurd rectangle is refused · ping, select and clear are the whole editor vocabulary and `editor.setContent` and friends are not in it · bridge ids are opaque and checkable · the viewport contract is 1440/834/390 and falls back rather than throwing · the canvas address is built from a page, English at the root and Arabic under `/ar`, never `/en` |
 | `editor-nodes.test.ts` | how the editor names things and where it draws the box: no editor means no attributes at all · a section root carries its id and block type and a field does not repeat them · every address written passes the parser, and a path it refuses — or a row with no usable `_id` — writes nothing rather than something wrong · a repeatable row keeps its address through a reorder and is never addressed by index · the language is not in the address · labels come from the block registry and a row is named by what it says · the overlay transform, including a 1440 canvas scaled into a narrower stage, an explicit frame offset and a nonsense scale · a zero-sized or off-screen rectangle is not drawn |
 | `visual-editor.test.ts` | the editor route and what authenticating for it unlocks, against the running app: signed out it bounces to login · `content.view` opens it and the page list comes from the table · a junk page, language or device falls back · a visitor guessing `?preview=1&editor=1&bridge=…` gets the published page and no bridge · an ordinary preview still wears its banner and loads no bridge · an authorised canvas drops the banner and gets the bridge · a malformed bridge id is an ordinary preview · the canvas follows a structural draft while the live page does not move · a corrupt structure shows the page as it stands · a foreign section cannot be pulled in · every rendered section gets a root addressed by its database id, fields are addressed relative to it, repeatable rows carry the `_id` the database holds, and the addresses are identical in both editions · a draft-only section is marked as one and a hidden one as hidden · a visitor and an ordinary preview carry no `data-eod-` markup at all · the existing preview screen is untouched |
+| `visual-content.test.ts` | editing content in the Visual Editor, through its real Server Actions over HTTP: a save writes `draft` and moves no other column, the live page does not change and the preview does · rich text keeps the whitelist, an unsafe link is stripped, an undeclared key and an invented icon never land, a media field is a library id or nothing · Arabic is written without touching the English and an empty Arabic value is never backfilled from it · a row keeps its `_id` through a reorder, a new row is given one and a repeated one is replaced · a save on a revision that has moved is refused and hands back the version that won · the ordinary section editor and the canvas conflict with each other in both directions · a section moving mid-publish rolls the whole page back and nothing goes out · a reader may read and not write, a forged or missing CSRF token is refused, signed out neither works · a section belonging to another page is refused rather than loaded |
 | `social-admin.test.ts` | the Social Media panel, driven through its own forms: a new link appends · an ordinary edit does not reorder · show and hide · the arrows, including on rows that already share a `sort_order` · one row per network, with `twitter` and `x` counted as one · `Other / Website` may repeat · a legacy `twitter` row is X in the footer and in the panel · `sameAs` lists the accounts once each and leaves the plain addresses out · every mutation named in the activity log for what it was |
+
+## Server Actions
+
+`helpers/http.ts` submits the actions that live on a rendered `<form>`, the way
+a browser with JavaScript disabled does — React writes the action reference into
+the markup for exactly that path. An action a *client component* calls directly
+has no form to replay, and the Visual Editor's inspector is a panel rather than
+a page, so `helpers/action.ts` sends the other request a browser sends: the
+action id read from the build's own `server-reference-manifest.json`, the body
+produced by React's own `encodeReply`, and the `Next-Action` header, cookie and
+origin alongside it. The answer comes back as a flight stream and is read by
+row, in bytes rather than lines, because a long string is hoisted into a row of
+its own. No test-only endpoint exists and nothing in between is mocked.
 
 ## Server-only modules
 
@@ -81,7 +95,10 @@ back by calling `emit(value)`; nothing in between is mocked.
 
 ## Ports
 
-The server tests bind `3411`–`3414`, `3421`, `3431` and `3441`. `build-isolation.test.ts`
+The server tests bind `3411`–`3414`, `3421`, `3431`, `3441`, `3442` and `3443` —
+one port per file, never shared. `node --test` runs the files in parallel, so
+two files on one port is not a style point: whichever starts second fails to
+bind, or worse, answers the first one's questions. `build-isolation.test.ts`
 starts no server: it copies the working tree — tracked files with their
 uncommitted edits, plus untracked files that are not gitignored — to a directory
 under the OS temp dir, symlinks `node_modules` and builds there. Outside the

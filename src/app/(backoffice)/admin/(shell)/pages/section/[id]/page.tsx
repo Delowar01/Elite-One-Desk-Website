@@ -77,6 +77,7 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
             animation: row.section.animation,
             hasDraft: Boolean(row.section.draft),
             values,
+            revision: row.section.revision,
           }}
         />
       </div>

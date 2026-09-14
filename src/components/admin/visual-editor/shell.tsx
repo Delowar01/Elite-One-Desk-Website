@@ -1,16 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  loadVisualSection,
+  saveVisualSectionDraft,
+} from "@/app/(backoffice)/admin/visual-editor/actions";
+import type { MediaOption } from "@/components/admin/media-picker";
 import { Icon } from "@/components/ui/icon";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
 import { previewPagePath } from "@/lib/page-path";
-import { blockNameOf, describeAddress } from "@/lib/visual-editor/labels";
+import { blockNameOf } from "@/lib/visual-editor/labels";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
 import { EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
 
 import { VisualCanvas, type CanvasState, type SelectRequest } from "./canvas";
+import { ContentInspector, type SectionBuffer } from "./content-inspector";
 
 export type EditablePage = {
   id: number;
@@ -30,6 +36,20 @@ const STATUS: Record<CanvasState["status"], { label: string; tone: string }> = {
 const EMPTY_CANVAS: CanvasState = { status: "loading", innerWidth: null, message: null };
 
 /**
+ * How long to wait for the canvas to answer a restored selection before
+ * falling back to the section it was in.
+ *
+ * The canvas answers an address it cannot resolve by clearing the selection,
+ * which is indistinguishable from not having answered yet — so this is a
+ * timeout rather than a signal. Long enough that a slow frame is not mistaken
+ * for a missing node, short enough that the fallback still feels like part of
+ * the save.
+ */
+const RESTORE_FALLBACK_MS = 400;
+
+const sameValues = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
  * The Visual Editor's application shell.
  *
  * Three columns and a toolbar: Layers, the real website, and the inspector. It
@@ -37,18 +57,24 @@ const EMPTY_CANVAS: CanvasState = { status: "loading", innerWidth: null, message
  * the real public route, rendered by the real `SectionRenderer` from the real
  * database, which is why what an editor sees here is what a visitor gets.
  *
- * Nothing here writes anything. Selection is the whole of this batch: the
- * inspector reads, and the panels that will eventually edit are not pretending
- * to yet.
+ * The one thing it writes is content, and only ever as a draft: the inspector
+ * edits a per-section buffer and saves it through a Server Action guarded on
+ * the section's revision. Structure, style and motion are later batches, and
+ * there is no disabled control here standing in for them.
  */
 export function VisualEditorShell({
   pages,
   initial,
   canManage,
+  csrf,
+  media,
 }: {
   pages: EditablePage[];
   initial: { slug: string; locale: Locale; device: DeviceKey };
   canManage: boolean;
+  /** The session's synchroniser token — every save carries it, like any admin form. */
+  csrf: string;
+  media: MediaOption[];
 }) {
   const [slug, setSlug] = useState(initial.slug);
   const [locale, setLocale] = useState<Locale>(initial.locale);
@@ -65,7 +91,36 @@ export function VisualEditorShell({
   const [selected, setSelected] = useState<EditorNodeMeta | null>(null);
   const [selectRequest, setSelectRequest] = useState<SelectRequest>(null);
 
+  /**
+   * One edit buffer per section, keyed by its database id.
+   *
+   * Deliberately kept here rather than inside the inspector, and deliberately
+   * not thrown away when the selection moves: an editor who types into a hero,
+   * clicks a card to check something and comes back should find their sentence
+   * where they left it. Section ids are unique across the site, so the buffers
+   * survive a page change too — and the toolbar says how many are unsaved, so a
+   * draft left on a page nobody is looking at is not a silent one.
+   */
+  const [buffers, setBuffers] = useState<Record<number, SectionBuffer>>({});
+  const [loadingId, setLoadingId] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /** Sections already asked for, so a re-render does not ask again. */
+  const requested = useRef<Set<number>>(new Set());
+  /** Where the selection should go once the canvas comes back from a save. */
+  const restoreTo = useRef<{ address: string; fallback: string } | null>(null);
+  const [restoreToken, setRestoreToken] = useState(0);
+  /** `selected` readable from a timer without making it a dependency. */
+  const selectedRef = useRef<EditorNodeMeta | null>(null);
+
   const page = useMemo(() => pages.find((row) => row.slug === slug) ?? pages[0], [pages, slug]);
+  const activeId = selected?.sectionId ?? null;
+  const buffer = activeId === null ? null : buffers[activeId] ?? null;
+  const dirtyIds = useMemo(() => {
+    const ids = new Set<number>();
+    for (const [id, entry] of Object.entries(buffers)) if (entry.dirty) ids.add(Number(id));
+    return ids;
+  }, [buffers]);
+  const dirtyCount = dirtyIds.size;
 
   /**
    * The address is the editor's state, so a refresh comes back to the same
@@ -81,23 +136,265 @@ export function VisualEditorShell({
 
   const onCanvasState = useCallback((next: CanvasState) => setCanvas(next), []);
   const onStructure = useCallback((next: EditorSectionMeta[]) => setSections(next), []);
-  const onSelection = useCallback((node: EditorNodeMeta | null) => setSelected(node), []);
+  const onSelection = useCallback((node: EditorNodeMeta | null) => {
+    selectedRef.current = node;
+    setSelected(node);
+  }, []);
 
-  /** A new document: everything about the old one goes with it. */
+  /**
+   * A new document: everything about the old one goes with it.
+   *
+   * Everything about the *document*, that is. The edit buffers are not part of
+   * it — they are what the person typed, and reloading the frame they are being
+   * previewed in is no reason to throw them away.
+   */
   const freshCanvas = () => {
     setCanvas(EMPTY_CANVAS);
     setSections([]);
+    selectedRef.current = null;
     setSelected(null);
     setSelectRequest(null);
     setCanvasKey((n) => n + 1);
   };
 
-  const ask = (address: string | null) =>
-    setSelectRequest((current) => ({
-      address,
-      scrollIntoView: address !== null,
-      token: (current?.token ?? 0) + 1,
-    }));
+  const ask = useCallback(
+    (address: string | null) =>
+      setSelectRequest((current) => ({
+        address,
+        scrollIntoView: address !== null,
+        token: (current?.token ?? 0) + 1,
+      })),
+    [],
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Content: load, edit, save                                           */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The section's values come from the server, not from the canvas.
+   *
+   * The frame is showing a rendering — decorated, localised, with empty fields
+   * omitted — and reading an editable document back out of it would mean
+   * storing whatever the renderer happened to produce. So the panel asks for
+   * the row. The page id travels with the request and is checked against the
+   * row, so this canvas can only ever edit its own page's sections.
+   */
+  useEffect(() => {
+    if (activeId === null || !page) return;
+    if (requested.current.has(activeId)) return;
+    requested.current.add(activeId);
+
+    const wanted = activeId;
+    let cancelled = false;
+    setLoadingId(wanted);
+    setLoadError(null);
+
+    loadVisualSection(wanted, page.id)
+      .then((result) => {
+        if (cancelled) return;
+        setLoadingId((current) => (current === wanted ? null : current));
+        if (!result.ok) {
+          // Let a later selection try again rather than remembering a failure.
+          requested.current.delete(wanted);
+          setLoadError(result.message);
+          return;
+        }
+        setBuffers((prev) =>
+          prev[wanted]
+            ? prev
+            : {
+                ...prev,
+                [wanted]: {
+                  data: result.section,
+                  values: result.section.values,
+                  dirty: false,
+                  status: "idle",
+                },
+              },
+        );
+      })
+      .catch(() => {
+        if (cancelled) return;
+        requested.current.delete(wanted);
+        setLoadingId((current) => (current === wanted ? null : current));
+        setLoadError("The section could not be read. Reload the canvas and try again.");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeId, page]);
+
+  const onValues = useCallback(
+    (values: Record<string, unknown>) => {
+      if (activeId === null || !canManage) return;
+      setBuffers((prev) => {
+        const entry = prev[activeId];
+        if (!entry) return prev;
+        return {
+          ...prev,
+          [activeId]: {
+            ...entry,
+            values,
+            dirty: !sameValues(values, entry.data.values),
+            // Typing clears a stale outcome, but never a conflict: the section
+            // really has moved, and hiding that the moment somebody keeps
+            // typing is how the second save loses too.
+            status: entry.status === "conflict" ? "conflict" : "idle",
+            message: entry.status === "conflict" ? entry.message : undefined,
+          },
+        };
+      });
+    },
+    [activeId, canManage],
+  );
+
+  const revert = useCallback(() => {
+    if (activeId === null) return;
+    setBuffers((prev) => {
+      const entry = prev[activeId];
+      if (!entry) return prev;
+      return {
+        ...prev,
+        [activeId]: { ...entry, values: entry.data.values, dirty: false, status: "idle", message: undefined },
+      };
+    });
+  }, [activeId]);
+
+  /** Take the version that won the race, losing whatever is in the panel. */
+  const takeLatest = useCallback(() => {
+    if (activeId === null) return;
+    setBuffers((prev) => {
+      const entry = prev[activeId];
+      if (!entry?.latest) return prev;
+      return {
+        ...prev,
+        [activeId]: {
+          data: entry.latest,
+          values: entry.latest.values,
+          dirty: false,
+          status: "idle",
+        },
+      };
+    });
+    freshCanvas();
+  }, [activeId]);
+
+  const save = useCallback(async () => {
+    if (activeId === null || !canManage) return;
+    const entry = buffers[activeId];
+    if (!entry || !entry.dirty || entry.status === "saving") return;
+
+    const sent = JSON.stringify(entry.values);
+    const address = selectedRef.current?.address ?? null;
+
+    setBuffers((prev) => {
+      const live = prev[activeId];
+      if (!live) return prev;
+      return { ...prev, [activeId]: { ...live, status: "saving", message: undefined } };
+    });
+
+    const form = new FormData();
+    form.set("_csrf", csrf);
+    form.set("sectionId", String(activeId));
+    form.set("pageId", String(entry.data.pageId));
+    form.set("expectedRevision", String(entry.data.revision));
+    form.set("values", sent);
+
+    let result;
+    try {
+      result = await saveVisualSectionDraft(form);
+    } catch {
+      setBuffers((prev) => {
+        const live = prev[activeId];
+        if (!live) return prev;
+        return {
+          ...prev,
+          [activeId]: { ...live, status: "error", message: "The save could not be sent. Try again." },
+        };
+      });
+      return;
+    }
+
+    if (!result.ok) {
+      setBuffers((prev) => {
+        const live = prev[activeId];
+        if (!live) return prev;
+        return result.reason === "conflict"
+          ? { ...prev, [activeId]: { ...live, status: "conflict", message: result.message, latest: result.section } }
+          : { ...prev, [activeId]: { ...live, status: "error", message: result.message } };
+      });
+      return;
+    }
+
+    const saved = result.section;
+    setBuffers((prev) => {
+      const live = prev[activeId];
+      if (!live) return prev;
+      /**
+       * Somebody who kept typing while the save was in flight keeps their
+       * newer text — adopting the server's copy would delete the last few
+       * words they wrote. The revision moves either way, so the next save is
+       * guarded against the one that just landed rather than the one before.
+       */
+      const movedOn = JSON.stringify(live.values) !== sent;
+      return {
+        ...prev,
+        [activeId]: {
+          data: saved,
+          values: movedOn ? live.values : saved.values,
+          dirty: movedOn,
+          status: movedOn ? "idle" : "saved",
+        },
+      };
+    });
+
+    // The canvas is a rendering of the draft, so it is stale the moment the
+    // draft changes. Reload it, and put the selection back where it was.
+    if (address) restoreTo.current = { address, fallback: `section:${activeId}` };
+    freshCanvas();
+    setRestoreToken((n) => n + 1);
+  }, [activeId, buffers, canManage, csrf]);
+
+  /**
+   * Puts the selection back after the canvas has reloaded.
+   *
+   * By address, which is the whole point of the address model: the element is a
+   * different DOM node in a different document, and it is still the same
+   * heading. A node that the edit removed — the row that was just deleted —
+   * cannot come back, so the fallback is its section, which is the nearest
+   * thing that still exists and keeps the inspector on the right block.
+   */
+  useEffect(() => {
+    if (!restoreToken || canvas.status !== "ready") return;
+    const wanted = restoreTo.current;
+    if (!wanted) return;
+    restoreTo.current = null;
+
+    ask(wanted.address);
+    const timer = window.setTimeout(() => {
+      if (!selectedRef.current && wanted.fallback !== wanted.address) ask(wanted.fallback);
+    }, RESTORE_FALLBACK_MS);
+    return () => window.clearTimeout(timer);
+  }, [restoreToken, canvas.status, ask]);
+
+  /**
+   * An unsaved edit is worth one browser prompt.
+   *
+   * Only the browser's own dialog: a custom message is ignored by every current
+   * browser, and the listener is attached only while something is actually
+   * dirty so an editor who has saved everything is never asked.
+   */
+  useEffect(() => {
+    if (!dirtyCount) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirtyCount]);
 
   if (!page) {
     return (
@@ -213,6 +510,22 @@ export function VisualEditorShell({
         </div>
 
         <div className="ms-auto flex items-center gap-2">
+          {/*
+            Buffers survive a page change, so an unsaved edit can be sitting on
+            a page nobody is looking at. Counting them here is what keeps that
+            from being a silent loss.
+          */}
+          {dirtyCount ? (
+            <span
+              className="rounded-full px-2 py-0.5 text-[0.7rem] font-semibold"
+              style={{
+                background: "color-mix(in oklab, var(--color-orange) 18%, transparent)",
+                color: "var(--color-peach)",
+              }}
+            >
+              {dirtyCount} unsaved
+            </span>
+          ) : null}
           {/* Text as well as colour: the state has to be readable without it. */}
           <p className="flex items-center gap-1.5 text-[0.75rem] text-muted" aria-live="polite">
             <span aria-hidden className="inline-block size-1.5 rounded-full" style={{ background: status.tone }} />
@@ -242,6 +555,7 @@ export function VisualEditorShell({
         <LayersPanel
           sections={sections}
           selectedSectionId={selected?.sectionId ?? null}
+          dirtyIds={dirtyIds}
           ready={ready}
           onSelect={ask}
         />
@@ -280,7 +594,21 @@ export function VisualEditorShell({
           </p>
         </section>
 
-        <InspectorPanel node={selected} locale={locale} sections={sections} onClear={() => ask(null)} />
+        <ContentInspector
+          node={selected}
+          sections={sections}
+          locale={locale}
+          media={media}
+          canManage={canManage}
+          buffer={buffer}
+          loading={loadingId !== null && loadingId === activeId}
+          loadError={loadError}
+          onValues={onValues}
+          onSave={save}
+          onRevert={revert}
+          onTakeLatest={takeLatest}
+          onClear={() => ask(null)}
+        />
       </div>
     </div>
   );
@@ -304,11 +632,14 @@ export function VisualEditorShell({
 function LayersPanel({
   sections,
   selectedSectionId,
+  dirtyIds,
   ready,
   onSelect,
 }: {
   sections: EditorSectionMeta[];
   selectedSectionId: number | null;
+  /** Sections with edits in the panel that have not been saved yet. */
+  dirtyIds: Set<number>;
   ready: boolean;
   onSelect: (address: string) => void;
 }) {
@@ -348,6 +679,7 @@ function LayersPanel({
                       </span>
                       {/* Badges, not colours: the state has to survive a screenshot
                           in greyscale and a screen reader reading the row. */}
+                      {dirtyIds.has(section.sectionId) ? <Badge tone="draft">Unsaved</Badge> : null}
                       {section.isDraftOnly ? <Badge tone="new">New</Badge> : null}
                       {section.isDraft && !section.isDraftOnly ? <Badge tone="draft">Draft</Badge> : null}
                       {!section.visible ? <Badge tone="muted">Hidden</Badge> : null}
@@ -374,98 +706,5 @@ function Badge({ tone, children }: { tone: "draft" | "new" | "muted"; children: 
     >
       {children}
     </span>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/* Inspector                                                                  */
-/* -------------------------------------------------------------------------- */
-
-/**
- * What is selected, described. Read-only, and honestly so: there is not a
- * disabled input anywhere here pretending that editing is one click away.
- * Content controls arrive with the batch that can actually save them.
- */
-function InspectorPanel({
-  node,
-  locale,
-  sections,
-  onClear,
-}: {
-  node: EditorNodeMeta | null;
-  locale: Locale;
-  sections: EditorSectionMeta[];
-  onClear: () => void;
-}) {
-  const section = node ? sections.find((row) => row.sectionId === node.sectionId) : undefined;
-  const described = node ? describeAddress(node.blockType, node.relativePath, node.text) : null;
-
-  return (
-    <aside
-      className="hidden w-72 shrink-0 flex-col border-s border-[var(--admin-line)] bg-[var(--admin-shell)] xl:flex"
-      aria-label="Inspector"
-    >
-      <h2 className="shrink-0 px-3.5 pb-2 pt-3.5 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">
-        Inspector
-      </h2>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-3.5 pb-4">
-        {!node || !described ? (
-          <p className="text-[0.76rem] leading-relaxed text-muted">
-            Select something on the canvas or in Page structure.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-3.5">
-            <div>
-              <p className="text-[0.92rem] font-semibold leading-snug text-strong">{described.label}</p>
-              <p className="mt-1 text-[0.7rem] leading-relaxed text-muted">
-                {described.crumbs.join(" → ")}
-              </p>
-            </div>
-
-            {node.text && node.kind !== "section" ? (
-              <Row label="Current text">
-                <span className="block max-h-24 overflow-y-auto whitespace-pre-wrap break-words text-[0.76rem] text-body">
-                  {node.text}
-                </span>
-              </Row>
-            ) : null}
-
-            <Row label="Kind">{node.kind}</Row>
-            <Row label="Block">
-              {described.blockName} <span className="text-muted">({node.blockType})</span>
-            </Row>
-            <Row label="Section">#{node.sectionId}</Row>
-            {section ? (
-              <Row label="State">
-                {section.isDraftOnly
-                  ? "New — not published yet"
-                  : section.isDraft
-                    ? "Has unpublished edits"
-                    : "Published"}
-                {section.visible ? "" : " · hidden"}
-              </Row>
-            ) : null}
-            <Row label="Language">{locale === "ar" ? "Arabic" : "English"}</Row>
-            <Row label="Address">
-              <code className="block break-all text-[0.68rem] text-muted">{node.address}</code>
-            </Row>
-
-            <button type="button" onClick={onClear} className="admin-btn admin-btn-sm self-start">
-              Clear selection
-            </button>
-          </div>
-        )}
-      </div>
-    </aside>
-  );
-}
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <p className="text-[0.66rem] font-semibold uppercase tracking-[0.07em] text-muted">{label}</p>
-      <p className="mt-0.5 text-[0.78rem] text-body">{children}</p>
-    </div>
   );
 }

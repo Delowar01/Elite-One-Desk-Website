@@ -21,7 +21,7 @@ import { connect, dropDatabase, type Sql } from "./helpers/pg";
 import { startServer, isBuilt, BUILD_HINT, type Server } from "./helpers/server";
 import { signIn } from "./helpers/session";
 
-const PORT = 3441;
+const PORT = 3442;
 const BRIDGE = "0123456789abcdef0123456789abcdef";
 
 let database = "";
@@ -87,11 +87,14 @@ describe("the editor route is behind the ordinary admin wall", () => {
     }
   });
 
-  test("it carries the empty panels and no way to save anything yet", async () => {
+  test("it carries the panels, and the controls only appear with a selection", async () => {
     const page = await get(server.origin, "/admin/visual-editor", { cookie: owner });
     assert.match(page.html, /Page structure/);
     assert.match(page.html, /Inspector/);
-    assert.ok(!/>\s*(Save|Publish|Save changes)\s*</.test(page.html), "a save control appeared");
+    // Content editing arrived in Batch 5, but it belongs to a selected node:
+    // with nothing selected the inspector says so and offers nothing.
+    assert.match(page.html, /Select something on the canvas/);
+    assert.ok(!/>\s*(Save draft|Publish)\s*</.test(page.html), "a save control appeared unselected");
   });
 
   test("an unknown page in the address falls back instead of crashing", async () => {
