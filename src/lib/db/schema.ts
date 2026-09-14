@@ -219,6 +219,27 @@ export const pages = pgTable("pages", {
   titleAr: varchar("title_ar", { length: 190 }).notNull().default(""),
   isPublished: boolean("is_published").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
+  /**
+   * The page's structure as it is being edited, not as it is being served.
+   *
+   * Today reorder, hide and delete write straight to the live rows
+   * (`pageSections.position`, `.isPublished`, and an actual DELETE), so there
+   * is nowhere for "I have rearranged this page but not published it" to live.
+   * This column is that place: a validated document listing section ids in
+   * draft order with their intended visibility — see `lib/cms/structure.ts`.
+   *
+   * Dormant in this release. Nothing reads it, the public renderer does not
+   * know it exists, and the Pages admin keeps its current immediate-live
+   * behaviour. Batch 8 makes structural editing draft-aware on top of it.
+   */
+  draftStructure: jsonb("draft_structure").$type<Record<string, unknown>>(),
+  /**
+   * Optimistic-concurrency token for the page's structure. Not a timestamp:
+   * two saves inside the same clock tick are indistinguishable by time and are
+   * not by this. See `lib/db/revision.ts`.
+   */
+  revision: integer("revision").notNull().default(0),
+  updatedBy: integer("updated_by").references(() => users.id, { onDelete: "set null" }),
   ...timestamps,
 });
 
@@ -237,7 +258,40 @@ export const pageSections = pgTable(
     published: jsonb("published").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
     /** Pending edits. Never rendered publicly; visible in preview mode only. */
     draft: jsonb("draft").$type<Record<string, unknown>>(),
+    /**
+     * The entrance animation an editor chose.
+     *
+     * Known defect, deliberately left alone: this value is stored and read into
+     * `RenderedSection.animation`, but `SectionRenderer` never passes it to a
+     * block, and every block hard-codes its own `<Reveal variant>`. So the
+     * control has no effect on the public site. Wiring it up here would make a
+     * *draft* save change the live page, because `saveSectionDraft` writes
+     * `animation` on the draft path — which is why Batch 9 owns motion, and why
+     * `tests/data-foundation.test.ts` asserts the defect rather than fixing it.
+     */
     animation: varchar("animation", { length: 32 }).notNull().default("fade-up"),
+    /**
+     * Published visual overrides — a validated, closed-vocabulary document,
+     * never CSS text. Keys are section-*relative* node paths (`root`,
+     * `field:headline`, …); the row already says which section this is. See
+     * `lib/cms/styles.ts`.
+     *
+     * Dormant in this release: no renderer reads it.
+     */
+    styles: jsonb("styles").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    /** The same document, unpublished. Promoted beside `draft` → `published`. */
+    draftStyles: jsonb("draft_styles").$type<Record<string, unknown>>(),
+    /**
+     * Where a restored or edited motion choice can sit without going live.
+     *
+     * `animation` is the published value and is already written by an ordinary
+     * draft save, so a restore that wrote it would change the live page —
+     * exactly what a restore must not do. Nothing reads this column yet.
+     */
+    draftAnimation: varchar("draft_animation", { length: 32 }),
+    /** Optimistic-concurrency token — see `lib/db/revision.ts`. */
+    revision: integer("revision").notNull().default(0),
+    updatedBy: integer("updated_by").references(() => users.id, { onDelete: "set null" }),
     ...timestamps,
   },
   (t) => [index("page_sections_page_idx").on(t.pageId, t.position)],
@@ -246,6 +300,35 @@ export const pageSections = pgTable(
 /* -------------------------------------------------------------------------- */
 /* Service taxonomy                                                            */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * A published page, kept so it can be put back.
+ *
+ * One row is one moment: the sections of one page as they were published, in
+ * order, with their values, their styles and their motion value. Deliberately
+ * *not* the page's own title or settings, and deliberately not anything global —
+ * those have no draft form, so restoring them would take effect the instant the
+ * row was written, and a restore has to be previewable before it is live. See
+ * `lib/cms/snapshot.ts` for the document and what it excludes.
+ *
+ * Dormant in this release: nothing writes a row, and there is no restore button.
+ */
+export const pageVersions = pgTable(
+  "page_versions",
+  {
+    id: serial("id").primaryKey(),
+    pageId: integer("page_id")
+      .notNull()
+      .references(() => pages.id, { onDelete: "cascade" }),
+    label: varchar("label", { length: 120 }).notNull().default(""),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+    /** Captured at write time so the row survives a deleted user. */
+    actorName: varchar("actor_name", { length: 120 }).notNull().default("System"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("page_versions_page_idx").on(t.pageId, t.createdAt)],
+);
 
 export const serviceCategories = pgTable("service_categories", {
   id: serial("id").primaryKey(),

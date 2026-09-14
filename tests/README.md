@@ -62,7 +62,18 @@ directory lock.
 | `schema-compat.test.ts` | the release named in `deploy/previous-release` still reads the schema this one produces · that reference names a real, earlier commit · no migration drops, renames or narrows anything without an approval marker |
 | `admin-destinations.test.ts` | adding Nepal is data entry · the shared `/packages/<slug>` namespace is guarded from both sides · deleting a destination keeps its packages |
 | `cms-fields.test.ts` | the controlled row fields — a real icon key survives, an invented one does not, a media id survives as a number, junk becomes null, a dangerous href is still stripped · the link→image resolver, including the language prefix, the fragment, the per-category service slug and the destination that wins over a package of the same name · the social registry: twelve platforms, `twitter` is X, casing and whitespace do not fork a platform |
+| `data-foundation.test.ts` | the Visual Editor's data rules, decided without a database: a row keeps its `_id` through a reorder and a save, and every other undeclared key is still dropped · a node path names a node and can never be a selector, a locale or a section · a stored style is a closed vocabulary with no CSS, no motion and no physical direction · a draft order is checked against the page that owns it · a snapshot carries the published section and nothing global · a restore produces drafts, recreates a deleted section in its old place and leaves everything else alone · the backfill adds `_id` and nothing else, at any depth and in both languages · the entrance-animation control is still dead, asserted on purpose |
+| `data-migration.test.ts` | the same foundation against a real database: a pre-batch database comes out of `npm run db:migrate` stamped, with `updated_at`, `revision`, order and visibility untouched · a second migration writes nothing · drafts are stamped too and an existing id is kept · an unknown block type is left alone · a fresh installation lands in the same state · a stale `revision` is a reported conflict, not a silent overwrite · a restore writes drafts, publishes nothing and records the intended order |
 | `social-admin.test.ts` | the Social Media panel, driven through its own forms: a new link appends · an ordinary edit does not reorder · show and hide · the arrows, including on rows that already share a `sort_order` · one row per network, with `twitter` and `x` counted as one · `Other / Website` may repeat · a legacy `twitter` row is X in the footer and in the panel · `sameAs` lists the accounts once each and leaves the plain addresses out · every mutation named in the activity log for what it was |
+
+## Server-only modules
+
+Most of `src/lib` is marked `server-only`, which throws the moment it is
+imported without React's `react-server` export condition. A test that needs to
+drive one of those modules against a real database therefore cannot import it:
+`helpers/probe.ts` writes the snippet to `.data/test/probes/` and runs it with
+`tsx --conditions=react-server`, the way the server runs it. The snippet reports
+back by calling `emit(value)`; nothing in between is mocked.
 
 ## Ports
 

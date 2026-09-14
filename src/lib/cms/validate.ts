@@ -1,5 +1,7 @@
 import { isIconName } from "@/lib/icons";
 
+import { ITEM_ID_KEY, ensureItemIds } from "./item-id";
+
 import { sanitizeHref, sanitizeRichText } from "./sanitize";
 import type { BlockDef, FieldDef, ItemFieldDef } from "./blocks";
 
@@ -40,6 +42,14 @@ function mediaValue(raw: unknown): number | null {
 function itemRow(row: unknown, fields: ItemFieldDef[]): Record<string, unknown> {
   const source = (typeof row === "object" && row !== null ? row : {}) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
+  /**
+   * The one key that survives without being declared by the registry, and the
+   * only one: a row's stable identity, carried through so an edit does not
+   * rename the thing it is editing. It is not accepted here — a malformed or
+   * repeated value is replaced by `ensureItemIds` below — it is merely passed
+   * along for that check to judge. Everything else undeclared is still dropped.
+   */
+  if (typeof source[ITEM_ID_KEY] === "string") out[ITEM_ID_KEY] = source[ITEM_ID_KEY];
   for (const field of fields) {
     const max = field.type === "textarea" ? MAX_AREA : MAX_TEXT;
     if (field.type === "media") {
@@ -86,7 +96,13 @@ function fieldValue(field: FieldDef, raw: unknown): unknown {
     case "items": {
       const fields = field.itemFields ?? [];
       const rows = Array.isArray(raw) ? raw : [];
-      return rows.slice(0, field.maxItems ?? 24).map((row) => itemRow(row, fields));
+      /**
+       * `ensureItemIds` runs after the rows are rebuilt, not before: it needs to
+       * see the whole list to notice that two rows are claiming one id, which
+       * is what a copy-pasted row or a duplicated section would otherwise
+       * produce. It adds and repairs `_id` and touches nothing else.
+       */
+      return ensureItemIds(rows.slice(0, field.maxItems ?? 24).map((row) => itemRow(row, fields)));
     }
     default:
       return field.localised ? localised(raw, MAX_TEXT) : asString(raw, MAX_TEXT);

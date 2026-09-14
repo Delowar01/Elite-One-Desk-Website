@@ -1,5 +1,6 @@
 import type { Locale } from "@/lib/i18n/config";
 import { pick } from "@/lib/i18n/config";
+import { ITEM_ID_KEY } from "./item-id";
 import type { BlockDef, FieldDef } from "./blocks";
 
 export type LocalisedValue = { en: string; ar: string };
@@ -58,6 +59,9 @@ export function items(
       if (typeof row !== "object" || row === null) return null;
       const record = row as Record<string, unknown>;
       const out: BlockItem = {};
+      // The row's stable id, read back so a later batch can address it. No
+      // renderer uses it, and nothing about it reaches the page.
+      if (typeof record[ITEM_ID_KEY] === "string") out[ITEM_ID_KEY] = record[ITEM_ID_KEY];
       for (const field of fields) {
         const value = record[field.name];
         // A media field is stored as a number. A row is a flat string record —

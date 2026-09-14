@@ -9,6 +9,8 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 
+import { withoutItemIds } from "@/lib/cms/backfill";
+
 import { dropDatabase, connect, type Sql } from "./helpers/pg";
 import { giveEmpty, giveFresh, giveLegacy, giveRestructured } from "./helpers/fixtures";
 import { seed } from "./helpers/run";
@@ -230,10 +232,13 @@ describe("the seed and the restructure agree", () => {
       return row?.published as Record<string, unknown> | undefined;
     };
 
+    // Compared without `_id`: a repeatable row's identity is generated, so two
+    // installations never share one, and it is not copy. Everything a visitor
+    // reads still has to match field for field.
     for (const blockType of ["service-grid", "one-desk", "why-us", "quick-links"]) {
       assert.deepEqual(
-        await values(fresh, blockType),
-        await values(cutover, blockType),
+        withoutItemIds(await values(fresh, blockType)),
+        withoutItemIds(await values(cutover, blockType)),
         `${blockType} differs between a fresh install and a restructured one`,
       );
     }

@@ -19,6 +19,7 @@ import {
   travelPackages,
   users,
 } from "../src/lib/db/schema";
+import { backfillItemIds } from "../src/lib/cms/backfill";
 import { hashPassword, passwordProblem } from "../src/lib/auth/password";
 import { PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS } from "../src/lib/auth/permissions";
 import { SETTINGS_DEFAULTS } from "../src/lib/settings-defaults";
@@ -265,7 +266,11 @@ async function seedPage(
       blockType: section.blockType,
       position: index,
       isPublished: true,
-      published: section.values,
+      // Stamped here for the same reason the migration stamps the rows already
+      // in the database: a new installation has to land in the state a migrated
+      // one lands in, or its sections would be the only ones on any site whose
+      // repeatable rows have no stable identity until somebody saves them.
+      published: backfillItemIds(section.blockType, section.values) ?? section.values,
       animation: section.animation ?? "fade-up",
     })),
   );

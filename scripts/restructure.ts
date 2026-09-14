@@ -14,6 +14,7 @@ import {
   services,
   travelPackages,
 } from "../src/lib/db/schema";
+import { ITEM_ID_KEY } from "../src/lib/cms/item-id";
 import { NAVIGATION } from "./seed/content";
 import { taxonomyState } from "./seed/state";
 
@@ -571,13 +572,21 @@ function navigationSignature(nodes: NavNode[]): string[] {
   return lines;
 }
 
-/** Sorted-key JSON, so two equal values compare equal whatever their key order. */
+/**
+ * Sorted-key JSON, so two equal values compare equal whatever their key order.
+ *
+ * `_id` is left out: it is a repeatable row's stable identity, written by the
+ * migration and by every save, and it says nothing about whether an editor
+ * changed the copy. Counting it would make every seeded list look edited, and
+ * the cutover would then decline to rewrite the very sentences it exists to
+ * rewrite. See `lib/cms/item-id.ts`.
+ */
 function canonical(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => key !== ITEM_ID_KEY)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
 }
 
