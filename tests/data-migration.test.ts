@@ -321,13 +321,16 @@ describe("restoring a version puts nothing on the live site", () => {
       }[];
       recreated: number[];
       draftStructure: { v: number; sections: { sectionId: number; visible: boolean }[] } | null;
-      original: { id: number; blockType: string; published: Values }[];
+      original: { id: number; blockType: string; published: Values; restores: Values }[];
+      outcome: { ok: boolean; reason?: string; recreated?: number[]; updated?: number[] };
       pruned: number;
     }>(
       name,
       `
 import { asc, eq } from "drizzle-orm";
 
+import { getBlock } from "@/lib/cms/blocks";
+import { validateBlockValues } from "@/lib/cms/validate";
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
 import {
@@ -364,7 +367,7 @@ await db
   .set({ published: { headline: { en: "VANDALISED", ar: "VANDALISED" } } })
   .where(eq(pageSections.id, original[0].id));
 
-await restoreVersionToDraft(versionId, pageId);
+const outcome = await restoreVersionToDraft(versionId, pageId);
 
 const now = await read();
 const survivors = new Set(original.map((row) => row.id));
@@ -377,13 +380,25 @@ emit({
     .map(({ id, published, draft, position, isPublished }) => ({ id, published, draft, position, isPublished })),
   recreated: now.filter((row) => !survivors.has(row.id)).map((row) => row.id),
   draftStructure: pageRow.draftStructure ?? null,
-  original: original.map(({ id, blockType, published }) => ({ id, blockType, published })),
+  // What the registry makes of each section's published values — the shape a
+  // restored draft is expected to arrive in, computed here rather than
+  // hard-coded so the test cannot drift from the block definitions.
+  original: original.map(({ id, blockType, published }) => ({
+    id,
+    blockType,
+    published,
+    restores: validateBlockValues(getBlock(blockType)!, published),
+  })),
+  outcome: outcome.ok
+    ? { ok: true, recreated: outcome.recreated, updated: outcome.updated }
+    : { ok: false, reason: outcome.reason },
   pruned: await prunePageVersions(pageId, 1),
 });
 process.exit(0);
 `,
     );
 
+    assert.equal(out.outcome.ok, true, `the restore was refused: ${out.outcome.reason}`);
     assert.equal(out.versions, 2, "both versions should be listed");
     assert.equal(out.pruned, 1, "the history ceiling should drop the older one");
 
@@ -394,8 +409,16 @@ process.exit(0);
     // The vandalised section keeps its vandalism on the published side …
     const vandalised = kept.get(first.id)!;
     assert.deepEqual(vandalised.published, { headline: { en: "VANDALISED", ar: "VANDALISED" } });
-    // … and the history arrives beside it, as a draft.
-    assert.deepEqual(vandalised.draft, first.published);
+    // … and the history arrives beside it, as a draft — rebuilt through the
+    // block registry on the way out, which is what keeps a stored snapshot from
+    // being a route around the CMS's own validation.
+    assert.deepEqual(vandalised.draft, first.restores);
+    // Every section the snapshot still matches gets its history as a draft —
+    // all of them except the one that was deleted, which is recreated instead.
+    assert.deepEqual(
+      out.outcome.updated,
+      out.original.filter((row) => row.id !== deleted.id).map((row) => row.id),
+    );
     assert.equal(vandalised.isPublished, true, "a restore changed a visibility flag");
 
     // The deleted section is back as a row nobody visiting the site can see.
@@ -406,7 +429,7 @@ process.exit(0);
     `;
     assert.equal(row!.is_published, false, "a restore published a section");
     assert.equal(row!.block_type, deleted.blockType);
-    assert.deepEqual(row!.draft, deleted.published, "the history did not come back");
+    assert.deepEqual(row!.draft, deleted.restores, "the history did not come back");
     for (const value of Object.values(row!.published ?? {})) {
       assert.ok(
         value === "" || value === false || value === 0 || value === null ||
@@ -423,5 +446,442 @@ process.exit(0);
     assert.equal(structure.sections[0]!.sectionId, first.id);
     assert.equal(structure.sections[1]!.sectionId, recreated, "the section came back in the wrong place");
     assert.equal(structure.sections.length, out.original.length);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a version belongs to one page, and a restore cannot cross to another", () => {
+  test("a version of another page is refused by name, and nothing is written", async () => {
+    const name = giveFresh("restore_wrong_page");
+    const sql = open(name);
+
+    const out = probeValue<{
+      wrongPage: { ok: boolean; reason?: string };
+      missing: { ok: boolean; reason?: string };
+      right: { ok: boolean; reason?: string };
+      aboutAfter: { draft: Values; draftStructure: Values; revision: number }[];
+    }>(
+      name,
+      `
+import { asc, eq } from "drizzle-orm";
+
+import { db } from "@/lib/db";
+import { pageSections, pages } from "@/lib/db/schema";
+import { restoreVersionToDraft, savePageVersion } from "@/lib/versions";
+
+const [home] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
+const [about] = await db.select().from(pages).where(eq(pages.slug, "about")).limit(1);
+
+// A version of the HOME page, offered to the ABOUT page.
+const homeVersion = await savePageVersion({ pageId: home.id, label: "home" });
+
+const wrongPage = await restoreVersionToDraft(homeVersion, about.id);
+const missing = await restoreVersionToDraft(2147483000, about.id);
+
+const aboutAfter = await db
+  .select({ draft: pageSections.draft, revision: pageSections.revision })
+  .from(pageSections)
+  .where(eq(pageSections.pageId, about.id))
+  .orderBy(asc(pageSections.id));
+const [aboutPage] = await db.select().from(pages).where(eq(pages.id, about.id)).limit(1);
+
+// And the same version offered to the page it actually belongs to.
+const right = await restoreVersionToDraft(homeVersion, home.id);
+
+emit({
+  wrongPage: wrongPage.ok ? { ok: true } : { ok: false, reason: wrongPage.reason },
+  missing: missing.ok ? { ok: true } : { ok: false, reason: missing.reason },
+  right: right.ok ? { ok: true } : { ok: false, reason: right.reason },
+  aboutAfter: aboutAfter.map((row) => ({
+    draft: row.draft,
+    draftStructure: aboutPage.draftStructure ?? null,
+    revision: row.revision,
+  })),
+});
+process.exit(0);
+`,
+    );
+
+    assert.deepEqual(out.wrongPage, { ok: false, reason: "wrong_page" });
+    assert.deepEqual(out.missing, { ok: false, reason: "missing" });
+    assert.deepEqual(out.right, { ok: true }, "the page's own version should restore");
+
+    // The refused restore touched nothing on the page it was aimed at.
+    assert.ok(out.aboutAfter.length > 0, "the about page has no sections to check");
+    for (const row of out.aboutAfter) {
+      assert.equal(row.draft, null, "a refused restore wrote a draft");
+      assert.equal(row.draftStructure, null, "a refused restore wrote a draft structure");
+      assert.equal(row.revision, 0, "a refused restore bumped a revision");
+    }
+
+    // Belt and braces, read back outside the probe.
+    const [about] = await sql<{ id: number }[]>`select id from pages where slug = 'about'`;
+    const rows = await sql<{ n: number }[]>`
+      select count(*)::int as n from page_sections where page_id = ${about!.id} and draft is not null
+    `;
+    assert.equal(rows[0]!.n, 0);
+  });
+
+  test("applyRestorePlan will not write to a section of another page", async () => {
+    const name = giveFresh("restore_foreign_section");
+    const sql = open(name);
+
+    // A plan built wrongly — one that names a section belonging to another page
+    // — must change nothing, even though it never comes out of
+    // `planRestoreFrom` that way. This is the low-level service's own guard.
+    const out = probeValue<{
+      updated: number[];
+      foreign: { id: number; draft: Values; revision: number };
+      own: { id: number; draft: Values; revision: number };
+    }>(
+      name,
+      `
+import { asc, eq } from "drizzle-orm";
+
+import { db } from "@/lib/db";
+import { pageSections, pages } from "@/lib/db/schema";
+import { applyRestorePlan } from "@/lib/versions";
+
+const [home] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
+const [about] = await db.select().from(pages).where(eq(pages.slug, "about")).limit(1);
+
+const pick = (pageId: number) =>
+  db
+    .select({ id: pageSections.id })
+    .from(pageSections)
+    .where(eq(pageSections.pageId, pageId))
+    .orderBy(asc(pageSections.id))
+    .limit(1);
+
+const [homeSection] = await pick(home.id);
+const [aboutSection] = await pick(about.id);
+
+const draft = { headline: { en: "SHOULD NOT LAND", ar: "" } };
+const result = await applyRestorePlan({
+  pageId: home.id,
+  drafts: [
+    { sectionId: aboutSection.id, draft, draftStyles: { v: 1, nodes: {} }, draftAnimation: "fade-up" },
+    { sectionId: homeSection.id, draft, draftStyles: { v: 1, nodes: {} }, draftAnimation: "fade-up" },
+  ],
+  recreate: [],
+  untouched: [],
+  order: [{ kind: "existing", sectionId: homeSection.id, visible: true }],
+});
+
+const readOne = async (id: number) => {
+  const [row] = await db
+    .select({ id: pageSections.id, draft: pageSections.draft, revision: pageSections.revision })
+    .from(pageSections)
+    .where(eq(pageSections.id, id))
+    .limit(1);
+  return row;
+};
+
+emit({
+  updated: result.updated,
+  foreign: await readOne(aboutSection.id),
+  own: await readOne(homeSection.id),
+});
+process.exit(0);
+`,
+    );
+
+    assert.equal(out.foreign.draft, null, "a plan for one page wrote into another page's section");
+    assert.equal(out.foreign.revision, 0, "a foreign section's revision moved");
+    assert.deepEqual(out.updated, [out.own.id], "only the plan's own page should be reported updated");
+    assert.deepEqual(out.own.draft, { headline: { en: "SHOULD NOT LAND", ar: "" } });
+    assert.equal(out.own.revision, 1);
+
+    const [foreign] = await sql<{ n: number }[]>`
+      select count(*)::int as n from page_sections s
+        join pages p on p.id = s.page_id
+       where p.slug = 'about' and s.draft is not null
+    `;
+    assert.equal(foreign!.n, 0);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a restore makes every open editor stale", () => {
+  test("revisions move, the stale autosave conflicts, and the restored draft survives", async () => {
+    const name = giveFresh("restore_revisions");
+    const sql = open(name);
+
+    const out = probeValue<{
+      sectionBefore: number;
+      pageBefore: number;
+      sectionAfter: number;
+      pageAfter: number;
+      staleSection: unknown;
+      stalePage: unknown;
+      freshSection: unknown;
+      restoredDraft: Values;
+      structureAfterStale: Values;
+      restoredUpdatedBy: number | null;
+    }>(
+      name,
+      `
+import { asc, eq } from "drizzle-orm";
+
+import { db } from "@/lib/db";
+import { updatePageGuarded, updateSectionGuarded } from "@/lib/db/revision";
+import { pageSections, pages } from "@/lib/db/schema";
+import { restoreVersionToDraft, savePageVersion } from "@/lib/versions";
+
+const [page] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
+const [section] = await db
+  .select()
+  .from(pageSections)
+  .where(eq(pageSections.pageId, page.id))
+  .orderBy(asc(pageSections.position), asc(pageSections.id))
+  .limit(1);
+
+// An editor opens the page and reads these two numbers.
+const sectionBefore = section.revision;
+const pageBefore = page.revision;
+
+const versionId = await savePageVersion({ pageId: page.id, label: "before a restore" });
+const restored = await restoreVersionToDraft(versionId, page.id);
+if (!restored.ok) throw new Error("the restore was refused: " + restored.reason);
+
+const after = async () => {
+  const [s] = await db.select().from(pageSections).where(eq(pageSections.id, section.id)).limit(1);
+  const [p] = await db.select().from(pages).where(eq(pages.id, page.id)).limit(1);
+  return { s, p };
+};
+const { s: sectionRow, p: pageRow } = await after();
+
+// The editor, who has been looking at a screen that is now out of date, sends
+// the autosave it was always going to send.
+const staleSection = await updateSectionGuarded(section.id, sectionBefore, {
+  draft: { headline: { en: "STALE AUTOSAVE", ar: "" } },
+});
+const stalePage = await updatePageGuarded(page.id, pageBefore, {
+  draftStructure: { v: 1, sections: [] },
+});
+
+// Reading the new number first is what lets a save through.
+const freshSection = await updateSectionGuarded(section.id, sectionRow.revision, {
+  draftAnimation: "fade",
+});
+
+const { s: finalSection, p: finalPage } = await after();
+
+emit({
+  sectionBefore,
+  pageBefore,
+  sectionAfter: sectionRow.revision,
+  pageAfter: pageRow.revision,
+  staleSection,
+  stalePage,
+  freshSection,
+  restoredDraft: finalSection.draft,
+  structureAfterStale: finalPage.draftStructure,
+  restoredUpdatedBy: sectionRow.updatedBy,
+});
+process.exit(0);
+`,
+    );
+
+    assert.equal(out.sectionAfter, out.sectionBefore + 1, "a restore did not bump the section revision");
+    assert.equal(out.pageAfter, out.pageBefore + 1, "a restore did not bump the page revision");
+
+    assert.deepEqual(out.staleSection, { ok: false, reason: "conflict" }, "a stale autosave was accepted");
+    assert.deepEqual(out.stalePage, { ok: false, reason: "conflict" });
+    assert.deepEqual(out.freshSection, { ok: true, revision: out.sectionAfter + 1 });
+
+    // The restored draft is still there — the stale save did not overwrite it.
+    assert.ok(out.restoredDraft && typeof out.restoredDraft === "object");
+    assert.notDeepEqual(
+      out.restoredDraft,
+      { headline: { en: "STALE AUTOSAVE", ar: "" } },
+      "the stale autosave overwrote the restore",
+    );
+    assert.ok(
+      !JSON.stringify(out.restoredDraft).includes("STALE AUTOSAVE"),
+      "the stale autosave reached the restored draft",
+    );
+    // And the page's draft order survived its own stale write.
+    assert.ok(
+      Array.isArray((out.structureAfterStale as { sections?: unknown[] } | null)?.sections) &&
+        ((out.structureAfterStale as { sections: unknown[] }).sections.length > 0),
+      "the stale page save emptied the restored draft structure",
+    );
+
+    const [row] = await sql<{ revision: number }[]>`
+      select s.revision from page_sections s
+        join pages p on p.id = s.page_id
+       where p.slug = 'home'
+       order by s.position, s.id
+       limit 1
+    `;
+    assert.equal(row!.revision, out.sectionAfter + 1);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("updated_by is attribution, and never the guard", () => {
+  test("a guarded write records who; a stale one records nothing", async () => {
+    const name = giveFresh("updated_by");
+    const sql = open(name);
+
+    const out = probeValue<{
+      users: number[];
+      first: unknown;
+      stale: unknown;
+      sameActorAgain: unknown;
+      afterFirst: { revision: number; updatedBy: number | null; draft: Values };
+      afterStale: { revision: number; updatedBy: number | null; draft: Values };
+      afterSame: { revision: number; updatedBy: number | null; draft: Values };
+      pageFirst: unknown;
+      pageStale: unknown;
+      pageAfterStale: { revision: number; updatedBy: number | null };
+      restoreUpdatedBy: { section: number | null; page: number | null; recreatedSeen: boolean };
+    }>(
+      name,
+      `
+import { asc, eq } from "drizzle-orm";
+
+import { db } from "@/lib/db";
+import { updatePageGuarded, updateSectionGuarded } from "@/lib/db/revision";
+import { pageSections, pages, users } from "@/lib/db/schema";
+import { applyRestorePlan, planRestore, capturePageSnapshot } from "@/lib/versions";
+
+const everyone = await db.select({ id: users.id }).from(users).orderBy(asc(users.id));
+const alice = everyone[0].id;
+
+const [page] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
+const [section] = await db
+  .select()
+  .from(pageSections)
+  .where(eq(pageSections.pageId, page.id))
+  .orderBy(asc(pageSections.position), asc(pageSections.id))
+  .limit(1);
+
+const readSection = async () => {
+  const [row] = await db
+    .select({ revision: pageSections.revision, updatedBy: pageSections.updatedBy, draft: pageSections.draft })
+    .from(pageSections)
+    .where(eq(pageSections.id, section.id))
+    .limit(1);
+  return row;
+};
+const readPage = async () => {
+  const [row] = await db
+    .select({ revision: pages.revision, updatedBy: pages.updatedBy })
+    .from(pages)
+    .where(eq(pages.id, page.id))
+    .limit(1);
+  return row;
+};
+
+// 1. A guarded write stores the intended actor and moves the counter.
+const first = await updateSectionGuarded(section.id, section.revision, {
+  draft: { headline: { en: "FIRST", ar: "" } },
+  updatedBy: alice,
+});
+const afterFirst = await readSection();
+
+// 2. A stale write by anybody changes nothing — not the draft, not the actor.
+const stale = await updateSectionGuarded(section.id, section.revision, {
+  draft: { headline: { en: "STALE", ar: "" } },
+  updatedBy: null,
+});
+const afterStale = await readSection();
+
+// 3. The SAME actor writing again is still a distinct write, told apart by the
+//    counter rather than by who did it — which is why updated_by cannot be the
+//    guard.
+const sameActorAgain = await updateSectionGuarded(section.id, afterStale.revision, {
+  draft: { headline: { en: "SECOND", ar: "" } },
+  updatedBy: alice,
+});
+const afterSame = await readSection();
+
+const pageFirst = await updatePageGuarded(page.id, page.revision, {
+  draftStructure: { v: 1, sections: [] },
+  updatedBy: alice,
+});
+const pageStale = await updatePageGuarded(page.id, page.revision, {
+  draftStructure: { v: 1, sections: [{ sectionId: section.id, visible: false }] },
+  updatedBy: null,
+});
+const pageAfterStale = await readPage();
+
+// A restore attributes too, on every row it writes.
+const snapshot = await capturePageSnapshot(page.id);
+await db.delete(pageSections).where(eq(pageSections.id, section.id));
+const plan = await planRestore(page.id, snapshot);
+const applied = await applyRestorePlan(plan, { userId: alice });
+
+const [someExisting] = await db
+  .select({ updatedBy: pageSections.updatedBy })
+  .from(pageSections)
+  .where(eq(pageSections.id, plan.drafts[0].sectionId))
+  .limit(1);
+const [recreatedRow] = applied.recreated.length
+  ? await db
+      .select({ updatedBy: pageSections.updatedBy })
+      .from(pageSections)
+      .where(eq(pageSections.id, applied.recreated[0]))
+      .limit(1)
+  : [undefined];
+
+emit({
+  users: everyone.map((row) => row.id),
+  first,
+  stale,
+  sameActorAgain,
+  afterFirst,
+  afterStale,
+  afterSame,
+  pageFirst,
+  pageStale,
+  pageAfterStale,
+  restoreUpdatedBy: {
+    section: someExisting?.updatedBy ?? null,
+    page: (await readPage()).updatedBy,
+    recreatedSeen: recreatedRow ? recreatedRow.updatedBy === alice : false,
+  },
+});
+process.exit(0);
+`,
+    );
+
+    const alice = out.users[0]!;
+
+    // 1 — attribution is stored, and the counter moved.
+    assert.deepEqual(out.first, { ok: true, revision: out.afterFirst.revision });
+    assert.equal(out.afterFirst.updatedBy, alice);
+    assert.deepEqual(out.afterFirst.draft, { headline: { en: "FIRST", ar: "" } });
+
+    // 2 — the stale write changed nothing at all, attribution included.
+    assert.deepEqual(out.stale, { ok: false, reason: "conflict" });
+    assert.deepEqual(out.afterStale, out.afterFirst, "a rejected write still changed the row");
+    assert.equal(out.afterStale.updatedBy, alice, "a rejected write rewrote the attribution");
+
+    // 3 — two writes by one actor are told apart by revision, not by actor.
+    assert.deepEqual(out.sameActorAgain, { ok: true, revision: out.afterFirst.revision + 1 });
+    assert.equal(out.afterSame.updatedBy, alice, "the same actor, and a different write");
+    assert.notEqual(out.afterSame.revision, out.afterFirst.revision);
+    assert.deepEqual(out.afterSame.draft, { headline: { en: "SECOND", ar: "" } });
+
+    // The page-level primitive behaves the same way.
+    assert.deepEqual(out.pageFirst, { ok: true, revision: out.pageAfterStale.revision });
+    assert.deepEqual(out.pageStale, { ok: false, reason: "conflict" });
+    assert.equal(out.pageAfterStale.updatedBy, alice);
+
+    // And a restore attributes every row it writes.
+    assert.equal(out.restoreUpdatedBy.section, alice, "a restored draft has no author");
+    assert.equal(out.restoreUpdatedBy.page, alice, "a restored draft structure has no author");
+    assert.equal(out.restoreUpdatedBy.recreatedSeen, true, "a recreated section has no author");
+
+    const [row] = await sql<{ updated_by: number | null }[]>`
+      select updated_by from pages where slug = 'home'
+    `;
+    assert.equal(row!.updated_by, alice);
   });
 });

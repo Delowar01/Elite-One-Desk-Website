@@ -4,11 +4,11 @@
  * Two vocabularies, deliberately separate, because conflating them is how
  * stored data rots:
  *
- *   Runtime address      `section:42/field:links/item:i_8Gk3pZ1mQ2/field:label`
+ *   Runtime address      `section:42/field:links/item:i_8Gk3pZmQ2v/field:label`
  *     What the editor and the canvas pass to each other. It names a section by
  *     its database id, which only makes sense while that row exists.
  *
- *   Relative node path   `field:links/item:i_8Gk3pZ1mQ2/field:label`
+ *   Relative node path   `field:links/item:i_8Gk3pZmQ2v/field:label`
  *     What is persisted, inside the row that is already the section. It carries
  *     no section id at all — and it must not, because `duplicateSection`
  *     inserts a new id, a restore may recreate a deleted section under another

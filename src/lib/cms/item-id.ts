@@ -21,11 +21,27 @@ export const ITEM_ID_KEY = "_id";
  * search boxes, and the pairs that look alike cost more than the entropy they
  * add: 54^10 is still about 2^57.
  */
-const ALPHABET = "23456789abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
+export const ITEM_ID_ALPHABET = "23456789abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
+
+/** What `newItemId` produces today. The accepted range is wider; see below. */
 const LENGTH = 10;
 
-/** `i_` then 8–16 unambiguous characters. Anything else is not one of ours. */
-export const ITEM_ID_PATTERN = /^i_[0-9A-Za-z]{8,16}$/;
+/**
+ * `i_` then 8-16 characters **from that alphabet**, and the pattern is built
+ * from the alphabet rather than written out beside it, so the two cannot drift.
+ *
+ * The character set is the part that matters and it is exact: a value holding
+ * `0`, `O`, `1`, `l` or `I` is one this module would never have generated, so
+ * treating it as ours would mean trusting an id that came from somewhere else.
+ * `ensureItemIds` replaces it instead.
+ *
+ * The length is deliberately a range rather than exactly `LENGTH`. The alphabet
+ * is a safety property; the length is a capacity one, and pinning it would mean
+ * that raising it later silently reclassified every id already stored as
+ * malformed — and a reassigned id takes every style override keyed to it with
+ * it. The alphabet is checked in the tests to be free of the ambiguous pairs.
+ */
+export const ITEM_ID_PATTERN = new RegExp(`^i_[${ITEM_ID_ALPHABET}]{8,16}$`);
 
 export const isItemId = (value: unknown): value is string =>
   typeof value === "string" && ITEM_ID_PATTERN.test(value);
@@ -38,7 +54,7 @@ export function newItemId(): string {
   const bytes = new Uint8Array(LENGTH);
   globalThis.crypto.getRandomValues(bytes);
   let out = "i_";
-  for (const byte of bytes) out += ALPHABET[byte % ALPHABET.length];
+  for (const byte of bytes) out += ITEM_ID_ALPHABET[byte % ITEM_ID_ALPHABET.length];
   return out;
 }
 

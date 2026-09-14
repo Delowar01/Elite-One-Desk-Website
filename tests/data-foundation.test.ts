@@ -30,6 +30,7 @@ import {
 import { backfillItemIds, repeatableFields, withoutItemIds } from "@/lib/cms/backfill";
 import { getBlock } from "@/lib/cms/blocks";
 import {
+  ITEM_ID_ALPHABET,
   ITEM_ID_KEY,
   ITEM_ID_PATTERN,
   ensureItemIds,
@@ -37,7 +38,7 @@ import {
   isItemId,
   newItemId,
 } from "@/lib/cms/item-id";
-import { planRestoreFrom } from "@/lib/cms/restore";
+import { planRestoreFrom, revalidateSnapshot } from "@/lib/cms/restore";
 import {
   PAGE_SNAPSHOT_VERSION,
   snapshotFromSections,
@@ -122,6 +123,54 @@ describe("a row keeps its identity when the list around it changes", () => {
     assert.deepEqual(out.map((row) => row.n), [1, 2, 3, 4]);
   });
 
+  test("the alphabet holds none of the pairs that get misread", () => {
+    for (const character of "0O1lI") {
+      assert.ok(!ITEM_ID_ALPHABET.includes(character), `${character} is in the alphabet`);
+    }
+    assert.match(ITEM_ID_ALPHABET, /^[0-9A-Za-z]+$/, "the alphabet must be safe inside a character class");
+    assert.equal(new Set(ITEM_ID_ALPHABET).size, ITEM_ID_ALPHABET.length, "a repeated character skews the draw");
+  });
+
+  test("an id holding a character the generator cannot produce is not one of ours", () => {
+    // The pattern is built from the alphabet, so this cannot drift from the
+    // generator. Before it was, `i_8Gk3pZ1mQ2` — with a `1` in it — was accepted
+    // as ours, which meant trusting an id that came from somewhere else.
+    for (const forged of [
+      "i_0aaaaaaaaa",
+      "i_Oaaaaaaaaa",
+      "i_1aaaaaaaaa",
+      "i_laaaaaaaaa",
+      "i_Iaaaaaaaaa",
+      "i_aaaa-aaaaa",
+      "i_aaaa.aaaaa",
+      "i_aaaa aaaaa",
+      "i_aaaaaaa",
+      "i_aaaaaaaaaaaaaaaaa",
+      "i_",
+      "aaaaaaaaaa",
+      "I_aaaaaaaaaa",
+    ]) {
+      assert.ok(!isItemId(forged), `${forged} was accepted`);
+      assert.ok(!ITEM_ID_PATTERN.test(forged));
+    }
+  });
+
+  test("a forged id is replaced, not merely refused, and the row keeps its values", () => {
+    const rows = ensureItemIds([{ n: 1, [ITEM_ID_KEY]: "i_0OlI1aaaa" }, { n: 2, [ITEM_ID_KEY]: ID_A }]);
+    assert.ok(isItemId(rows[0]![ITEM_ID_KEY]));
+    assert.notEqual(rows[0]![ITEM_ID_KEY], "i_0OlI1aaaa");
+    assert.equal(rows[0]!.n, 1);
+    assert.equal(rows[1]![ITEM_ID_KEY], ID_A, "a valid id was disturbed");
+  });
+
+  test("ids this repository has already generated stay valid", () => {
+    // Ten characters from the safe alphabet, which is what `newItemId` writes.
+    for (const stored of [ID_A, ID_B, "i_kkkkkkkkkk", "i_8Gk3pZmQ2v", "i_zZ9wQ2mvkG"]) {
+      assert.ok(isItemId(stored), `${stored} stopped being valid`);
+    }
+    assert.equal(ensureItemIds([{ [ITEM_ID_KEY]: ID_A }])[0]![ITEM_ID_KEY], ID_A);
+  });
+
   test("hasStableItemIds is what decides whether there is anything to write", () => {
     assert.ok(hasStableItemIds([]));
     assert.ok(!hasStableItemIds([{}]));
@@ -182,9 +231,9 @@ describe("an address names a node, and can never be a selector", () => {
       ROOT_PATH_TOKEN,
       "field:headline",
       "slot:media",
-      "field:links/item:i_8Gk3pZ1mQ2",
-      "field:links/item:i_8Gk3pZ1mQ2/field:label",
-      "field:links/item:i_8Gk3pZ1mQ2/slot:icon",
+      "field:links/item:i_8Gk3pZmQ2v",
+      "field:links/item:i_8Gk3pZmQ2v/field:label",
+      "field:links/item:i_8Gk3pZmQ2v/slot:icon",
     ]) {
       assert.ok(isNodePath(good), `${good} should parse`);
       assert.equal(normalizeNodePath(good), good, `${good} did not round trip`);
@@ -232,8 +281,8 @@ describe("an address names a node, and can never be a selector", () => {
       ":headline",
       "field:1headline",
       "field:head:line",
-      "item:i_8Gk3pZ1mQ2",
-      "field:a/item:i_8Gk3pZ1mQ2/item:i_8Gk3pZ1mQ3",
+      "item:i_8Gk3pZmQ2v",
+      "field:a/item:i_8Gk3pZmQ2v/item:i_8Gk3pZmQ2w",
       "field:a/item:nope",
       "slot:media/field:label",
       "field:a/field:b/field:c/field:d/field:e/field:f/field:g",
@@ -249,8 +298,8 @@ describe("an address names a node, and can never be a selector", () => {
   });
 
   test("a runtime address composes and decomposes without losing anything", () => {
-    assert.equal(composeAddress(42, "field:links/item:i_8Gk3pZ1mQ2/field:label"),
-      "section:42/field:links/item:i_8Gk3pZ1mQ2/field:label");
+    assert.equal(composeAddress(42, "field:links/item:i_8Gk3pZmQ2v/field:label"),
+      "section:42/field:links/item:i_8Gk3pZmQ2v/field:label");
     assert.equal(composeAddress(42, ROOT_PATH_TOKEN), "section:42");
     assert.equal(formatAddress(7), "section:7");
 
@@ -280,7 +329,7 @@ describe("an address names a node, and can never be a selector", () => {
   });
 
   test("the row a path sits in is readable from the path", () => {
-    assert.equal(itemIdOf(parseNodePath("field:links/item:i_8Gk3pZ1mQ2/field:label")!), "i_8Gk3pZ1mQ2");
+    assert.equal(itemIdOf(parseNodePath("field:links/item:i_8Gk3pZmQ2v/field:label")!), "i_8Gk3pZmQ2v");
     assert.equal(itemIdOf(parseNodePath("field:headline")!), null);
     assert.equal(itemIdOf([]), null);
   });
@@ -521,6 +570,168 @@ describe("a version snapshot is of what was published, and of nothing global", (
 
 /* -------------------------------------------------------------------------- */
 
+describe("a stored snapshot is not a way round the CMS's own rules", () => {
+  /**
+   * The reason this group exists. A snapshot is a JSON column; a restore writes
+   * it into `draft`; the ordinary publish path can then promote that draft to
+   * `published` without going near the block form parser again. So anything a
+   * save is not allowed to store, a snapshot must not be allowed to carry
+   * either — and the way to guarantee that is to rebuild the content through
+   * the same `validateBlockValues` a save goes through, rather than to write a
+   * second validator that would drift.
+   */
+  const read = (blockType: string, published: unknown) =>
+    validatePageSnapshot({
+      v: PAGE_SNAPSHOT_VERSION,
+      sections: [{ sourceSectionId: 5, blockType, visible: true, published }],
+    }).sections[0];
+
+  test("a key the block does not declare does not survive being stored", () => {
+    const section = read("rich-text", {
+      title: { en: "Real", ar: "حقيقي" },
+      evil: "whatever",
+      __proto__: { polluted: true },
+      onclick: "alert(1)",
+      dangerouslySetInnerHTML: { __html: "<script>x</script>" },
+    })!;
+
+    assert.deepEqual(section.published.title, { en: "Real", ar: "حقيقي" });
+    for (const key of ["evil", "onclick", "dangerouslySetInnerHTML", "polluted"]) {
+      assert.ok(!(key in section.published), `${key} survived`);
+    }
+    assert.deepEqual(Object.keys(section.published).sort(), ["body", "eyebrow", "title"]);
+  });
+
+  test("rich text comes back through the existing sanitizer", () => {
+    const section = read("rich-text", {
+      body: {
+        en: '<p>Fine</p><script>fetch("//evil.invalid")</script><img src=x onerror=alert(1)>' +
+          '<a href="javascript:alert(1)">tap</a><a href="https://example.com">out</a>',
+        ar: '<iframe src="https://evil.invalid"></iframe>',
+      },
+    })!;
+
+    const body = section.published.body as { en: string; ar: string };
+    assert.ok(body.en.includes("<p>Fine</p>"), "the legitimate markup should survive");
+    for (const bad of ["<script", "onerror", "javascript:", "<img", "<iframe"]) {
+      assert.ok(!body.en.includes(bad) && !body.ar.includes(bad), `${bad} survived`);
+    }
+    // The whitelist keeps the text of a tag it removes, and marks an off-site
+    // link safe — exactly what it does on the save path.
+    assert.ok(body.en.includes("tap"), "the anchor's text should be kept");
+    assert.ok(body.en.includes('rel="noopener noreferrer"'));
+  });
+
+  test("an unsafe link does not survive in a link field", () => {
+    for (const href of [
+      "javascript:alert(1)",
+      "data:text/html;base64,PHNjcmlwdD4=",
+      "vbscript:msgbox(1)",
+      "//evil.invalid/steal",
+      " javascript:alert(1)",
+    ]) {
+      const section = read("final-cta", { primaryCtaHref: href })!;
+      assert.equal(section.published.primaryCtaHref, "", `${href} survived`);
+    }
+    assert.equal(read("final-cta", { primaryCtaHref: "/contact" })!.published.primaryCtaHref, "/contact");
+    assert.equal(
+      read("final-cta", { primaryCtaHref: "https://example.com/x" })!.published.primaryCtaHref,
+      "https://example.com/x",
+    );
+  });
+
+  test("a row inside a snapshot is stamped and controlled like any other row", () => {
+    const section = read("quick-links", {
+      links: [
+        { label: { en: "A", ar: "أ" }, href: "javascript:alert(1)", icon: "sparkle", image: 7 },
+        { label: { en: "B", ar: "ب" }, href: "/b", icon: "not-an-icon", image: "junk", evil: "x", _id: "i_0OlI1zzzz" },
+        { label: { en: "C", ar: "ج" }, href: "/c", _id: ID_A },
+      ],
+    })!;
+
+    const rows = section.published.links as Record<string, unknown>[];
+    assert.equal(rows.length, 3);
+    assert.ok(hasStableItemIds(rows), "the rows did not come back with stable ids");
+    assert.equal(rows[2]![ITEM_ID_KEY], ID_A, "a valid id was disturbed");
+    assert.notEqual(rows[1]![ITEM_ID_KEY], "i_0OlI1zzzz", "a forged id was trusted");
+
+    assert.equal(rows[0]!.href, "", "an unsafe row href survived");
+    assert.equal(rows[0]!.icon, "sparkle");
+    assert.equal(rows[0]!.image, 7);
+    assert.equal(rows[1]!.icon, "", "an invented icon key survived");
+    assert.equal(rows[1]!.image, null, "junk became a media id");
+    assert.ok(!("evil" in rows[1]!), "an undeclared row key survived");
+  });
+
+  test("a block type the registry does not know is dropped, not restored blindly", () => {
+    // There is no form that can edit it and no renderer that can draw it, so
+    // keeping its arbitrary values would be carrying unvalidatable content for
+    // nobody. `applyRestorePlan` already refuses to recreate such a section;
+    // dropping it here means the planner never even matches it against a live
+    // row, so that row is left exactly as it is.
+    const snapshot = validatePageSnapshot({
+      v: PAGE_SNAPSHOT_VERSION,
+      sections: [
+        { sourceSectionId: 5, blockType: "hero", published: { headline: { en: "kept", ar: "" } } },
+        { sourceSectionId: 6, blockType: "no-such-block", published: { evil: "<script>x</script>" } },
+      ],
+    });
+
+    assert.deepEqual(snapshot.sections.map((section) => section.blockType), ["hero"]);
+
+    const plan = planRestoreFrom(1, snapshot, [
+      { id: 5, blockType: "hero" },
+      { id: 6, blockType: "no-such-block" },
+    ]);
+    assert.deepEqual(plan.drafts.map((d) => d.sectionId), [5]);
+    assert.deepEqual(plan.untouched, [6], "the unknown section should be left alone");
+    assert.equal(plan.recreate.length, 0);
+  });
+
+  test("a deprecated but still registered type restores normally", () => {
+    // The compatibility model the rest of the CMS already uses: a retired type
+    // stays in the registry so a stored row can still be opened and rendered.
+    assert.ok(getBlock("egypt-feature"), "the deprecated type left the registry");
+    const section = read("egypt-feature", { title: { en: "Egypt", ar: "مصر" } })!;
+    assert.equal(section.blockType, "egypt-feature");
+    assert.deepEqual(section.published.title, { en: "Egypt", ar: "مصر" });
+  });
+
+  test("the planner validates whatever it is handed, not only what it read back", () => {
+    // `planRestore` is exported and takes a snapshot, so the guarantee cannot
+    // depend on every caller having gone through `readPageVersionRecord`.
+    const handmade = {
+      v: PAGE_SNAPSHOT_VERSION,
+      sections: [
+        {
+          sourceSectionId: 5,
+          blockType: "rich-text",
+          visible: true,
+          published: { body: { en: "<script>x</script>", ar: "" }, evil: "y" },
+          styles: { v: 1, nodes: { "div > p": { base: { align: "end" } } } },
+          animation: "fade-up",
+        },
+      ],
+    } as unknown as PageSnapshot;
+
+    const plan = planRestoreFrom(1, handmade, [{ id: 5, blockType: "rich-text" }]);
+    const draft = plan.drafts[0]!.draft;
+    assert.ok(!(draft.body as { en: string }).en.includes("<script"), "unsanitised markup reached a draft");
+    assert.ok(!("evil" in draft));
+    assert.deepEqual(plan.drafts[0]!.draftStyles, { v: 1, nodes: {} });
+  });
+
+  test("validating a snapshot twice gives the same snapshot", () => {
+    const once = validatePageSnapshot({
+      v: PAGE_SNAPSHOT_VERSION,
+      sections: [{ sourceSectionId: 5, blockType: "quick-links", published: { links: [link("A")] } }],
+    });
+    assert.deepEqual(revalidateSnapshot(once), once);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
 describe("restoring a version writes drafts and only drafts", () => {
   const entry = (sourceSectionId: number, blockType: string, extra: Record<string, unknown> = {}) => ({
     sourceSectionId,
@@ -535,6 +746,10 @@ describe("restoring a version writes drafts and only drafts", () => {
   const snapshot = (sections: ReturnType<typeof entry>[]): PageSnapshot =>
     validatePageSnapshot({ v: PAGE_SNAPSHOT_VERSION, sections });
 
+  /** What the registry makes of an entry's values — the shape a draft arrives in. */
+  const validated = (blockType: string, values: Record<string, unknown>) =>
+    validateBlockValues(getBlock(blockType)!, values);
+
   test("a section that is still there gets its history as a draft", () => {
     const plan = planRestoreFrom(1, snapshot([entry(5, "hero")]), [{ id: 5, blockType: "hero" }]);
 
@@ -542,11 +757,12 @@ describe("restoring a version writes drafts and only drafts", () => {
     assert.deepEqual(plan.drafts, [
       {
         sectionId: 5,
-        draft: { headline: { en: "hero", ar: "hero" } },
+        draft: validated("hero", { headline: { en: "hero", ar: "hero" } }),
         draftStyles: { v: 1, nodes: {} },
         draftAnimation: "fade-up",
       },
     ]);
+    assert.deepEqual(plan.drafts[0]!.draft.headline, { en: "hero", ar: "hero" }, "the copy did not survive");
     // Nothing published, positioned or visible is anywhere in the plan.
     for (const key of ["published", "position", "isPublished", "styles", "animation"]) {
       assert.ok(!(key in plan.drafts[0]!), `${key} is in a restore draft`);

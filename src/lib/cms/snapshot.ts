@@ -22,7 +22,9 @@
  * Dormant in this release: nothing writes a version row, and there is no
  * restore in the admin.
  */
+import { getBlock } from "./blocks";
 import { validateStyleDocument, type StyleDocument } from "./styles";
+import { validateBlockValues } from "./validate";
 
 export const PAGE_SNAPSHOT_VERSION = 1;
 
@@ -52,9 +54,28 @@ const isId = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value > 0;
 
 /**
- * Rebuilt entry by entry, like every other document here. A row without a
- * usable block type is dropped rather than restored as a section nothing can
- * render; array order is preserved exactly, because the order *is* the data.
+ * Rebuilt entry by entry, like every other document here, and this is the trust
+ * boundary: a stored snapshot is a JSON column, and a restore writes it into
+ * `draft` — from where the ordinary publish path can promote it without ever
+ * passing it through the block form parser again. So a snapshot must not be a
+ * way round the CMS's own rules, and the content is rebuilt through
+ * `validateBlockValues`: the registry's field allowlist, the rich-text
+ * sanitizer, the link sanitizer, media parsing, the icon allowlist and `_id`
+ * normalisation, all of them the same ones a save goes through. There is no
+ * second validator here; there is only that one.
+ *
+ * Capture (`snapshotFromSections`) deliberately does not do this. It records
+ * what was published, faithfully, including a field the registry has since
+ * stopped declaring — the sanitising belongs at the moment the content is about
+ * to be written back, not at the moment it is filed away.
+ *
+ * A row whose block type the registry does not know is dropped, for the same
+ * reason `applyRestorePlan` will not recreate one: there is no form that can
+ * edit it and no renderer that can draw it, so keeping its arbitrary values
+ * would be carrying unvalidatable content for no one's benefit. The live
+ * section keeps its row and is simply left alone. Deprecated-but-registered
+ * types (`egypt-feature`) are still known to `getBlock`, so they restore
+ * normally. Array order is preserved exactly, because the order *is* the data.
  */
 export function validatePageSnapshot(input: unknown): PageSnapshot {
   const source = asRecord(input);
@@ -71,11 +92,13 @@ export function validatePageSnapshot(input: unknown): PageSnapshot {
     const row = asRecord(entry);
     const blockType = asString(row.blockType, 48);
     if (!blockType) continue;
+    const block = getBlock(blockType);
+    if (!block) continue;
     sections.push({
       sourceSectionId: isId(row.sourceSectionId) ? row.sourceSectionId : 0,
       blockType,
       visible: row.visible === false ? false : true,
-      published: asRecord(row.published),
+      published: validateBlockValues(block, row.published),
       styles: validateStyleDocument(row.styles),
       animation: asString(row.animation, 32) || "fade-up",
     });

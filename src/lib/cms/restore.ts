@@ -11,8 +11,7 @@
  * only ever produces draft content and a draft order. No published value, no
  * position and no visibility flag is in it.
  */
-import { validateStyleDocument } from "./styles";
-import type { PageSnapshot } from "./snapshot";
+import { validatePageSnapshot, type PageSnapshot } from "./snapshot";
 
 /** A section as it exists on the page today. All the planner needs of one. */
 export type LiveSection = { id: number; blockType: string };
@@ -56,15 +55,18 @@ export type RestorePlan = {
   order: RestoreSlot[];
 };
 
-/** Styles inside a stored snapshot are re-validated on the way out, never trusted. */
+/**
+ * A snapshot handed to the planner is re-validated, never trusted.
+ *
+ * `validatePageSnapshot` is the whole of it — content through the block
+ * registry, styles through the token vocabulary, unknown block types dropped —
+ * and it is idempotent, so running it again on a snapshot that already came out
+ * of it costs a rebuild and changes nothing. That is the point: `planRestore`
+ * is exported and takes a `PageSnapshot`, so the guarantee cannot depend on
+ * every caller having read it from `page_versions` first.
+ */
 export function revalidateSnapshot(snapshot: PageSnapshot): PageSnapshot {
-  return {
-    ...snapshot,
-    sections: snapshot.sections.map((section) => ({
-      ...section,
-      styles: validateStyleDocument(section.styles),
-    })),
-  };
+  return validatePageSnapshot(snapshot);
 }
 
 /**
