@@ -30,6 +30,8 @@ import type {
 const PORT = 3443;
 const ACTIONS = "app/(backoffice)/admin/visual-editor/actions.ts";
 const ROUTE = "/admin/visual-editor";
+/** The ordinary Pages & sections actions, reached the same way. */
+const PAGE_ACTIONS = "app/(backoffice)/admin/(shell)/pages/actions.ts";
 
 let database = "";
 let sql: Sql;
@@ -483,6 +485,202 @@ describe("two editors, one section", () => {
       "Canvas first",
       "the stale form overwrote the newer draft",
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Submits the section editor's fields to one of its two actions.
+ *
+ * Which action is the whole of the intent — there is no field in the request
+ * that says "publish". `saveSectionDraft` is what the form's own action is, and
+ * so what the Enter key reaches; `saveSectionAndPublish` is reached only by
+ * pressing the button that says so.
+ */
+function sectionWrite(
+  action: "saveSectionDraft" | "saveSectionAndPublish",
+  fields: Record<string, string>,
+  options: { cookie?: string | null; csrf?: string | null } = {},
+) {
+  const form = new FormData();
+  const csrf = options.csrf === undefined ? owner.csrfToken : options.csrf;
+  if (csrf !== null) form.set("_csrf", csrf);
+  for (const [key, value] of Object.entries(fields)) form.set(key, value);
+  return callAction<{ ok: boolean; message?: string }>({
+    origin: server.origin,
+    route: `/admin/pages/section/${fields.id}`,
+    file: PAGE_ACTIONS,
+    action,
+    args: [{ ok: false }, form],
+    cookie: options.cookie === undefined ? owner.cookie : (options.cookie ?? undefined),
+  });
+}
+
+const sectionFields = (
+  section: { sectionId: number; revision: number },
+  values: Record<string, unknown>,
+) => ({
+  id: String(section.sectionId),
+  expectedRevision: String(section.revision),
+  values: JSON.stringify(values),
+});
+
+/** What the activity log last recorded about this section. */
+async function lastActivity(sectionId: number) {
+  const [entry] = await sql<{ action: string; user_id: number | null }[]>`
+    select action, user_id from activity_logs
+     where entity_type = 'section' and entity_id = ${String(sectionId)}
+     order by id desc limit 1`;
+  return entry ?? null;
+}
+
+describe("Save and publish publishes, in one guarded write", () => {
+  test("the values go live, the draft is cleared, and it is logged as a publish", async () => {
+    const section = await open(await find("privacy", "page-hero"));
+
+    const result = await sectionWrite(
+      "saveSectionAndPublish",
+      sectionFields(section, { ...section.values, title: { en: "Live at once", ar: "" } }),
+    );
+    assert.equal(answered(result).ok, true, JSON.stringify(result.value));
+    assert.match(answered(result).message ?? "", /live now/i);
+
+    const after = await row(section.sectionId);
+    assert.equal(localised(after.published.title).en, "Live at once");
+    assert.equal(after.draft, null, "a draft was left behind");
+    assert.equal(after.is_published, true);
+    assert.equal(after.revision, section.revision + 1, "more than one write happened");
+    assert.equal(after.updated_by, owner.userId);
+    assert.equal((await lastActivity(section.sectionId))?.action, "section.published");
+  });
+
+  test("and a visitor sees it, with no publish step in between", async () => {
+    const section = await open(await find("about", "page-hero"));
+    const sentence = "Published straight from the section editor.";
+
+    const result = await sectionWrite(
+      "saveSectionAndPublish",
+      sectionFields(section, { ...section.values, lead: { en: sentence, ar: "" } }),
+    );
+    assert.equal(answered(result).ok, true);
+
+    const live = await get(server.origin, "/about");
+    assert.ok(live.html.includes(sentence), "the live page did not change");
+  });
+
+  test("Save draft is still draft-only, and logged as one", async () => {
+    const section = await open(await find("contact", "page-hero"));
+    const before = await row(section.sectionId);
+
+    const result = await sectionWrite(
+      "saveSectionDraft",
+      sectionFields(section, { ...section.values, title: { en: "Only a draft", ar: "" } }),
+    );
+    assert.equal(answered(result).ok, true);
+
+    const after = await row(section.sectionId);
+    assert.equal(localised(after.draft!.title).en, "Only a draft");
+    assert.deepEqual(after.published, before.published, "Save draft touched the live version");
+    assert.equal(after.revision, before.revision + 1);
+    assert.equal((await lastActivity(section.sectionId))?.action, "section.draft_saved");
+
+    const live = await get(server.origin, "/contact");
+    assert.ok(!live.html.includes("Only a draft"), "a draft reached a visitor");
+    const preview = await get(server.origin, "/contact?preview=1", { cookie: owner.cookie });
+    assert.ok(preview.html.includes("Only a draft"), "the preview did not show the draft");
+  });
+
+  test("publishing from a screen that has been overtaken is refused", async () => {
+    const section = await open(await find("disclaimer", "page-hero"));
+    const publishedBefore = (await row(section.sectionId)).published;
+
+    // The Visual Editor saves a newer draft while the section screen sits open.
+    const newer = succeeded(
+      await saveValues(section, { ...section.values, title: { en: "Canvas draft", ar: "" } }),
+    );
+
+    const refusal = answered(
+      await sectionWrite(
+        "saveSectionAndPublish",
+        sectionFields(section, { ...section.values, title: { en: "Stale publish", ar: "" } }),
+      ),
+    );
+    assert.equal(refusal.ok, false);
+    assert.match(refusal.message ?? "", /Reload the page before publishing/i);
+
+    const after = await row(section.sectionId);
+    assert.deepEqual(after.published, publishedBefore, "something went live");
+    assert.equal(localised(after.draft!.title).en, "Canvas draft", "the newer draft was disturbed");
+    assert.equal(after.revision, newer.section.revision, "the refused publish moved the revision");
+  });
+
+  test("a publish naming no revision at all is refused", async () => {
+    const section = await open(await find("terms", "page-hero"));
+    const before = await row(section.sectionId);
+
+    const refusal = answered(
+      await sectionWrite("saveSectionAndPublish", {
+        id: String(section.sectionId),
+        values: JSON.stringify({ ...section.values, title: { en: "No revision", ar: "" } }),
+      }),
+    );
+    assert.equal(refusal.ok, false);
+    assert.match(refusal.message ?? "", /could not be read/i);
+
+    const after = await row(section.sectionId);
+    assert.deepEqual(after.published, before.published);
+    assert.equal(after.revision, before.revision);
+  });
+
+  test("publishing goes through the same validator — it is a destination, not a bypass", async () => {
+    const section = await open(await find("privacy", "rich-text"));
+
+    const result = await sectionWrite(
+      "saveSectionAndPublish",
+      sectionFields(section, {
+        ...section.values,
+        title: { en: "Sanitised on the way live", ar: "" },
+        body: { en: '<p>Kept.</p><script>alert(1)</script>', ar: "" },
+        somethingInvented: "should not be stored",
+      }),
+    );
+    assert.equal(answered(result).ok, true);
+
+    const published = (await row(section.sectionId)).published;
+    assert.match(localised(published.body).en, /<p>Kept\.<\/p>/);
+    assert.ok(!/<script/i.test(localised(published.body).en), "markup went live");
+    assert.ok(!("somethingInvented" in published), "an undeclared key went live");
+  });
+
+  test("a full payload publishes exactly as it would have been drafted", async () => {
+    const section = await open(await find("home", "quick-links"));
+    const links = rows(section.values.links);
+    const ids = links.map((link) => link[ITEM_ID_KEY]);
+
+    const payload = {
+      ...section.values,
+      title: { en: "Where to start", ar: "من أين تبدأ" },
+      links: [
+        { ...links[0]!, icon: "sparkle", image: 2, href: "javascript:alert(1)" },
+        ...links.slice(1),
+      ],
+    };
+
+    const result = await sectionWrite("saveSectionAndPublish", sectionFields(section, payload));
+    assert.equal(answered(result).ok, true);
+
+    const published = (await row(section.sectionId)).published;
+    assert.equal(localised(published.title).ar, "من أين تبدأ", "the Arabic half was lost");
+    const stored = rows(published.links);
+    assert.deepEqual(
+      stored.map((link) => link[ITEM_ID_KEY]),
+      ids,
+      "a row lost its identity on the way live",
+    );
+    assert.equal(stored[0]!.icon, "sparkle");
+    assert.equal(stored[0]!.image, 2, "the media id did not survive");
+    assert.equal(stored[0]!.href, "", "an unsafe link went live");
   });
 });
 

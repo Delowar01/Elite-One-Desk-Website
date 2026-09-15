@@ -2,19 +2,34 @@
 
 import { useCallback, useState } from "react";
 
-import { AdminForm, ConfirmSubmit, InlineAction, SubmitButton } from "@/components/admin/form";
+import {
+  AdminForm,
+  AlternateSubmit,
+  ConfirmSubmit,
+  InlineAction,
+  SubmitButton,
+} from "@/components/admin/form";
 import { BlockEditor } from "@/components/admin/block-editor";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { Icon } from "@/components/ui/icon";
+import type { ActionState } from "@/lib/admin/actions";
 import { ANIMATIONS, type BlockDef } from "@/lib/cms/blocks";
-import { discardDraft, publishSection, saveSectionDraft } from "../../actions";
+import {
+  discardDraft,
+  publishSection,
+  saveSectionAndPublish,
+  saveSectionDraft,
+} from "../../actions";
 
 /**
  * Draft, preview, publish (§16) — the three states an editor actually works in.
  *
- * "Save draft" never touches the live site; "Save and publish" does both in one
- * step for a small correction. The publish and discard controls are separate
- * forms so they cannot be triggered by the Enter key inside the editor.
+ * "Save draft" never touches the live site; "Save and publish" writes straight
+ * to it in one guarded step, for a small correction. They are two actions on
+ * one form rather than one action told which to do, so the Enter key — which
+ * always submits the form's own action — can only ever save a draft. The
+ * publish and discard controls are separate forms again, so Enter cannot reach
+ * them either.
  *
  * Being separate forms costs them the message `AdminForm` draws, so the banner
  * draws it instead. That matters most for the one answer they can give that a
@@ -43,7 +58,7 @@ export function SectionForm({
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   const onResult = useCallback(
-    (state: { ok: boolean; message?: string }) =>
+    (state: ActionState) =>
       setNotice(state.ok ? null : (state.message ?? "That did not work. Reload the page.")),
     [],
   );
@@ -105,7 +120,11 @@ export function SectionForm({
         </div>
       ) : null}
 
-      <AdminForm action={saveSectionDraft} className="admin-card p-5">
+      <AdminForm
+        action={saveSectionDraft}
+        alternate={saveSectionAndPublish}
+        className="admin-card p-5"
+      >
         <input type="hidden" name="_csrf" value={csrf} />
         <input type="hidden" name="id" value={section.id} />
         {/*
@@ -140,14 +159,7 @@ export function SectionForm({
 
         <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--admin-line)] pt-5">
           <SubmitButton variant="ghost">Save draft</SubmitButton>
-          <button
-            type="submit"
-            name="publishNow"
-            value="true"
-            className="admin-btn admin-btn-primary"
-          >
-            Save and publish
-          </button>
+          <AlternateSubmit pendingLabel="Publishing…">Save and publish</AlternateSubmit>
           <a href={previewHref} target="_blank" rel="noopener" className="admin-btn">
             <Icon name="arrowUpRight" size={13} />
             Preview page

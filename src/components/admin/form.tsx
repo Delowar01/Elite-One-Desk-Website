@@ -1,12 +1,30 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useActionState,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useFormStatus } from "react-dom";
 
 import { Icon } from "@/components/ui/icon";
 import type { ActionState } from "@/lib/admin/actions";
 
 const EMPTY: ActionState = { ok: false };
+
+export type FormAction = (prev: ActionState, form: FormData) => Promise<ActionState>;
+
+/**
+ * The dispatch for an `AdminForm`'s second action, for `AlternateSubmit`.
+ *
+ * Passed through context rather than as a render prop so `children` stays an
+ * ordinary `ReactNode` for the twenty screens that only ever need one action.
+ */
+const AlternateDispatch = createContext<((payload: FormData) => void) | null>(null);
 
 export function SubmitButton({
   children = "Save changes",
@@ -36,9 +54,18 @@ export function SubmitButton({
  * the result banner, the "you have unsaved changes" guard, and resetting the
  * dirty flag once a save comes back clean. `onSaved` lets a screen refresh a
  * list without the form knowing anything about it.
+ *
+ * `alternate` is a second action the same fields can be submitted to, reached
+ * with `AlternateSubmit`. One form, two intents — "Save draft" and "Save and
+ * publish" send byte-identical values and differ only in what the server should
+ * do with them. Both come back through the same banner and clear the same
+ * unsaved-changes state, because from the editor's point of view the work is
+ * saved either way. Exactly one of the two runs per submission, which is why
+ * "whichever answered last" is a complete rule rather than a race.
  */
 export function AdminForm({
   action,
+  alternate,
   children,
   footer,
   className = "",
@@ -46,7 +73,8 @@ export function AdminForm({
   onSaved,
   successMessage = "Saved.",
 }: {
-  action: (prev: ActionState, form: FormData) => Promise<ActionState>;
+  action: FormAction;
+  alternate?: FormAction;
   children: ReactNode;
   footer?: ReactNode;
   className?: string;
@@ -54,10 +82,25 @@ export function AdminForm({
   onSaved?: (state: ActionState) => void;
   successMessage?: string;
 }) {
-  const [state, formAction] = useActionState<ActionState, FormData>(action, EMPTY);
+  const [primary, formAction] = useActionState<ActionState, FormData>(action, EMPTY);
+  // Called unconditionally — hooks cannot be conditional — and harmlessly bound
+  // to the primary action on the screens that declare no second one, where
+  // nothing ever dispatches it.
+  const [secondary, alternateAction] = useActionState<ActionState, FormData>(
+    alternate ?? action,
+    EMPTY,
+  );
+  const [state, setState] = useState<ActionState>(EMPTY);
   const [dirty, setDirty] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
   const lastHandled = useRef<ActionState | null>(null);
+
+  useEffect(() => {
+    if (primary !== EMPTY) setState(primary);
+  }, [primary]);
+  useEffect(() => {
+    if (secondary !== EMPTY) setState(secondary);
+  }, [secondary]);
 
   useEffect(() => {
     if (state === EMPTY || lastHandled.current === state) return;
@@ -80,6 +123,7 @@ export function AdminForm({
   }, [dirty, guardUnsaved]);
 
   return (
+    <AlternateDispatch.Provider value={alternate ? alternateAction : null}>
     <form
       ref={formRef}
       action={formAction}
@@ -111,6 +155,50 @@ export function AdminForm({
         </div>
       ) : null}
     </form>
+    </AlternateDispatch.Provider>
+  );
+}
+
+/**
+ * Submits the form's fields to its `alternate` action instead of its own.
+ *
+ * The intent is **which action the browser invoked**, never a value inside the
+ * request. That is not a stylistic preference: a `<button name="…" value="…">`
+ * relies on React re-inserting the submitter as a temporary input before
+ * building the FormData, and that shim re-parents itself using `form.id` —
+ * which, on a form containing a control named `id`, is the input element rather
+ * than the form's identifier, so the temporary input is associated with a form
+ * that does not exist and the value silently vanishes. A hidden field set on
+ * click has a different failure: the value it was last set to outlives the
+ * submission, so a later Enter can carry an intent nobody chose. A second
+ * action has neither problem, and the Enter key keeps the form's own action,
+ * which is always the safe one.
+ */
+export function AlternateSubmit({
+  children,
+  pendingLabel = "Saving…",
+  variant = "primary",
+  className = "",
+}: {
+  children: ReactNode;
+  pendingLabel?: string;
+  variant?: "primary" | "ghost" | "danger";
+  className?: string;
+}) {
+  const dispatch = useContext(AlternateDispatch);
+  const { pending } = useFormStatus();
+  const variantClass =
+    variant === "primary" ? "admin-btn-primary" : variant === "danger" ? "admin-btn-danger" : "";
+  if (!dispatch) return null;
+  return (
+    <button
+      type="submit"
+      formAction={dispatch}
+      disabled={pending}
+      className={`admin-btn ${variantClass} ${className}`}
+    >
+      {pending ? pendingLabel : children}
+    </button>
   );
 }
 

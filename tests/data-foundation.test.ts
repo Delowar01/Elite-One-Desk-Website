@@ -933,11 +933,13 @@ describe("the entrance-animation control is still dead, and deliberately so", ()
 
   test("a draft save still writes it live — the reason the defect stays", () => {
     const actions = read("src/app/(backoffice)/admin/(shell)/pages/actions.ts");
-    // The one write `saveSectionDraft` makes, read out of the source: the
-    // draft goes in it, and so does `animation`, which is a published column.
-    const body = actions.slice(actions.indexOf("export async function saveSectionDraft"));
+    // The one write the section editor makes, read out of the source: the draft
+    // goes in it, and so does `animation`, which is a published column. Saving a
+    // draft therefore changes a value the live site would render, if anything
+    // rendered it — which is the whole reason the control stays disconnected.
+    const body = actions.slice(actions.indexOf("async function writeSectionValues"));
     const write = body.slice(body.indexOf("updateSectionGuarded("), body.indexOf("if (!result.ok)"));
-    assert.ok(write.length > 0, "saveSectionDraft no longer makes one guarded write");
+    assert.ok(write.length > 0, "the section editor no longer makes one guarded write");
     assert.match(write, /draft: values/);
     assert.match(write, /\banimation\b/);
   });
