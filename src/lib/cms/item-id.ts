@@ -47,8 +47,21 @@ export const isItemId = (value: unknown): value is string =>
   typeof value === "string" && ITEM_ID_PATTERN.test(value);
 
 /**
- * Server-generated, opaque, and never derived from the row's content — two
- * rows that happen to say the same thing are still two rows.
+ * Opaque, cryptographically random, and never derived from the row's content —
+ * two rows that happen to say the same thing are still two rows.
+ *
+ * Callable on either side. The panel mints one the moment an editor adds a row,
+ * so the row has a stable identity immediately: it is the React key, it is what
+ * a click on the canvas resolves to, and it is what a style override will later
+ * be filed under. A row that had to wait for a round trip to become addressable
+ * would be unaddressable for exactly as long as somebody was working on it.
+ *
+ * That is convenience, not trust. `ensureItemIds` re-checks every id that
+ * arrives — same alphabet, same length range, unique within its list — and
+ * replaces anything it would not have produced itself, so a client-supplied id
+ * is accepted because it passes, never because the client supplied it.
+ * `globalThis.crypto` is the source in both places; nothing falls back to
+ * `Math.random`.
  */
 export function newItemId(): string {
   const bytes = new Uint8Array(LENGTH);

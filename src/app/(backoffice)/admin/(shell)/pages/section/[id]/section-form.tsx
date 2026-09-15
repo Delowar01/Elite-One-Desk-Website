@@ -1,5 +1,7 @@
 "use client";
 
+import { useCallback, useState } from "react";
+
 import { AdminForm, ConfirmSubmit, InlineAction, SubmitButton } from "@/components/admin/form";
 import { BlockEditor } from "@/components/admin/block-editor";
 import type { MediaOption } from "@/components/admin/media-picker";
@@ -13,6 +15,12 @@ import { discardDraft, publishSection, saveSectionDraft } from "../../actions";
  * "Save draft" never touches the live site; "Save and publish" does both in one
  * step for a small correction. The publish and discard controls are separate
  * forms so they cannot be triggered by the Enter key inside the editor.
+ *
+ * Being separate forms costs them the message `AdminForm` draws, so the banner
+ * draws it instead. That matters most for the one answer they can give that a
+ * re-render does not explain: this screen has been overtaken, and nothing
+ * happened. Without it a refused publish looks exactly like a button that does
+ * not work, and the natural response is to press it again.
  */
 export function SectionForm({
   csrf,
@@ -33,6 +41,13 @@ export function SectionForm({
   media: MediaOption[];
   previewHref: string;
 }) {
+  const [notice, setNotice] = useState<string | null>(null);
+  const onResult = useCallback(
+    (state: { ok: boolean; message?: string }) =>
+      setNotice(state.ok ? null : (state.message ?? "That did not work. Reload the page.")),
+    [],
+  );
+
   return (
     <div className="space-y-5">
       {section.hasDraft ? (
@@ -47,7 +62,18 @@ export function SectionForm({
             <Icon name="arrowUpRight" size={12} />
             Preview
           </a>
-          <InlineAction action={publishSection} hidden={{ _csrf: csrf, id: section.id }}>
+          {/*
+            Publish and Discard carry the same revision the editor below does.
+            Without it the server could only guard its own fresh read, which
+            protects nothing: this panel is drawn once and can sit open while
+            somebody else saves. The button would then publish — or delete — a
+            draft that was never on this screen.
+          */}
+          <InlineAction
+            action={publishSection}
+            hidden={{ _csrf: csrf, id: section.id, expectedRevision: section.revision }}
+            onResult={onResult}
+          >
             <ConfirmSubmit
               variant="primary"
               className="admin-btn-sm"
@@ -56,11 +82,26 @@ export function SectionForm({
               Publish draft
             </ConfirmSubmit>
           </InlineAction>
-          <InlineAction action={discardDraft} hidden={{ _csrf: csrf, id: section.id }}>
+          <InlineAction
+            action={discardDraft}
+            hidden={{ _csrf: csrf, id: section.id, expectedRevision: section.revision }}
+            onResult={onResult}
+          >
             <ConfirmSubmit className="admin-btn-sm" message="Discard this draft and keep the live version?">
               Discard
             </ConfirmSubmit>
           </InlineAction>
+
+          {notice ? (
+            <p
+              role="alert"
+              className="flex w-full items-start gap-2 rounded-[var(--radius-sm)] border p-3 text-[0.8rem]"
+              style={{ borderColor: "#ef535066", background: "#ef53500f", color: "#ffb4ad" }}
+            >
+              <Icon name="close" size={14} className="mt-0.5 shrink-0" />
+              {notice}
+            </p>
+          ) : null}
         </div>
       ) : null}
 

@@ -488,6 +488,149 @@ describe("two editors, one section", () => {
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The admin section screen as it looked at one moment, with the two forms it
+ * draws for a section that has a draft.
+ *
+ * Captured as markup and submitted later, which is the whole point: a screen is
+ * rendered once and can sit open for an hour. Replaying its forms is what a
+ * person clicking a button on a stale tab actually does.
+ */
+async function adminScreen(sectionId: number) {
+  const url = `/admin/pages/section/${sectionId}`;
+  const { html } = await get(server.origin, url, { cookie: owner.cookie });
+  const publish = formWith(html, 'name="expectedRevision"', ">Publish draft<");
+  const discard = formWith(html, 'name="expectedRevision"', ">Discard<");
+  return {
+    url,
+    publish,
+    discard,
+    revision: Number(/name="expectedRevision" value="(\d+)"/.exec(publish)?.[1] ?? -1),
+  };
+}
+
+/** A section with a draft, and the screen that was showing it. */
+async function draftAndScreen(title: string) {
+  const section = await open(await find("privacy", "page-hero"));
+  const saved = succeeded(
+    await saveValues(section, { ...section.values, title: { en: title, ar: "" } }),
+  );
+  const screen = await adminScreen(section.sectionId);
+  assert.equal(screen.revision, saved.section.revision, "the screen named a different revision");
+  return { section, saved, screen };
+}
+
+describe("a screen left open cannot publish or discard what it never saw", () => {
+  test("a stale Publish draft is refused, and publishes nothing", async () => {
+    const { section, saved, screen } = await draftAndScreen("Draft one");
+    const publishedBefore = (await row(section.sectionId)).published;
+
+    // The Visual Editor saves a newer draft. The old screen still says
+    // "Unpublished draft" and its button still works — that is the problem.
+    const newer = succeeded(
+      await saveValues(
+        { ...section, revision: saved.section.revision },
+        { ...section.values, title: { en: "Draft two", ar: "" } },
+      ),
+    );
+    assert.equal((await row(section.sectionId)).revision, saved.section.revision + 1);
+
+    const submitted = await submitForm(server.origin, screen.url, screen.publish, owner.cookie);
+    assert.match(submitted.html, /Reload the page before publishing/i);
+
+    const after = await row(section.sectionId);
+    assert.equal(localised(after.draft!.title).en, "Draft two", "the newer draft did not survive");
+    assert.deepEqual(after.published, publishedBefore, "something was published");
+    assert.equal(after.revision, newer.section.revision, "a refused publish moved the revision");
+  });
+
+  test("a stale Discard is refused, and deletes nothing", async () => {
+    const { section, saved, screen } = await draftAndScreen("Draft one");
+
+    const newer = succeeded(
+      await saveValues(
+        { ...section, revision: saved.section.revision },
+        { ...section.values, title: { en: "Draft two", ar: "" } },
+      ),
+    );
+    assert.equal((await row(section.sectionId)).revision, saved.section.revision + 1);
+
+    const submitted = await submitForm(server.origin, screen.url, screen.discard, owner.cookie);
+    assert.match(submitted.html, /Reload the page before discarding/i);
+
+    const after = await row(section.sectionId);
+    assert.ok(after.draft, "the newer draft was deleted by a stale screen");
+    assert.equal(localised(after.draft.title).en, "Draft two", "the newer draft was changed");
+    assert.equal(after.revision, newer.section.revision);
+  });
+
+  test("two tabs belonging to one person still conflict — updated_by is not the guard", async () => {
+    const { section, screen } = await draftAndScreen("One draft, two tabs");
+    const second = await adminScreen(section.sectionId);
+    assert.equal(second.revision, screen.revision, "the two tabs disagree about the revision");
+
+    // The first tab publishes.
+    const first = await submitForm(server.origin, screen.url, screen.publish, owner.cookie);
+    assert.ok(!/Reload the page/i.test(first.html), "a fresh publish was refused");
+    const between = await row(section.sectionId);
+    assert.equal(between.draft, null);
+    assert.equal(between.updated_by, owner.userId);
+
+    // The second tab looks identical and is the same signed-in person, so
+    // nothing about *who* is asking could tell these two apart. Only the
+    // counter can, and it does.
+    const again = await submitForm(server.origin, second.url, second.publish, owner.cookie);
+    assert.match(again.html, /Reload the page before publishing/i);
+
+    const after = await row(section.sectionId);
+    assert.equal(after.revision, between.revision, "the refused second publish moved the revision");
+    assert.equal(after.updated_by, owner.userId, "the same person either way");
+    assert.deepEqual(after.published, between.published);
+  });
+
+  test("a reloaded screen publishes normally", async () => {
+    const { section, saved, screen } = await draftAndScreen("Ready to go");
+
+    const result = await submitForm(server.origin, screen.url, screen.publish, owner.cookie);
+    assert.ok(!/Reload the page/i.test(result.html), "a current screen was refused");
+
+    const after = await row(section.sectionId);
+    assert.equal(localised(after.published.title).en, "Ready to go");
+    assert.equal(after.draft, null);
+    assert.equal(after.revision, saved.section.revision + 1);
+    assert.equal(after.updated_by, owner.userId);
+  });
+
+  test("and a reloaded screen discards normally", async () => {
+    const before = await row((await find("privacy", "page-hero")).id);
+    const { section, saved, screen } = await draftAndScreen("Never mind");
+
+    const result = await submitForm(server.origin, screen.url, screen.discard, owner.cookie);
+    assert.ok(!/Reload the page/i.test(result.html), "a current screen was refused");
+
+    const after = await row(section.sectionId);
+    assert.equal(after.draft, null);
+    assert.equal(after.revision, saved.section.revision + 1);
+    assert.deepEqual(after.published, before.published, "discarding changed the live version");
+  });
+
+  test("a form carrying no revision at all is refused rather than defaulted", async () => {
+    const { section, screen } = await draftAndScreen("Still here");
+
+    for (const form of [screen.publish, screen.discard]) {
+      const older = form.replace(/<input type="hidden" name="expectedRevision"[^>]*\/>/, "");
+      assert.ok(!older.includes("expectedRevision"), "the field was not removed");
+      const submitted = await submitForm(server.origin, screen.url, older, owner.cookie);
+      assert.match(submitted.html, /could not be read/i);
+    }
+
+    const after = await row(section.sectionId);
+    assert.equal(localised(after.draft!.title).en, "Still here");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
 describe("publishing a whole page is all or nothing", () => {
   /**
    * A section moving underneath a publish-all is hard to arrange from outside

@@ -47,7 +47,22 @@ const CONFLICT = {
   publishAllGone:
     "A section on this page was deleted while you were publishing. Nothing was published — reload the page.",
   gone: "That section no longer exists.",
+  unreadable: "The form could not be read. Reload the page and try again.",
 } as const;
+
+/**
+ * The revision the screen that submitted this form was built from.
+ *
+ * Every content action reads it here and nowhere else, so none of them can
+ * drift into inferring it. `null` means the form did not carry one — an old
+ * tab open across a deploy, or a hand-made request — and that is refused
+ * rather than defaulted, because every default is a screen whose staleness
+ * nobody checked.
+ */
+function expectedRevisionOf(form: FormData): number | null {
+  const value = numberField(form, "expectedRevision", -1);
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
 
 /** Thrown inside the publish-all transaction so the whole batch rolls back. */
 class PublishRace extends Error {
@@ -244,10 +259,8 @@ export async function saveSectionDraft(_prev: ActionState, form: FormData): Prom
     // The revision the form was built from. Required, not inferred: falling
     // back to the row's current revision would make every save win, which is
     // exactly the behaviour the guard exists to remove.
-    const expected = numberField(form, "expectedRevision", -1);
-    if (!Number.isInteger(expected) || expected < 0) {
-      return fail("The form could not be read. Reload the page and try again.");
-    }
+    const expected = expectedRevisionOf(form);
+    if (expected === null) return fail(CONFLICT.unreadable);
 
     const result = await updateSectionGuarded(id, expected, {
       ...(publishNow
@@ -274,17 +287,39 @@ export async function saveSectionDraft(_prev: ActionState, form: FormData): Prom
   });
 }
 
+/**
+ * Publishes the draft an editor was actually looking at — or nothing.
+ *
+ * The revision comes from the form, not from a read taken inside this action.
+ * Reading it here would guard only the microseconds between the read and the
+ * write, which is not the race that happens: the one that happens is a screen
+ * left open while somebody else — the Visual Editor, another tab — saves a
+ * newer draft. That screen still says "Unpublished draft" and its button still
+ * works, and publishing on it would put words on the live site that nobody at
+ * this keyboard has ever read.
+ *
+ * The draft still has to be read, because it is what gets published. But the
+ * read answers "what would go out", never "is this screen still current".
+ */
 export async function publishSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-publish", async () => {
     const session = await guardAction("content.manage", form);
     const id = Number(form.get("id"));
+    const expected = expectedRevisionOf(form);
+    if (expected === null) return fail(CONFLICT.unreadable);
+
     const [section] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
-    if (!section) return fail("That section no longer exists.");
+    if (!section) return fail(CONFLICT.gone);
+    // Staleness is reported before anything else, because it is the true story:
+    // a screen that has been overtaken may also be looking at a draft that has
+    // since been published or discarded, and "there is no draft" would send
+    // somebody hunting for a problem that is really just an old tab. The guard
+    // below still decides whether the write happens — this only decides which
+    // sentence an editor reads.
+    if (section.revision !== expected) return fail(CONFLICT.publish);
     if (!section.draft) return fail("There is no draft to publish.");
 
-    // Guarded on the revision this read saw: anything written between the read
-    // and the write would be published without ever having been looked at.
-    const result = await updateSectionGuarded(id, section.revision, {
+    const result = await updateSectionGuarded(id, expected, {
       published: section.draft,
       draft: null,
       isPublished: true,
@@ -304,17 +339,26 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
   });
 }
 
+/**
+ * Throws away the draft an editor was actually looking at — or nothing.
+ *
+ * The same rule as publishing, and the consequence of getting it wrong is
+ * worse: a discard deletes. A screen opened before somebody else saved would,
+ * guarded on its own fresh read, cheerfully delete a draft it had never shown
+ * anybody. The revision the browser saw is what decides.
+ */
 export async function discardDraft(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-discard", async () => {
     const session = await guardAction("content.manage", form);
     const id = Number(form.get("id"));
+    const expected = expectedRevisionOf(form);
+    if (expected === null) return fail(CONFLICT.unreadable);
 
     const [section] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
     if (!section) return fail(CONFLICT.gone);
+    if (section.revision !== expected) return fail(CONFLICT.discard);
 
-    // Throwing a draft away is a content write like any other: it has to lose
-    // the race rather than quietly delete an edit made a second ago.
-    const result = await updateSectionGuarded(id, section.revision, {
+    const result = await updateSectionGuarded(id, expected, {
       draft: null,
       updatedBy: session.user.id,
     });
