@@ -11,7 +11,8 @@ import {
 import { getMediaMap } from "@/lib/queries/site";
 import type { RenderedSection } from "@/lib/queries/content";
 import { getSettings, whatsappLink } from "@/lib/settings";
-import { editorNodeAttrs, type EditorRender } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
+import type { EditorRender } from "@/lib/visual-editor/render";
 
 import { ContactDetailsBlock } from "./blocks/contact-details";
 import type { BlockContext, BlockProps } from "./blocks/context";
@@ -128,13 +129,17 @@ export async function SectionRenderer({
         const editor: EditorRender = editorMode
           ? { sectionId: section.id, blockType: section.blockType }
           : null;
+        // The wrapper is the section's `root` node: the thing Layers selects,
+        // and the thing a root style override lands on. One element, one
+        // address, whether or not anybody is editing.
+        const node = blockNode({ editor, styles: section.styles });
 
         return (
           <div
             key={section.id}
             data-section={section.blockType}
             data-draft={section.isDraft || undefined}
-            {...editorNodeAttrs(editor, { kind: "section" })}
+            {...node(undefined, "section")}
             // Layers is built from what actually rendered, so the facts it
             // needs travel with the element rather than being asked of the
             // database a second time and risking a different answer.
@@ -146,7 +151,13 @@ export async function SectionRenderer({
                 }
               : {})}
           >
-            <Renderer values={section.values} ctx={context} index={index} editor={editor} />
+            <Renderer
+              values={section.values}
+              ctx={context}
+              index={index}
+              editor={editor}
+              styles={section.styles}
+            />
           </div>
         );
       })}

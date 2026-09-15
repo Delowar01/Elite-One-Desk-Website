@@ -4,17 +4,17 @@ import { Reveal } from "@/components/site/reveal";
 import { Icon } from "@/components/ui/icon";
 import { bool, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { editorNode } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function FinalCtaBlock({ values, ctx, editor }: BlockProps) {
+export function FinalCtaBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale, dict, whatsappHref } = ctx;
   const title = text(values, "title", locale);
   const body = text(values, "body", locale);
   const ctaHref = str(values, "primaryCtaHref", "/contact");
   const ctaLabel = text(values, "primaryCtaLabel", locale) || dict.nav.primaryCta;
   const showWhatsapp = bool(values, "showWhatsapp", true) && Boolean(whatsappHref);
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section className="section-tight">

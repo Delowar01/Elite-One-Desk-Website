@@ -7,6 +7,7 @@ import { logActivity } from "@/lib/activity";
 import { AccessError, guardAction } from "@/lib/auth/guard";
 import { getSession } from "@/lib/auth/session";
 import { getBlock, type BlockDef } from "@/lib/cms/blocks";
+import { validateStyleDocument } from "@/lib/cms/styles";
 import { parseBlockPayload, validateBlockValues } from "@/lib/cms/validate";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
@@ -16,6 +17,7 @@ import type {
   VisualContentSaveResult,
   VisualSectionData,
   VisualSectionLoad,
+  VisualStyleSaveResult,
 } from "@/lib/visual-editor/content";
 
 /**
@@ -49,6 +51,7 @@ const MESSAGES = {
   wrongPage: "That section belongs to a different page. Reload the canvas.",
   unknownBlock: "That section type is no longer available.",
   invalid: "Those values could not be read. Reload the canvas and try again.",
+  invalidStyles: "Those styles could not be read. Reload the canvas and try again.",
   conflict:
     "This section changed while you were editing it. Reload the latest version before saving, " +
     "or your colleague's work would be overwritten.",
@@ -65,14 +68,19 @@ const MESSAGES = {
  */
 function toData(row: typeof pageSections.$inferSelect, block: BlockDef): VisualSectionData {
   const stored = (row.draft ?? row.published) as Record<string, unknown>;
+  const hasStyleDraft = row.draftStyles !== null;
   return {
     sectionId: row.id,
     pageId: row.pageId,
     blockType: row.blockType,
     revision: row.revision,
     hasDraft: Boolean(row.draft),
+    hasStyleDraft,
     isDraftOnly: row.isDraftOnly,
     values: validateBlockValues(block, { ...emptyValues(block), ...stored }),
+    // The draft document whole when there is one, empty included — an empty
+    // style draft is a pending reset, not an absent one.
+    styles: validateStyleDocument(hasStyleDraft ? row.draftStyles : row.styles),
   };
 }
 
@@ -157,6 +165,8 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
      * The whole write. `draft` and nothing else — the guard adds `revision`,
      * `updated_at` and takes `updated_by` — so a content save cannot publish,
      * cannot show a hidden section, and cannot disturb motion or styles.
+     * Content and style are two draft domains sharing one row and one
+     * concurrency timeline; each save writes only its own column.
      */
     const result = await updateSectionGuarded(sectionId, expected, {
       draft: values,
@@ -216,6 +226,97 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
   } catch (error) {
     if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };
     console.error("[visual-editor:save]", error);
+    return { ok: false, reason: "invalid", message: "Something went wrong. The change was not saved." };
+  }
+}
+
+/**
+ * Saves one section's visual overrides as a draft. Never publishes.
+ *
+ * The same shape as the content save and deliberately so: same door
+ * (`guardAction`), same ownership check, same revision guard, same one-column
+ * write. What differs is which column — `draft_styles` rather than `draft` —
+ * and that difference is the whole of the separation between the two domains.
+ * A style save must be able to land while somebody has unsaved text in the
+ * panel, and vice versa, so neither may write the other's column even with
+ * what it believes to be the current value.
+ *
+ * `null` versus empty is decided here too. The document is stored as
+ * whatever `validateStyleDocument` makes of it, which for a fully reset
+ * section is `{ v: 1, nodes: {} }` — a real draft meaning "publishing me
+ * removes every override". Storing `null` for that would be storing "there is
+ * nothing pending", and publishing would then leave the overrides in place.
+ */
+export async function saveVisualSectionStyles(form: FormData): Promise<VisualStyleSaveResult> {
+  try {
+    const session = await guardAction("content.manage", form);
+
+    const sectionId = Number(form.get("sectionId"));
+    const pageId = Number(form.get("pageId"));
+    const expected = Number(form.get("expectedRevision"));
+
+    const found = await ownedSection(sectionId, pageId);
+    if (!found.ok) return found;
+
+    let submitted: unknown;
+    try {
+      submitted = JSON.parse(String(form.get("styles") ?? ""));
+    } catch {
+      return { ok: false, reason: "invalid", message: MESSAGES.invalidStyles };
+    }
+    if (!Number.isInteger(expected) || expected < 0) {
+      return { ok: false, reason: "invalid", message: MESSAGES.invalid };
+    }
+
+    /**
+     * Rebuilt key by key from the closed vocabulary. Everything the panel did
+     * not have any business sending — a selector, a class, a CSS string, a
+     * runtime `section:42/…` address, a spacing step off the scale — is simply
+     * not in the result, because the result is constructed rather than
+     * filtered.
+     */
+    const styles = validateStyleDocument(submitted);
+
+    const result = await updateSectionGuarded(sectionId, expected, {
+      draftStyles: styles,
+      updatedBy: session.user.id,
+    });
+
+    if (!result.ok) {
+      if (result.reason === "missing") {
+        return { ok: false, reason: "missing", message: MESSAGES.missing };
+      }
+      const fresh = await ownedSection(sectionId, pageId);
+      if (!fresh.ok) return fresh;
+      return {
+        ok: false,
+        reason: "conflict",
+        message: MESSAGES.conflict,
+        section: toData(fresh.row, fresh.block),
+      };
+    }
+
+    await logActivity(session, {
+      action: "section.style_draft_saved",
+      entityType: "section",
+      entityId: sectionId,
+      summary: `Saved a style draft for the ${found.block.name} section`,
+    });
+
+    const [page] = await db
+      .select({ slug: pages.slug })
+      .from(pages)
+      .where(eq(pages.id, found.row.pageId))
+      .limit(1);
+    if (page) revalidatePath(`/admin/pages/${page.slug}`);
+    revalidatePath("/admin/pages");
+
+    // What was stored, not what was sent: the panel adopts the validated
+    // document so the controls agree with the database.
+    return { ok: true, revision: result.revision, styles };
+  } catch (error) {
+    if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };
+    console.error("[visual-editor:styles]", error);
     return { ok: false, reason: "invalid", message: "Something went wrong. The change was not saved." };
   }
 }

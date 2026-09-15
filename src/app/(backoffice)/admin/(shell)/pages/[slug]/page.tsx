@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { requirePermission } from "@/lib/auth/guard";
 import { blocksForPage, getBlock } from "@/lib/cms/blocks";
 import { text } from "@/lib/cms/values";
+import { draftKindOf, hasDraft } from "@/lib/cms/drafts";
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
 import { DeletePageForm, PageSettingsForm, PublishAllButton } from "../page-forms";
@@ -50,12 +51,12 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
       blockDescription: block?.description ?? "",
       summary,
       isPublished: row.isPublished,
-      hasDraft: Boolean(row.draft),
+      draftKind: draftKindOf(row),
       position: row.position,
     };
   });
 
-  const draftCount = sections.filter((s) => s.hasDraft).length;
+  const draftCount = sections.filter((section) => hasDraft(section.draftKind)).length;
   const livePath = page.slug === "home" ? "/" : `/${page.slug}`;
 
   return (

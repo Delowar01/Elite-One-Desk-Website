@@ -2,7 +2,8 @@ import { Counter } from "@/components/site/counter";
 import { Reveal } from "@/components/site/reveal";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, text } from "@/lib/cms/values";
-import { editorNode, itemFieldPath, itemPath } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
+import { itemFieldPath, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -10,7 +11,7 @@ import type { BlockProps } from "./context";
  * that unsupported statistics stay off, so an empty list is not an empty
  * section, it is no section.
  */
-export function StatsBlock({ values, ctx, editor }: BlockProps) {
+export function StatsBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale, settings } = ctx;
   if (!settings.features.showStats) return null;
 
@@ -18,7 +19,7 @@ export function StatsBlock({ values, ctx, editor }: BlockProps) {
   const fields = def.fields.find((f) => f.name === "items")!.itemFields ?? [];
   const figures = items(values, "items", locale, fields).filter((f) => f.value?.trim());
   if (!figures.length) return null;
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section className="section-tight">

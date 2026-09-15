@@ -7,7 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { editorNode } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
 /**
@@ -15,7 +15,7 @@ import type { BlockProps } from "./context";
  * word rather than animating the whole sentence: the fixed part is in the HTML
  * a crawler reads, and the motion is confined to a single element.
  */
-export function HeroBlock({ values, ctx, editor }: BlockProps) {
+export function HeroBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale, dict } = ctx;
   const def = getBlock("hero")!;
   const wordField = def.fields.find((f) => f.name === "words")!;
@@ -30,7 +30,7 @@ export function HeroBlock({ values, ctx, editor }: BlockProps) {
   const secondaryHref = str(values, "secondaryCtaHref", "/services");
   const primaryLabel = text(values, "primaryCtaLabel", locale) || dict.nav.primaryCta;
   const secondaryLabel = text(values, "secondaryCtaLabel", locale) || dict.nav.secondaryCta;
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section

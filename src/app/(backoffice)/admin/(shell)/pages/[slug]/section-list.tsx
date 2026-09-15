@@ -7,6 +7,7 @@ import { ConfirmSubmit, InlineAction, SubmitButton } from "@/components/admin/fo
 import { Icon } from "@/components/ui/icon";
 import type { ActionState } from "@/lib/admin/actions";
 import type { BlockDef } from "@/lib/cms/blocks";
+import { DRAFT_BADGE, DRAFT_LABEL, hasDraft, type DraftKind } from "@/lib/cms/drafts";
 import {
   addSection,
   deleteSection,
@@ -23,7 +24,7 @@ export type SectionRow = {
   blockDescription: string;
   summary: string;
   isPublished: boolean;
-  hasDraft: boolean;
+  draftKind: DraftKind;
   position: number;
 };
 
@@ -169,9 +170,13 @@ export function SectionList({
                         Hidden
                       </span>
                     ) : null}
-                    {section.hasDraft ? (
-                      <span className="admin-badge" style={{ color: "#ffd166" }}>
-                        Draft
+                    {hasDraft(section.draftKind) ? (
+                      <span
+                        className="admin-badge"
+                        style={{ color: "#ffd166" }}
+                        title={DRAFT_LABEL[section.draftKind]}
+                      >
+                        {DRAFT_BADGE[section.draftKind]}
                       </span>
                     ) : null}
                   </div>

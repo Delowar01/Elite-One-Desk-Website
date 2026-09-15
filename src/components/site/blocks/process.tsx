@@ -2,7 +2,8 @@ import { Reveal } from "@/components/site/reveal";
 import { SectionHeading } from "@/components/site/section-heading";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, text } from "@/lib/cms/values";
-import { editorNode, itemFieldPath, itemPath } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
+import { itemFieldPath, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -10,12 +11,12 @@ import type { BlockProps } from "./context";
  * timeline: the numbers stay in view while the steps scroll past them, which is
  * the "visually modern rather than a basic timeline" the brief asks for.
  */
-export function ProcessBlock({ values, ctx, editor }: BlockProps) {
+export function ProcessBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale, dict } = ctx;
   const def = getBlock("process")!;
   const fields = def.fields.find((f) => f.name === "steps")!.itemFields ?? [];
   const steps = items(values, "steps", locale, fields);
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
   if (!steps.length) return null;
 
   return (

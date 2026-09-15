@@ -12,6 +12,7 @@ import type {
 import type { Locale } from "@/lib/i18n/config";
 import type { Dictionary } from "@/lib/i18n/dictionary";
 import type { SiteSettings } from "@/lib/settings";
+import type { StyleDocument } from "@/lib/cms/styles";
 import type { EditorRender } from "@/lib/visual-editor/render";
 
 /**
@@ -54,4 +55,13 @@ export type BlockProps = {
    * them would be a public block that could leak them.
    */
   editor?: EditorRender;
+  /**
+   * This section's validated visual overrides.
+   *
+   * Set on every render, a visitor's included — a published override is part of
+   * the page, not part of the editor. `blockNode` turns it into a `style` prop
+   * for whichever node the block names, and a section with no overrides gets a
+   * document with no nodes, which produces no `style` at all.
+   */
+  styles?: StyleDocument;
 };

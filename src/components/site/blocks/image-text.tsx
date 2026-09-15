@@ -5,17 +5,17 @@ import { Reveal } from "@/components/site/reveal";
 import { Icon } from "@/components/ui/icon";
 import { mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { editorNode } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function ImageTextBlock({ values, ctx, editor }: BlockProps) {
+export function ImageTextBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale } = ctx;
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const imageSide = str(values, "imageSide", "start");
   const ctaHref = str(values, "ctaHref");
   const ctaLabel = text(values, "ctaLabel", locale);
   const body = text(values, "body", locale);
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section className="section-tight">

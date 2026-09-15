@@ -6,17 +6,17 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { editorNode } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function OneDeskBlock({ values, ctx, editor }: BlockProps) {
+export function OneDeskBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("one-desk")!;
   const fields = def.fields.find((f) => f.name === "paths")!.itemFields ?? [];
   const paths = items(values, "paths", locale, fields).map((p) => p.label);
   const ctaHref = str(values, "ctaHref");
   const ctaLabel = text(values, "ctaLabel", locale);
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section className="section relative overflow-clip">

@@ -14,6 +14,7 @@ import type { MediaOption } from "@/components/admin/media-picker";
 import { Icon } from "@/components/ui/icon";
 import type { ActionState } from "@/lib/admin/actions";
 import { ANIMATIONS, type BlockDef } from "@/lib/cms/blocks";
+import { DRAFT_LABEL, hasDraft, type DraftKind } from "@/lib/cms/drafts";
 import {
   discardDraft,
   publishSection,
@@ -48,7 +49,7 @@ export function SectionForm({
   section: {
     id: number;
     animation: string;
-    hasDraft: boolean;
+    draftKind: DraftKind;
     values: Record<string, unknown>;
     revision: number;
   };
@@ -65,13 +66,22 @@ export function SectionForm({
 
   return (
     <div className="space-y-5">
-      {section.hasDraft ? (
+      {hasDraft(section.draftKind) ? (
         <div className="admin-card flex flex-wrap items-center gap-3 p-4">
           <span className="admin-badge" style={{ color: "#ffd166" }}>
             Unpublished draft
           </span>
           <p className="min-w-40 flex-1 text-[0.8rem] text-muted">
-            You are editing a draft. The live site still shows the previous version.
+            {/*
+              Which domain, because they are edited in different places: text
+              here, layout in the Visual Editor. Publishing and discarding take
+              both, so an editor about to press either should know what is in
+              the pile.
+            */}
+            {DRAFT_LABEL[section.draftKind]}. The live site still shows the previous version.
+            {section.draftKind === "style"
+              ? " Styles are edited in the Visual Editor."
+              : ""}
           </p>
           <a href={previewHref} target="_blank" rel="noopener" className="admin-btn admin-btn-sm">
             <Icon name="arrowUpRight" size={12} />

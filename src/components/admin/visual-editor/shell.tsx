@@ -6,17 +6,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   loadVisualSection,
   saveVisualSectionDraft,
+  saveVisualSectionStyles,
 } from "@/app/(backoffice)/admin/visual-editor/actions";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { Icon } from "@/components/ui/icon";
+import type { StyleDocument } from "@/lib/cms/styles";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
 import { previewPagePath } from "@/lib/page-path";
 import { blockNameOf } from "@/lib/visual-editor/labels";
+import type { VisualSectionData } from "@/lib/visual-editor/content";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
 import { EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
 
 import { VisualCanvas, type CanvasState, type SelectRequest } from "./canvas";
-import { ContentInspector, type SectionBuffer } from "./content-inspector";
+import { InspectorPanel, isDirty, type EditDomain, type SectionBuffer } from "./inspector";
 
 export type EditablePage = {
   id: number;
@@ -47,7 +50,27 @@ const EMPTY_CANVAS: CanvasState = { status: "loading", innerWidth: null, message
  */
 const RESTORE_FALLBACK_MS = 400;
 
-const sameValues = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+/**
+ * Whether two documents say the same thing, whatever order they say it in.
+ *
+ * The server rebuilds a document key by key in its own canonical order; the
+ * panel builds one by spreading what it had and appending what changed. Two
+ * documents that mean exactly the same thing can therefore serialise
+ * differently, and a plain string comparison would call a section unsaved
+ * because a token was set and unset again.
+ */
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, raw) =>
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? Object.fromEntries(
+          Object.keys(raw as Record<string, unknown>)
+            .sort()
+            .map((key) => [key, (raw as Record<string, unknown>)[key]]),
+        )
+      : raw,
+  );
+
+const sameValues = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 
 /**
  * The Visual Editor's application shell.
@@ -102,6 +125,8 @@ export function VisualEditorShell({
    * draft left on a page nobody is looking at is not a silent one.
    */
   const [buffers, setBuffers] = useState<Record<number, SectionBuffer>>({});
+  /** Which domain the inspector is showing. One choice for the whole editor. */
+  const [tab, setTab] = useState<EditDomain>("content");
   const [loadingId, setLoadingId] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   /** Sections already asked for, so a re-render does not ask again. */
@@ -117,7 +142,7 @@ export function VisualEditorShell({
   const buffer = activeId === null ? null : buffers[activeId] ?? null;
   const dirtyIds = useMemo(() => {
     const ids = new Set<number>();
-    for (const [id, entry] of Object.entries(buffers)) if (entry.dirty) ids.add(Number(id));
+    for (const [id, entry] of Object.entries(buffers)) if (isDirty(entry)) ids.add(Number(id));
     return ids;
   }, [buffers]);
   const dirtyCount = dirtyIds.size;
@@ -208,8 +233,12 @@ export function VisualEditorShell({
                 [wanted]: {
                   data: result.section,
                   values: result.section.values,
-                  dirty: false,
+                  styles: result.section.styles,
+                  contentDirty: false,
+                  styleDirty: false,
+                  saving: null,
                   status: "idle",
+                  statusDomain: null,
                 },
               },
         );
@@ -237,11 +266,12 @@ export function VisualEditorShell({
           [activeId]: {
             ...entry,
             values,
-            dirty: !sameValues(values, entry.data.values),
+            contentDirty: !sameValues(values, entry.data.values),
             // Typing clears a stale outcome, but never a conflict: the section
             // really has moved, and hiding that the moment somebody keeps
             // typing is how the second save loses too.
             status: entry.status === "conflict" ? "conflict" : "idle",
+            statusDomain: entry.status === "conflict" ? entry.statusDomain : null,
             message: entry.status === "conflict" ? entry.message : undefined,
           },
         };
@@ -250,19 +280,55 @@ export function VisualEditorShell({
     [activeId, canManage],
   );
 
-  const revert = useCallback(() => {
-    if (activeId === null) return;
-    setBuffers((prev) => {
-      const entry = prev[activeId];
-      if (!entry) return prev;
-      return {
-        ...prev,
-        [activeId]: { ...entry, values: entry.data.values, dirty: false, status: "idle", message: undefined },
-      };
-    });
-  }, [activeId]);
+  const onStyles = useCallback(
+    (styles: StyleDocument) => {
+      if (activeId === null || !canManage) return;
+      setBuffers((prev) => {
+        const entry = prev[activeId];
+        if (!entry) return prev;
+        return {
+          ...prev,
+          [activeId]: {
+            ...entry,
+            styles,
+            styleDirty: !sameValues(styles, entry.data.styles),
+            status: entry.status === "conflict" ? "conflict" : "idle",
+            statusDomain: entry.status === "conflict" ? entry.statusDomain : null,
+            message: entry.status === "conflict" ? entry.message : undefined,
+          },
+        };
+      });
+    },
+    [activeId, canManage],
+  );
 
-  /** Take the version that won the race, losing whatever is in the panel. */
+  /** Puts one domain back to what the server last said, leaving the other alone. */
+  const revert = useCallback(
+    (domain: EditDomain) => {
+      if (activeId === null) return;
+      setBuffers((prev) => {
+        const entry = prev[activeId];
+        if (!entry) return prev;
+        const reset =
+          domain === "content"
+            ? { values: entry.data.values, contentDirty: false }
+            : { styles: entry.data.styles, styleDirty: false };
+        return {
+          ...prev,
+          [activeId]: { ...entry, ...reset, status: "idle", statusDomain: null, message: undefined },
+        };
+      });
+    },
+    [activeId],
+  );
+
+  /**
+   * Take the version that won the race — both domains of it.
+   *
+   * They share a revision, so adopting one and keeping the other would leave
+   * the kept half addressed to a revision that no longer exists: the next save
+   * of it would conflict too, and the editor would have no way out of the loop.
+   */
   const takeLatest = useCallback(() => {
     if (activeId === null) return;
     setBuffers((prev) => {
@@ -273,89 +339,165 @@ export function VisualEditorShell({
         [activeId]: {
           data: entry.latest,
           values: entry.latest.values,
-          dirty: false,
+          styles: entry.latest.styles,
+          contentDirty: false,
+          styleDirty: false,
+          saving: null,
           status: "idle",
+          statusDomain: null,
         },
       };
     });
     freshCanvas();
   }, [activeId]);
 
-  const save = useCallback(async () => {
-    if (activeId === null || !canManage) return;
-    const entry = buffers[activeId];
-    if (!entry || !entry.dirty || entry.status === "saving") return;
+  /**
+   * Saves one domain of one section.
+   *
+   * Two things this deliberately does not do. It does not save the other
+   * domain — pressing "Save styles" with unsaved text must not publish that
+   * text into a draft nobody asked to save. And it does not start while the
+   * other domain is writing: they share one row and one revision, so two
+   * requests in flight would be a race this browser manufactured out of two
+   * intentions that were each correct when they left.
+   *
+   * What it does do is adopt the new revision for the *whole* buffer. The
+   * counter belongs to the row, not to a column, so an editor who saves a
+   * style and then saves text is naming the revision their own last save
+   * produced rather than conflicting with themselves.
+   */
+  const save = useCallback(
+    async (domain: EditDomain) => {
+      if (activeId === null || !canManage) return;
+      const entry = buffers[activeId];
+      if (!entry || entry.saving !== null) return;
+      const dirty = domain === "content" ? entry.contentDirty : entry.styleDirty;
+      if (!dirty) return;
 
-    const sent = JSON.stringify(entry.values);
-    const address = selectedRef.current?.address ?? null;
+      const sent = canonical(domain === "content" ? entry.values : entry.styles);
+      const address = selectedRef.current?.address ?? null;
 
-    setBuffers((prev) => {
-      const live = prev[activeId];
-      if (!live) return prev;
-      return { ...prev, [activeId]: { ...live, status: "saving", message: undefined } };
-    });
-
-    const form = new FormData();
-    form.set("_csrf", csrf);
-    form.set("sectionId", String(activeId));
-    form.set("pageId", String(entry.data.pageId));
-    form.set("expectedRevision", String(entry.data.revision));
-    form.set("values", sent);
-
-    let result;
-    try {
-      result = await saveVisualSectionDraft(form);
-    } catch {
       setBuffers((prev) => {
         const live = prev[activeId];
         if (!live) return prev;
+        return { ...prev, [activeId]: { ...live, saving: domain, message: undefined } };
+      });
+
+      const form = new FormData();
+      form.set("_csrf", csrf);
+      form.set("sectionId", String(activeId));
+      form.set("pageId", String(entry.data.pageId));
+      form.set("expectedRevision", String(entry.data.revision));
+      form.set(domain === "content" ? "values" : "styles", sent);
+
+      const fail = (message: string) =>
+        setBuffers((prev) => {
+          const live = prev[activeId];
+          if (!live) return prev;
+          return {
+            ...prev,
+            [activeId]: { ...live, saving: null, status: "error", statusDomain: domain, message },
+          };
+        });
+
+      const refuse = (message: string, latest?: VisualSectionData) =>
+        setBuffers((prev) => {
+          const live = prev[activeId];
+          if (!live) return prev;
+          return {
+            ...prev,
+            [activeId]: {
+              ...live,
+              saving: null,
+              status: "conflict",
+              statusDomain: domain,
+              message,
+              latest,
+            },
+          };
+        });
+
+      /**
+       * The two actions answer with different documents — a content save owns
+       * the values, a style save owns the document — and this is where the two
+       * become one fact: the revision the row is now at, plus whichever half
+       * was written. Narrowing here rather than later keeps each action's
+       * result typed as what it actually is.
+       */
+      let accepted: { revision: number; section?: VisualSectionData; styles?: StyleDocument };
+      try {
+        if (domain === "content") {
+          const answer = await saveVisualSectionDraft(form);
+          if (!answer.ok) {
+            if (answer.reason === "conflict") refuse(answer.message, answer.section);
+            else fail(answer.message);
+            return;
+          }
+          accepted = { revision: answer.section.revision, section: answer.section };
+        } else {
+          const answer = await saveVisualSectionStyles(form);
+          if (!answer.ok) {
+            if (answer.reason === "conflict") refuse(answer.message, answer.section);
+            else fail(answer.message);
+            return;
+          }
+          accepted = { revision: answer.revision, styles: answer.styles };
+        }
+      } catch {
+        fail("The save could not be sent. Try again.");
+        return;
+      }
+
+      setBuffers((prev) => {
+        const live = prev[activeId];
+        if (!live) return prev;
+        /**
+         * Somebody who kept editing while the save was in flight keeps their
+         * newer work — adopting the server's copy would delete the last thing
+         * they did. The revision moves either way, so the next save is guarded
+         * against the one that just landed rather than the one before.
+         */
+        const movedOn = canonical(domain === "content" ? live.values : live.styles) !== sent;
+
+        // The revision belongs to the row, so both domains adopt it. The other
+        // domain's stored document and its unsaved edits are left alone.
+        const data: VisualSectionData =
+          accepted.section
+            ? { ...accepted.section, styles: live.data.styles, hasStyleDraft: live.data.hasStyleDraft }
+            : {
+                ...live.data,
+                revision: accepted.revision,
+                styles: accepted.styles ?? live.data.styles,
+                hasStyleDraft: true,
+              };
+
+        const domainState =
+          domain === "content"
+            ? { values: movedOn ? live.values : data.values, contentDirty: movedOn }
+            : { styles: movedOn ? live.styles : data.styles, styleDirty: movedOn };
+
         return {
           ...prev,
-          [activeId]: { ...live, status: "error", message: "The save could not be sent. Try again." },
+          [activeId]: {
+            ...live,
+            data,
+            ...domainState,
+            saving: null,
+            status: movedOn ? ("idle" as const) : ("saved" as const),
+            statusDomain: domain,
+            message: undefined,
+          },
         };
       });
-      return;
-    }
 
-    if (!result.ok) {
-      setBuffers((prev) => {
-        const live = prev[activeId];
-        if (!live) return prev;
-        return result.reason === "conflict"
-          ? { ...prev, [activeId]: { ...live, status: "conflict", message: result.message, latest: result.section } }
-          : { ...prev, [activeId]: { ...live, status: "error", message: result.message } };
-      });
-      return;
-    }
-
-    const saved = result.section;
-    setBuffers((prev) => {
-      const live = prev[activeId];
-      if (!live) return prev;
-      /**
-       * Somebody who kept typing while the save was in flight keeps their
-       * newer text — adopting the server's copy would delete the last few
-       * words they wrote. The revision moves either way, so the next save is
-       * guarded against the one that just landed rather than the one before.
-       */
-      const movedOn = JSON.stringify(live.values) !== sent;
-      return {
-        ...prev,
-        [activeId]: {
-          data: saved,
-          values: movedOn ? live.values : saved.values,
-          dirty: movedOn,
-          status: movedOn ? "idle" : "saved",
-        },
-      };
-    });
-
-    // The canvas is a rendering of the draft, so it is stale the moment the
-    // draft changes. Reload it, and put the selection back where it was.
-    if (address) restoreTo.current = { address, fallback: `section:${activeId}` };
-    freshCanvas();
-    setRestoreToken((n) => n + 1);
-  }, [activeId, buffers, canManage, csrf]);
+      // The canvas is a rendering of the drafts, so it is stale the moment
+      // either changes. Reload it, and put the selection back where it was.
+      if (address) restoreTo.current = { address, fallback: `section:${activeId}` };
+      freshCanvas();
+      setRestoreToken((n) => n + 1);
+    },
+    [activeId, buffers, canManage, csrf],
+  );
 
   /**
    * Puts the selection back after the canvas has reloaded.
@@ -594,16 +736,19 @@ export function VisualEditorShell({
           </p>
         </section>
 
-        <ContentInspector
+        <InspectorPanel
           node={selected}
           sections={sections}
           locale={locale}
           media={media}
           canManage={canManage}
           buffer={buffer}
+          tab={tab}
+          onTab={setTab}
           loading={loadingId !== null && loadingId === activeId}
           loadError={loadError}
           onValues={onValues}
+          onStyles={onStyles}
           onSave={save}
           onRevert={revert}
           onTakeLatest={takeLatest}

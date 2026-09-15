@@ -1,16 +1,16 @@
 import { MediaImage } from "@/components/site/media-image";
 import { mediaId, text } from "@/lib/cms/values";
-import { editorNode } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function PageHeroBlock({ values, ctx, index, editor }: BlockProps) {
+export function PageHeroBlock({ values, ctx, index, editor, styles }: BlockProps) {
   const { locale } = ctx;
   const eyebrow = text(values, "eyebrow", locale);
   const title = text(values, "title", locale);
   const lead = text(values, "lead", locale);
   const background = ctx.media.get(mediaId(values, "backgroundImage") ?? -1) ?? null;
   const Heading = index === 0 ? "h1" : "h2";
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section

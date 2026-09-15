@@ -5,6 +5,7 @@ import { asc, eq } from "drizzle-orm";
 import { AdminPageHeader } from "@/components/admin/page-header";
 import { requirePermission } from "@/lib/auth/guard";
 import { getBlock } from "@/lib/cms/blocks";
+import { draftKindOf } from "@/lib/cms/drafts";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
 import { media, pageSections, pages } from "@/lib/db/schema";
@@ -75,7 +76,7 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
           section={{
             id: row.section.id,
             animation: row.section.animation,
-            hasDraft: Boolean(row.section.draft),
+            draftKind: draftKindOf(row.section),
             values,
             revision: row.section.revision,
           }}

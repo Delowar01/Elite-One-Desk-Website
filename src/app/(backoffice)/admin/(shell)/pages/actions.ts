@@ -17,6 +17,7 @@ import {
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
+import { validateStyleDocument } from "@/lib/cms/styles";
 import { emptyValues } from "@/lib/cms/values";
 import { parseBlockPayload } from "@/lib/cms/validate";
 import { db } from "@/lib/db";
@@ -203,6 +204,43 @@ export async function deletePage(_prev: ActionState, form: FormData): Promise<Ac
 /* Sections                                                                   */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Whether a section has anything unpublished, in either domain.
+ *
+ * A style draft is a draft. Testing `draft` alone was right while content was
+ * the only thing that could be unpublished, and became wrong the moment the
+ * Visual Editor could save a layout — a section whose only pending change is a
+ * colour would have shown as published everywhere and been unpublishable.
+ */
+const hasAnyDraft = (row: { draft: unknown; draftStyles: unknown }): boolean =>
+  row.draft !== null || row.draftStyles !== null;
+
+/**
+ * What publishing a section's saved drafts writes.
+ *
+ * One object, so content and style are promoted in the same guarded update
+ * rather than in two writes with a window between them. Each domain is promoted
+ * only if it has something pending: publishing a style-only draft must not
+ * blank the published content, and — the one that would be a visible accident —
+ * must not set `isPublished`. A hidden section stays hidden; its visibility is
+ * a separate decision somebody made, not a side effect of tidying its layout.
+ */
+function promotion(row: typeof pageSections.$inferSelect): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  if (row.draft !== null) {
+    values.published = row.draft;
+    values.draft = null;
+    values.isPublished = true;
+  }
+  if (row.draftStyles !== null) {
+    // Validated on the way out as well: the column may predate a vocabulary
+    // change, and `styles` is read by the public renderer.
+    values.styles = validateStyleDocument(row.draftStyles);
+    values.draftStyles = null;
+  }
+  return values;
+}
+
 async function pageOf(sectionId: number) {
   const [row] = await db
     .select({ slug: pages.slug, pageId: pages.id })
@@ -365,12 +403,10 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
     // below still decides whether the write happens — this only decides which
     // sentence an editor reads.
     if (section.revision !== expected) return fail(CONFLICT.publish);
-    if (!section.draft) return fail("There is no draft to publish.");
+    if (!hasAnyDraft(section)) return fail("There is no draft to publish.");
 
     const result = await updateSectionGuarded(id, expected, {
-      published: section.draft,
-      draft: null,
-      isPublished: true,
+      ...promotion(section),
       updatedBy: session.user.id,
     });
     if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.publish);
@@ -408,6 +444,7 @@ export async function discardDraft(_prev: ActionState, form: FormData): Promise<
 
     const result = await updateSectionGuarded(id, expected, {
       draft: null,
+      draftStyles: null,
       updatedBy: session.user.id,
     });
     if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.discard);
@@ -434,7 +471,12 @@ export async function publishAllDrafts(_prev: ActionState, form: FormData): Prom
     const drafts = await db
       .select()
       .from(pageSections)
-      .where(and(eq(pageSections.pageId, pageId), sql`${pageSections.draft} is not null`));
+      .where(
+        and(
+          eq(pageSections.pageId, pageId),
+          sql`(${pageSections.draft} is not null or ${pageSections.draftStyles} is not null)`,
+        ),
+      );
     if (!drafts.length) return fail("There are no drafts waiting on this page.");
 
     // All or nothing. Each section is published only against the revision this
@@ -445,9 +487,7 @@ export async function publishAllDrafts(_prev: ActionState, form: FormData): Prom
       await db.transaction(async (tx) => {
         for (const section of drafts) {
           const result = await updateSectionGuardedIn(tx, section.id, section.revision, {
-            published: section.draft!,
-            draft: null,
-            isPublished: true,
+            ...promotion(section),
             updatedBy: session.user.id,
           });
           if (!result.ok) throw new PublishRace(result.reason);

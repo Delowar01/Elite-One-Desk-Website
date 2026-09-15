@@ -3,17 +3,18 @@ import { SectionHeading } from "@/components/site/section-heading";
 import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, text } from "@/lib/cms/values";
-import { editorNode, itemFieldPath, itemPath } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
+import { itemFieldPath, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 const ICONS = ["users", "layers", "route", "landmark", "briefcase", "shield", "globe", "desk"];
 
-export function WhyUsBlock({ values, ctx, editor }: BlockProps) {
+export function WhyUsBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("why-us")!;
   const fields = def.fields.find((f) => f.name === "points")!.itemFields ?? [];
   const points = items(values, "points", locale, fields);
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
   if (!points.length) return null;
 
   return (

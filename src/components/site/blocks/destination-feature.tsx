@@ -6,7 +6,8 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { editorNode, itemFieldPath, itemPath } from "@/lib/visual-editor/render";
+import { blockNode, withNodeStyle } from "@/lib/cms/node";
+import { itemFieldPath, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -16,7 +17,7 @@ import type { BlockProps } from "./context";
  * and reads no region — so generalising it away from Egypt was a rename, not a
  * rewrite, and the copy an editor already wrote stays exactly as they wrote it.
  */
-export function DestinationFeatureBlock({ values, ctx, editor }: BlockProps) {
+export function DestinationFeatureBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("destination-feature")!;
   const fields = def.fields.find((f) => f.name === "destinations")!.itemFields ?? [];
@@ -27,7 +28,8 @@ export function DestinationFeatureBlock({ values, ctx, editor }: BlockProps) {
   const primaryLabel = text(values, "primaryCtaLabel", locale);
   const secondaryHref = str(values, "secondaryCtaHref", "/contact");
   const secondaryLabel = text(values, "secondaryCtaLabel", locale);
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
+  const eyebrowNode = node("field:eyebrow");
 
   return (
     <section data-tone="light" className="section relative overflow-clip">
@@ -37,7 +39,13 @@ export function DestinationFeatureBlock({ values, ctx, editor }: BlockProps) {
         }`}
       >
         <div>
-          <p className="eyebrow" style={{ color: "var(--color-orange)" }} {...node("field:eyebrow")}>
+          {/* Composed rather than spread: this element paints its own colour, and
+              an override must win over it without erasing it when there is none. */}
+          <p
+            className="eyebrow"
+            {...eyebrowNode}
+            style={withNodeStyle({ color: "var(--color-orange)" }, eyebrowNode)}
+          >
             {text(values, "eyebrow", locale)}
           </p>
           <h2 className="mt-4 text-[length:var(--text-h2)]" {...node("field:title")}>

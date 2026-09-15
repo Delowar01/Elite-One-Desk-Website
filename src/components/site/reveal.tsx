@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, type ElementType, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ElementType, type ReactNode } from "react";
+
+import type { NodeAttrs } from "@/lib/cms/node";
 
 type Props = {
   children: ReactNode;
@@ -12,16 +14,21 @@ type Props = {
   /** Staggers direct children instead of moving the wrapper itself. */
   stagger?: number;
   /**
-   * Plain data attributes to put on the element this renders.
+   * What one stable node contributes to the element this renders: its `data-*`
+   * marks in editor mode, and its style overrides always.
    *
    * The Visual Editor marks a repeatable row by wrapping it, and a great many
    * rows on this site are wrapped by a `Reveal` already. Adding a second
-   * element around each one purely to hold two attributes would change the
-   * layout of eleven blocks; passing them through does not. Strings only, and
-   * only ever `data-*` — this is a client component, and a prop it is given
-   * crosses the serialisation boundary.
+   * element around each one purely to hold the attributes would change the
+   * layout of eleven blocks; passing them through does not — and it keeps the
+   * row's style on the same element the editor selects.
+   *
+   * The style is merged rather than spread, because this component sets a
+   * custom property of its own on the same element and a spread would drop it.
+   * Plain data either way: this is a client component and the prop crosses the
+   * serialisation boundary.
    */
-  nodeAttrs?: Record<string, string | undefined>;
+  nodeAttrs?: NodeAttrs;
 };
 
 const VARIANT_CLASS: Record<string, string> = {
@@ -75,10 +82,14 @@ export function Reveal({
   }, [variant]);
 
   const classes = [VARIANT_CLASS[variant] ?? "reveal", className].filter(Boolean).join(" ");
-  const style: React.CSSProperties & Record<string, string | number> = {
+  const { style: nodeStyle, ...marks } = nodeAttrs ?? {};
+  const style: CSSProperties & Record<string, string | number> = {
     ["--reveal-delay"]: `${delay}ms`,
   };
   if (stagger) style[["--reveal-stagger"] as unknown as string] = `${stagger}ms`;
+  // The override wins over the reveal's own properties, which is what an
+  // override is — and the reveal delay survives because it is not one of them.
+  Object.assign(style, nodeStyle);
 
   return (
     <Tag
@@ -86,7 +97,7 @@ export function Reveal({
       className={classes}
       data-shown={shown ? "true" : "false"}
       style={style}
-      {...nodeAttrs}
+      {...marks}
     >
       {children}
     </Tag>

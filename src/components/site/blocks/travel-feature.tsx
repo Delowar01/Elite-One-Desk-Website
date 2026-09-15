@@ -7,7 +7,8 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { editorNode, itemPath } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
+import { itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -15,7 +16,7 @@ import type { BlockProps } from "./context";
  * wall of colourful destination cards — §49 rules out the ThemeForest travel
  * look, and the corporate ground has to survive the travel content.
  */
-export function TravelFeatureBlock({ values, ctx, editor }: BlockProps) {
+export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("travel-feature")!;
   const fields = def.fields.find((f) => f.name === "capabilities")!.itemFields ?? [];
@@ -23,7 +24,7 @@ export function TravelFeatureBlock({ values, ctx, editor }: BlockProps) {
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const ctaHref = str(values, "ctaHref", "/services/travel-tourism");
   const ctaLabel = text(values, "ctaLabel", locale);
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section className="section relative">

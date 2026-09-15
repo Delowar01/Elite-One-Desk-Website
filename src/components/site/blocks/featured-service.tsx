@@ -6,7 +6,8 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { editorNode, itemPath } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
+import { itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -14,7 +15,7 @@ import type { BlockProps } from "./context";
  * from the rest — an inset panel on its own ground, so it reads as a priority
  * rather than another row in the list.
  */
-export function FeaturedServiceBlock({ values, ctx, editor }: BlockProps) {
+export function FeaturedServiceBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("featured-service")!;
   const pointFields = def.fields.find((f) => f.name === "points")!.itemFields ?? [];
@@ -22,7 +23,7 @@ export function FeaturedServiceBlock({ values, ctx, editor }: BlockProps) {
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const ctaHref = str(values, "ctaHref", "/contact");
   const ctaLabel = text(values, "ctaLabel", locale);
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section className="section-tight">

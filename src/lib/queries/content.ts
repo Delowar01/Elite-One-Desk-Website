@@ -6,6 +6,7 @@ import { and, asc, eq } from "drizzle-orm";
 
 import { TAGS } from "@/lib/cache";
 import { composePreview, composePublished, type CompositionRow } from "@/lib/cms/composition";
+import type { StyleDocument } from "@/lib/cms/styles";
 import { readDraftStructure } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
 import { pageSections, pages, seoMetadata } from "@/lib/db/schema";
@@ -15,8 +16,13 @@ export type RenderedSection = {
   blockType: string;
   animation: string;
   values: Record<string, unknown>;
+  /** Validated visual overrides — published ones, or the draft in preview. */
+  styles: StyleDocument;
   /** True when this section is showing unpublished edits (preview only). */
   isDraft: boolean;
+  /** Which domain those edits are in. Preview only; false on the live page. */
+  hasContentDraft: boolean;
+  hasStyleDraft: boolean;
   /** True when the row exists only because of a pending structural draft. */
   isDraftOnly: boolean;
   /** The visibility this section would have once published. */
@@ -71,6 +77,8 @@ async function loadPage(slug: string, preview: boolean): Promise<RenderedPage | 
     animation: row.animation,
     published: row.published,
     draft: row.draft,
+    styles: row.styles,
+    draftStyles: row.draftStyles,
     isPublished: row.isPublished,
     isDraftOnly: row.isDraftOnly,
   }));

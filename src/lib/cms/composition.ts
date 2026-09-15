@@ -1,3 +1,4 @@
+import { validateStyleDocument, type StyleDocument } from "./styles";
 import { type DraftStructure } from "./structure";
 
 /**
@@ -7,7 +8,8 @@ import { type DraftStructure } from "./structure";
  * "preview" means:
  *
  *   **Published** — what a visitor gets. Established, visible sections in their
- *   stored `position` order, reading published values. Nothing draft, ever.
+ *   stored `position` order, reading published values and published styles.
+ *   Nothing draft, ever, in either domain.
  *
  *   **Preview** — what an authorised editor gets. Drafts win over published
  *   values, hidden sections are included so the editor can see what they are
@@ -28,6 +30,18 @@ export type CompositionRow = {
   animation: string;
   published: Record<string, unknown> | null;
   draft: Record<string, unknown> | null;
+  /** Published visual overrides. */
+  styles: Record<string, unknown> | null;
+  /**
+   * Pending visual overrides, or `null` for none.
+   *
+   * `null` and an empty document are different answers and the difference is
+   * load-bearing: `null` means "no style draft, show what is published", while
+   * `{ v: 1, nodes: {} }` means "publishing this removes every override". A
+   * draft that resets a section back to the design would be indistinguishable
+   * from no draft at all if emptiness were the test.
+   */
+  draftStyles: Record<string, unknown> | null;
   isPublished: boolean;
   isDraftOnly: boolean;
 };
@@ -37,7 +51,19 @@ export type ComposedSection = {
   blockType: string;
   animation: string;
   values: Record<string, unknown>;
+  /**
+   * The overrides this render should apply, already validated. Never the raw
+   * column: a document is rebuilt key by key on the way out as well as on the
+   * way in, so a row written by an older build — or by hand — cannot put
+   * anything into a style property.
+   */
+  styles: StyleDocument;
+  /** Either domain has something unpublished. */
   isDraft: boolean;
+  /** …and which, because the two are published and discarded together but
+   * edited in different places and worth naming separately. */
+  hasContentDraft: boolean;
+  hasStyleDraft: boolean;
   /**
    * Whether this row exists only because of a pending structural draft. Not
    * rendered differently — it is here so the editor's Layers panel can say
@@ -59,20 +85,32 @@ const published = (row: CompositionRow): ComposedSection => ({
   blockType: row.blockType,
   animation: row.animation,
   values: row.published ?? {},
+  styles: validateStyleDocument(row.styles),
   isDraft: false,
+  hasContentDraft: false,
+  hasStyleDraft: false,
   isDraftOnly: false,
   visible: true,
 });
 
-const editing = (row: CompositionRow, visible = row.isPublished): ComposedSection => ({
-  id: row.id,
-  blockType: row.blockType,
-  animation: row.animation,
-  values: (row.draft ?? row.published) ?? {},
-  isDraft: Boolean(row.draft),
-  isDraftOnly: row.isDraftOnly,
-  visible,
-});
+const editing = (row: CompositionRow, visible = row.isPublished): ComposedSection => {
+  const hasContentDraft = row.draft !== null;
+  const hasStyleDraft = row.draftStyles !== null;
+  return {
+    id: row.id,
+    blockType: row.blockType,
+    animation: row.animation,
+    values: (row.draft ?? row.published) ?? {},
+    // The draft document wins whole, including when it is empty — that is what
+    // a reset looks like before it is published.
+    styles: validateStyleDocument(hasStyleDraft ? row.draftStyles : row.styles),
+    isDraft: hasContentDraft || hasStyleDraft,
+    hasContentDraft,
+    hasStyleDraft,
+    isDraftOnly: row.isDraftOnly,
+    visible,
+  };
+};
 
 /**
  * The live page. Visible, established sections only.

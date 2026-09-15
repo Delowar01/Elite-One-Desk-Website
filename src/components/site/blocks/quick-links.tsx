@@ -8,7 +8,8 @@ import { getBlock } from "@/lib/cms/blocks";
 import { itemMediaId, items, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
 import { imageForHref } from "@/lib/link-image";
-import { editorNode, itemFieldPath, itemPath } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
+import { itemFieldPath, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
 /**
@@ -26,13 +27,13 @@ import type { BlockProps } from "./context";
  * the homepage is the heaviest page on the site and this section is the last
  * place that should be adding observers to it.
  */
-export function QuickLinksBlock({ values, ctx, editor }: BlockProps) {
+export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale, media, catalog, packages, destinations } = ctx;
   const def = getBlock("quick-links")!;
   const fields = def.fields.find((f) => f.name === "links")!.itemFields ?? [];
   const links = items(values, "links", locale, fields);
   if (!links.length) return null;
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   const catalogue = { ...catalog, packages, destinations };
 

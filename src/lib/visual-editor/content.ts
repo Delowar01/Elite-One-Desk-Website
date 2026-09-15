@@ -1,4 +1,5 @@
 import { parseNodePath } from "@/lib/cms/address";
+import type { StyleDocument } from "@/lib/cms/styles";
 
 /**
  * What the Visual Editor's content panel knows about one section.
@@ -19,7 +20,19 @@ export type VisualSectionData = {
   pageId: number;
   blockType: string;
   revision: number;
+  /** A content draft is on file. */
   hasDraft: boolean;
+  /**
+   * A style draft is on file — `draft_styles IS NOT NULL`, never "the document
+   * has nodes".
+   *
+   * The two are different answers. An empty style draft is a real draft that
+   * says "publishing me removes every override"; a null column says "there is
+   * nothing pending, show what is published". Testing emptiness would make a
+   * reset indistinguishable from never having edited, and publishing it would
+   * silently keep the overrides the editor just cleared.
+   */
+  hasStyleDraft: boolean;
   isDraftOnly: boolean;
   /**
    * Draft values if there are any, otherwise the published ones — completed
@@ -27,6 +40,8 @@ export type VisualSectionData = {
    * uses, so what the panel shows is exactly what a save of it would store.
    */
   values: Record<string, unknown>;
+  /** The style draft if there is one, otherwise the published document. */
+  styles: StyleDocument;
 };
 
 /**
@@ -54,6 +69,19 @@ export type VisualSectionLoad =
  */
 export type VisualContentSaveResult =
   | { ok: true; section: VisualSectionData }
+  | { ok: false; reason: "conflict"; message: string; section: VisualSectionData }
+  | { ok: false; reason: VisualLoadFailure | "invalid"; message: string };
+
+/**
+ * The answer to a style-draft save.
+ *
+ * Narrower than the content result on purpose: a style save owns `draft_styles`
+ * and the revision, and says nothing about content. Handing back a whole
+ * section document would invite the panel to adopt values it did not write,
+ * over the top of edits somebody has not saved yet.
+ */
+export type VisualStyleSaveResult =
+  | { ok: true; revision: number; styles: StyleDocument }
   | { ok: false; reason: "conflict"; message: string; section: VisualSectionData }
   | { ok: false; reason: VisualLoadFailure | "invalid"; message: string };
 

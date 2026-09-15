@@ -1,15 +1,15 @@
 import { Reveal } from "@/components/site/reveal";
 import { text } from "@/lib/cms/values";
-import { editorNode } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function RichTextBlock({ values, ctx, editor }: BlockProps) {
+export function RichTextBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale } = ctx;
   const body = text(values, "body", locale);
   const title = text(values, "title", locale);
   const eyebrow = text(values, "eyebrow", locale);
   if (!body && !title) return null;
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
 
   return (
     <section className="section-tight">

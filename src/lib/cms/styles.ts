@@ -17,7 +17,10 @@
  * Motion is deliberately absent. It is a different domain with a different
  * owner — see `page_sections.animation`, and Batch 9.
  *
- * Nothing reads this document yet. It is validated, stored and dormant.
+ * The enumerations below are exported because the panel offers them: one list
+ * per token, read by the control that sets it and by the check that accepts it.
+ * Two lists would eventually disagree, and the way they would disagree is a
+ * control offering a value the validator silently drops.
  */
 import { normalizeNodePath } from "./address";
 
@@ -26,6 +29,36 @@ export const STYLE_DOCUMENT_VERSION = 1;
 /** Desktop is the base; the other two are sparse overrides on top of it. */
 export const BREAKPOINTS = ["base", "tablet", "mobile"] as const;
 export type Breakpoint = (typeof BREAKPOINTS)[number];
+
+/* -------------------------------------------------------------------------- */
+/* The closed vocabulary, once                                                */
+/* -------------------------------------------------------------------------- */
+
+export const ALIGNMENTS = ["start", "center", "end"] as const;
+export const FONT_SIZES = ["eyebrow", "small", "body", "lead", "h3", "h2", "h1", "display"] as const;
+export const FONT_WEIGHTS = [400, 500, 600, 700, 800] as const;
+export const TEXT_COLORS = ["strong", "body", "muted", "peach", "orange", "warm", "on-accent"] as const;
+export const BACKGROUNDS = [
+  "none",
+  "surface",
+  "surface-raised",
+  "ink-900",
+  "ink-800",
+  "ink-700",
+  "ink-600",
+] as const;
+export const RADII = ["none", "xs", "sm", "md", "lg", "xl", "full"] as const;
+export const BORDERS = ["none", "line", "line-strong", "accent"] as const;
+export const SHADOWS = ["none", "soft", "lift", "ring"] as const;
+export const MAX_WIDTHS = ["none", "prose", "site", "wide"] as const;
+
+/** Spacing is a step on this scale, never a length. Steps run 0…SPACING_STEPS. */
+export const SPACING_STEPS = 12;
+
+/** Opacity is bounded and snapped; the panel offers exactly these. */
+export const OPACITY_MIN = 0.2;
+export const OPACITY_MAX = 1;
+export const OPACITY_SNAP = 0.05;
 
 export type StyleTokens = {
   align?: "start" | "center" | "end";
@@ -100,21 +133,21 @@ const flag = (): Check => (raw) => (typeof raw === "boolean" ? raw : undefined);
  * this and it is cheaper to refuse the physical vocabulary than to mirror it.
  */
 const TOKENS: Record<keyof StyleTokens, Check> = {
-  align: oneOf(["start", "center", "end"]),
-  fontSize: oneOf(["eyebrow", "small", "body", "lead", "h3", "h2", "h1", "display"]),
-  fontWeight: oneOf([400, 500, 600, 700, 800]),
-  textColor: oneOf(["strong", "body", "muted", "peach", "orange", "warm", "on-accent"]),
-  background: oneOf(["none", "surface", "surface-raised", "ink-900", "ink-800", "ink-700", "ink-600"]),
-  padBlock: step(12),
-  padInline: step(12),
-  marginBlock: step(12),
-  marginInline: step(12),
-  gap: step(12),
-  radius: oneOf(["none", "xs", "sm", "md", "lg", "xl", "full"]),
-  border: oneOf(["none", "line", "line-strong", "accent"]),
-  shadow: oneOf(["none", "soft", "lift", "ring"]),
-  opacity: ratio(0.2, 1, 0.05),
-  maxWidth: oneOf(["none", "prose", "site", "wide"]),
+  align: oneOf(ALIGNMENTS),
+  fontSize: oneOf(FONT_SIZES),
+  fontWeight: oneOf(FONT_WEIGHTS),
+  textColor: oneOf(TEXT_COLORS),
+  background: oneOf(BACKGROUNDS),
+  padBlock: step(SPACING_STEPS),
+  padInline: step(SPACING_STEPS),
+  marginBlock: step(SPACING_STEPS),
+  marginInline: step(SPACING_STEPS),
+  gap: step(SPACING_STEPS),
+  radius: oneOf(RADII),
+  border: oneOf(BORDERS),
+  shadow: oneOf(SHADOWS),
+  opacity: ratio(OPACITY_MIN, OPACITY_MAX, OPACITY_SNAP),
+  maxWidth: oneOf(MAX_WIDTHS),
   objectX: percent(),
   objectY: percent(),
   hidden: flag(),
@@ -192,7 +225,9 @@ export const isEmptyStyleDocument = (doc: StyleDocument): boolean =>
  * mobile, each overriding only the keys it declares. Sparse all the way down,
  * so "reset this override" is a deleted key rather than a copied value.
  *
- * Exported for the batches that will render it; nothing calls it yet.
+ * Only `base` is written or read today — the panel edits it and the renderer
+ * asks for it. The other two branches are carried through every read and write
+ * untouched so that turning them on later finds the data where it was left.
  */
 export function resolveTokens(node: StyleNode | undefined, breakpoint: Breakpoint): StyleTokens {
   if (!node) return {};
