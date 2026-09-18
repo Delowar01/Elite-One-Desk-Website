@@ -6,7 +6,13 @@ import {
   type EditorNodeKind,
   type EditorRender,
 } from "@/lib/visual-editor/render";
-import { mediaNodeStyle, nodeStyle } from "./style-css";
+import {
+  mediaNodeStyle,
+  nodeStyle,
+  responsiveMediaStyle,
+  responsiveStyle,
+  type ResponsiveStyle,
+} from "./style-css";
 import type { StyleDocument } from "./styles";
 
 /**
@@ -29,7 +35,26 @@ import type { StyleDocument } from "./styles";
  *     the same `<h1 style=…>` an editor sees; they simply get no way to select
  *     it.
  */
-export type NodeAttrs = EditorAttrs & { style?: CSSProperties };
+/**
+ * What a node's responsive overrides look like in markup.
+ *
+ * Two attributes, whose *values* are lists of declaration names the stylesheet
+ * has fixed rules for. Deliberately outside the `data-eod-` namespace: that one
+ * means "editor plumbing" and is swept for on public pages, and these are part
+ * of the page a visitor gets.
+ */
+export type ResponsiveAttrs = { "data-rs-t"?: string; "data-rs-m"?: string };
+
+export type NodeAttrs = EditorAttrs & ResponsiveAttrs & { style?: CSSProperties };
+
+/** Base style and responsive variables are one style object on one element. */
+const withVars = (
+  base: CSSProperties | undefined,
+  responsive: ResponsiveStyle | undefined,
+): CSSProperties | undefined => {
+  if (!responsive || !Object.keys(responsive.vars).length) return base;
+  return { ...base, ...responsive.vars } as CSSProperties;
+};
 
 /** What a block needs to annotate and style its own nodes. */
 export type NodeSource = {
@@ -40,8 +65,12 @@ export type NodeSource = {
 
 export function blockNode(source: NodeSource) {
   return (path: string | undefined, kind: EditorNodeKind = "field"): NodeAttrs => {
-    const attrs: NodeAttrs = { ...editorNodeAttrs(source.editor ?? null, { path, kind }) };
-    const style = nodeStyle(source.styles, path);
+    const responsive = responsiveStyle(source.styles, path);
+    const attrs: NodeAttrs = {
+      ...editorNodeAttrs(source.editor ?? null, { path, kind }),
+      ...responsive?.attrs,
+    };
+    const style = withVars(nodeStyle(source.styles, path), responsive);
     if (style) attrs.style = style;
     return attrs;
   };
@@ -58,14 +87,31 @@ export function blockNode(source: NodeSource) {
  * `{...spread}` that silently put the image's style on the frame is exactly the
  * bug this exists to close.
  */
-export type MediaNode = { box: NodeAttrs; image?: CSSProperties };
+/**
+ * The picture's half: everything `<MediaImage>` needs, spread onto it in one
+ * go so a block cannot pass the style and forget the breakpoints.
+ */
+export type MediaImagePart = ResponsiveAttrs & { style?: CSSProperties };
+
+export type MediaNode = { box: NodeAttrs; image: MediaImagePart };
 
 export function mediaNode(source: NodeSource) {
   return (path: string | undefined): MediaNode => {
     const { box, image } = mediaNodeStyle(source.styles, path);
-    const attrs: NodeAttrs = { ...editorNodeAttrs(source.editor ?? null, { path, kind: "field" }) };
-    if (box) attrs.style = box;
-    return { box: attrs, image };
+    const responsive = responsiveMediaStyle(source.styles, path);
+
+    const attrs: NodeAttrs = {
+      ...editorNodeAttrs(source.editor ?? null, { path, kind: "field" }),
+      ...responsive.box?.attrs,
+    };
+    const boxStyle = withVars(box, responsive.box);
+    if (boxStyle) attrs.style = boxStyle;
+
+    const picture: MediaImagePart = { ...responsive.image?.attrs };
+    const imageStyle = withVars(image, responsive.image);
+    if (imageStyle) picture.style = imageStyle;
+
+    return { box: attrs, image: picture };
   };
 }
 

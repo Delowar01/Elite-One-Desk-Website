@@ -1224,3 +1224,91 @@
     font-weight: 600;
   }
 }
+
+/* ==========================================================================
+   Visual Editor — responsive style overrides
+   ==========================================================================
+
+   The whole of the responsive rendering mechanism. Every selector, every
+   property, every media condition and every variable name below is written
+   here, in source. A style document contributes two things and nothing else:
+   a value that came out of the token tables, parked in the custom property
+   this file reads, and the name of a declaration it is allowed to override,
+   listed in `data-rs-t` / `data-rs-m`. It never names a selector, a property,
+   a width or a variable.
+
+   **Why `!important`.** A node's base style is an inline style attribute, and
+   an inline declaration outranks every stylesheet rule that is not important.
+   A tablet override that could not beat the base it overrides would be a
+   control that does nothing. The alternative — moving base out of the style
+   attribute — would change how every style shipped before this batch renders,
+   which is a worse trade for the same result. The importance is contained:
+   each rule matches only an element that carries our own attribute naming that
+   exact declaration, and sets only that declaration, from our own variable.
+   An element nobody has overridden matches nothing here.
+
+   **Inheritance is the cascade.** Base applies everywhere. Tablet applies at
+   1024px and below. Mobile is written *after* tablet and applies at 640px and
+   below, so at 390px a tablet override still holds unless mobile overrides the
+   same declaration — `base → tablet → mobile`, decided by the browser rather
+   than by a resolver on the server that could disagree with it.
+
+   **`screen` on purpose.** A printed page is narrow enough to match
+   `max-width: 1024px`, so an unscoped query would hide on paper whatever an
+   editor had hidden on tablets. Print gets the base design; only a base
+   `hidden` — which is an inline `display: none` — hides there too.
+
+   1024 and 640 are `RESPONSIVE_WIDTHS` in `src/lib/cms/styles.ts`. A
+   stylesheet cannot import a constant, so these two literals are checked back
+   against it by a test rather than trusted.
+   ========================================================================== */
+
+@media screen and (max-width: 1024px) {
+  [data-rs-t~="text-align"] { text-align: var(--rs-t-text-align) !important; }
+  [data-rs-t~="font-size"] { font-size: var(--rs-t-font-size) !important; }
+  [data-rs-t~="line-height"] { line-height: var(--rs-t-line-height) !important; }
+  [data-rs-t~="letter-spacing"] { letter-spacing: var(--rs-t-letter-spacing) !important; }
+  [data-rs-t~="font-weight"] { font-weight: var(--rs-t-font-weight) !important; }
+  [data-rs-t~="color"] { color: var(--rs-t-color) !important; }
+  [data-rs-t~="background"] { background: var(--rs-t-background) !important; }
+  [data-rs-t~="padding-block"] { padding-block: var(--rs-t-padding-block) !important; }
+  [data-rs-t~="padding-inline"] { padding-inline: var(--rs-t-padding-inline) !important; }
+  [data-rs-t~="margin-block"] { margin-block: var(--rs-t-margin-block) !important; }
+  [data-rs-t~="margin-inline"] { margin-inline: var(--rs-t-margin-inline) !important; }
+  [data-rs-t~="gap"] { gap: var(--rs-t-gap) !important; }
+  [data-rs-t~="border-radius"] { border-radius: var(--rs-t-border-radius) !important; }
+  [data-rs-t~="border"] { border: var(--rs-t-border) !important; }
+  [data-rs-t~="box-shadow"] { box-shadow: var(--rs-t-box-shadow) !important; }
+  [data-rs-t~="opacity"] { opacity: var(--rs-t-opacity) !important; }
+  [data-rs-t~="max-width"] { max-width: var(--rs-t-max-width) !important; }
+  [data-rs-t~="object-position"] { object-position: var(--rs-t-object-position) !important; }
+  [data-rs-t~="display"] { display: var(--rs-t-display) !important; }
+  /* A revealed element's opacity is its finished state, so it travels as the
+     property the reveal rules read rather than as `opacity` itself. */
+  [data-rs-t~="reveal-opacity"] { --eod-node-opacity: var(--rs-t-opacity) !important; }
+}
+
+@media screen and (max-width: 640px) {
+  [data-rs-m~="text-align"] { text-align: var(--rs-m-text-align) !important; }
+  [data-rs-m~="font-size"] { font-size: var(--rs-m-font-size) !important; }
+  [data-rs-m~="line-height"] { line-height: var(--rs-m-line-height) !important; }
+  [data-rs-m~="letter-spacing"] { letter-spacing: var(--rs-m-letter-spacing) !important; }
+  [data-rs-m~="font-weight"] { font-weight: var(--rs-m-font-weight) !important; }
+  [data-rs-m~="color"] { color: var(--rs-m-color) !important; }
+  [data-rs-m~="background"] { background: var(--rs-m-background) !important; }
+  [data-rs-m~="padding-block"] { padding-block: var(--rs-m-padding-block) !important; }
+  [data-rs-m~="padding-inline"] { padding-inline: var(--rs-m-padding-inline) !important; }
+  [data-rs-m~="margin-block"] { margin-block: var(--rs-m-margin-block) !important; }
+  [data-rs-m~="margin-inline"] { margin-inline: var(--rs-m-margin-inline) !important; }
+  [data-rs-m~="gap"] { gap: var(--rs-m-gap) !important; }
+  [data-rs-m~="border-radius"] { border-radius: var(--rs-m-border-radius) !important; }
+  [data-rs-m~="border"] { border: var(--rs-m-border) !important; }
+  [data-rs-m~="box-shadow"] { box-shadow: var(--rs-m-box-shadow) !important; }
+  [data-rs-m~="opacity"] { opacity: var(--rs-m-opacity) !important; }
+  [data-rs-m~="max-width"] { max-width: var(--rs-m-max-width) !important; }
+  [data-rs-m~="object-position"] { object-position: var(--rs-m-object-position) !important; }
+  [data-rs-m~="display"] { display: var(--rs-m-display) !important; }
+  /* A revealed element's opacity is its finished state, so it travels as the
+     property the reveal rules read rather than as `opacity` itself. */
+  [data-rs-m~="reveal-opacity"] { --eod-node-opacity: var(--rs-m-opacity) !important; }
+}

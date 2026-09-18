@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState, type CSSProperties, type ElementType, type ReactNode } from "react";
 
-import type { NodeAttrs } from "@/lib/cms/node";
+import type { NodeAttrs, ResponsiveAttrs } from "@/lib/cms/node";
+import { REVEAL_OPACITY_PROPERTY, RESPONSIVE_ATTR } from "@/lib/cms/style-css";
 
 type Props = {
   children: ReactNode;
@@ -45,6 +46,41 @@ const VARIANT_CLASS: Record<string, string> = {
  * name in source, never a value from the database.
  */
 export const FINAL_OPACITY = "--eod-node-opacity";
+
+/**
+ * The node's own attributes, with any responsive opacity renamed.
+ *
+ * The same rule as the base opacity below, at the other two widths. A tablet
+ * or mobile `opacity` is still a *finished* state, so the stylesheet has to put
+ * it in `--eod-node-opacity` rather than in `opacity` — and the way it knows
+ * which of the two rules to apply is the name in the list this element
+ * publishes. Base is rewritten in the style object; the breakpoints are
+ * rewritten here, in the attribute. One decision, made by the component that
+ * knows it is a reveal, in the two places it has to land.
+ *
+ * With `variant="none"` there is no reveal class and nothing is renamed: the
+ * element takes the ordinary `opacity` rule, at every width.
+ */
+const renameOpacity = (list: string | undefined): string | undefined =>
+  list === undefined
+    ? undefined
+    : list
+        .split(" ")
+        .map((name) => (name === "opacity" ? REVEAL_OPACITY_PROPERTY : name))
+        .join(" ");
+
+export function revealMarks<T extends ResponsiveAttrs>(revealClass: string, marks: T): T {
+  if (!revealClass) return marks;
+  const next = { ...marks };
+  let changed = false;
+  for (const attribute of Object.values(RESPONSIVE_ATTR) as (keyof ResponsiveAttrs)[]) {
+    const renamed = renameOpacity(marks[attribute]);
+    if (renamed === marks[attribute]) continue;
+    next[attribute] = renamed;
+    changed = true;
+  }
+  return changed ? next : marks;
+}
 
 /**
  * One element's style: the reveal's own properties, then a node's overrides.
@@ -138,8 +174,9 @@ export function Reveal({
 
   const revealClass = VARIANT_CLASS[variant] ?? "reveal";
   const classes = [revealClass, className].filter(Boolean).join(" ");
-  const { style: nodeStyle, ...marks } = nodeAttrs ?? {};
+  const { style: nodeStyle, ...rest } = nodeAttrs ?? {};
   const style = revealStyle({ delay, stagger, revealClass, node: nodeStyle });
+  const marks = revealMarks(revealClass, rest);
 
   return (
     <Tag

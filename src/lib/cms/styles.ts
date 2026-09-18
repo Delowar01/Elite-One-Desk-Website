@@ -30,6 +30,34 @@ export const STYLE_DOCUMENT_VERSION = 1;
 export const BREAKPOINTS = ["base", "tablet", "mobile"] as const;
 export type Breakpoint = (typeof BREAKPOINTS)[number];
 
+/** The two that are conditional. `base` is the absence of a condition. */
+export const RESPONSIVE_BREAKPOINTS = ["tablet", "mobile"] as const;
+export type ResponsiveBreakpoint = (typeof RESPONSIVE_BREAKPOINTS)[number];
+
+/**
+ * The widths the two override branches apply at, as `max-width` in pixels.
+ *
+ * Written once, here, and read by the renderer, the panel and the tests. The
+ * stylesheet cannot import a TypeScript constant, so `globals.css` repeats the
+ * two numbers literally — and a test reads the stylesheet back and fails if
+ * either one drifts from this table. That is the whole of the relationship:
+ * one owner, one checker, no third copy.
+ *
+ * These are **application** breakpoints, not the editor's canvas widths. The
+ * canvas renders at 1440 / 834 / 390 (`visual-editor/viewport.ts`) because
+ * those are the design widths; they sit inside these ranges rather than
+ * defining them, so what an editor sees at "Tablet" is what a visitor at any
+ * tablet width sees. Making 834 the breakpoint would mean a real 900px tablet
+ * got the desktop layout and nobody could see that in the editor.
+ *
+ * 1024 and 640 are the site's own `lg` and `sm` boundaries, so a responsive
+ * override changes at the same width the hand-written layout already does.
+ */
+export const RESPONSIVE_WIDTHS: Record<ResponsiveBreakpoint, number> = {
+  tablet: 1024,
+  mobile: 640,
+};
+
 /* -------------------------------------------------------------------------- */
 /* The closed vocabulary, once                                                */
 /* -------------------------------------------------------------------------- */
@@ -225,9 +253,17 @@ export const isEmptyStyleDocument = (doc: StyleDocument): boolean =>
  * mobile, each overriding only the keys it declares. Sparse all the way down,
  * so "reset this override" is a deleted key rather than a copied value.
  *
- * Only `base` is written or read today — the panel edits it and the renderer
- * asks for it. The other two branches are carried through every read and write
- * untouched so that turning them on later finds the data where it was left.
+ * Mobile inherits **through** tablet, not around it: a mobile view of a node
+ * whose tablet branch shrank the heading and whose base branch coloured it
+ * gets the small heading and the colour. That is why the third line spreads
+ * all three rather than base and mobile.
+ *
+ * The panel uses this to tell an editor what a value would be if they did not
+ * override it. The renderer does not: on a page the same answer comes out of
+ * the CSS cascade, because base is applied unconditionally and each branch is
+ * applied inside its own media query. Resolving at render time as well would
+ * be a second implementation of inheritance, and the two would disagree the
+ * first time one of them was changed.
  */
 export function resolveTokens(node: StyleNode | undefined, breakpoint: Breakpoint): StyleTokens {
   if (!node) return {};

@@ -1136,7 +1136,9 @@ describe("a picture's crop lands on the picture, not on the frame", () => {
       if (!source.includes("mediaNode(")) offenders.push(`${name}: renders a picture without mediaNode`);
       for (const call of source.split("<MediaImage").slice(1)) {
         const tag = call.slice(0, call.indexOf("/>"));
-        if (!/style=\{[a-zA-Z]+\.image\}/.test(tag)) offenders.push(`${name}: a picture takes no crop`);
+        // Spread, not one named prop: the crop and the breakpoints it applies
+        // at travel together, so a block cannot pass half of them.
+        if (!/\{\.\.\.[a-zA-Z]+\.image\}/.test(tag)) offenders.push(`${name}: a picture takes no crop`);
       }
     }
     assert.deepEqual(offenders, []);
@@ -1211,6 +1213,9 @@ const EXECUTES: Record<string, { value: unknown; on: "box" | "image"; css: (tag:
   maxWidth: { value: "prose", on: "box", css: () => /max-width:\s*65ch/ },
   objectX: { value: 20, on: "image", css: () => /object-position:\s*20%/ },
   objectY: { value: 80, on: "image", css: () => /object-position:[^;"]*80%/ },
+  // Hiding is the element's own display, so it is read from the box like any
+  // other surface token — and at base it is an ordinary inline declaration.
+  hidden: { value: true, on: "box", css: () => /display:\s*none/ },
   // The one token whose rendering depends on the element it lands on.
   opacity: {
     value: 0.55,
@@ -1309,7 +1314,6 @@ describe("every control the panel offers does something on the page", () => {
     // If a token is added without a line in the table above, these tests would
     // quietly stop covering it rather than fail.
     for (const token of Object.keys(STYLE_TOKEN_LABELS)) {
-      if (token === "hidden") continue;
       assert.ok(EXECUTES[token], `${token} is offered by the panel and unchecked here`);
     }
   });
@@ -1378,6 +1382,624 @@ describe("who may style", () => {
 
 /* -------------------------------------------------------------------------- */
 
+/** Every `--rs-…` custom property on one element, by name. */
+function varsOf(tag: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const part of styleOf(tag).split(";")) {
+    const at = part.indexOf(":");
+    if (at < 0) continue;
+    const name = part.slice(0, at).trim();
+    if (name.startsWith("--rs-")) out[name] = part.slice(at + 1).trim();
+  }
+  return out;
+}
+
+/** What a breakpoint's attribute lists on this element. */
+const listed = (tag: string | null, attribute: string): string[] => {
+  const value = new RegExp(`${attribute}="([^"]*)"`).exec(tag ?? "")?.[1];
+  return value ? value.split(" ") : [];
+};
+
+describe("a narrower width is a value and a name on the element, and a rule in the stylesheet", () => {
+  /**
+   * The architecture, asserted at the only place it is observable without a
+   * browser: the markup. Base stays the inline declaration it has always been;
+   * a tablet or mobile override adds a custom property holding the same mapped
+   * value and the name of the declaration it overrides. No media query, no
+   * selector and no property name ever comes out of the document — the widths
+   * live in `globals.css`, which the pure tests check against the constants.
+   */
+  test("a section root carries three different paddings as one base and two names", async () => {
+    const hero = await find("privacy", "page-hero");
+    answered(
+      await saveStyles(
+        hero,
+        doc({
+          root: { base: { padBlock: 6 }, tablet: { padBlock: 4 }, mobile: { padBlock: 2 } },
+        }),
+      ),
+    );
+
+    const tag = tagWith((await canvas("/privacy")).html, 'data-section="page-hero"');
+    assert.ok(tag, "the section root is not on the page");
+    assert.match(styleOf(tag), /padding-block:\s*2rem/, "base is no longer an inline declaration");
+    assert.deepEqual(listed(tag, "data-rs-t"), ["padding-block"]);
+    assert.deepEqual(listed(tag, "data-rs-m"), ["padding-block"]);
+    assert.deepEqual(varsOf(tag), {
+      "--rs-t-padding-block": "1rem",
+      "--rs-m-padding-block": "0.5rem",
+    });
+    // One element, one wrapper: the responsive layer adds nothing to the tree.
+    assert.equal(
+      (await canvas("/privacy")).html.split('data-section="page-hero"').length - 1,
+      1,
+      "the section wrapper was duplicated",
+    );
+  });
+
+  test("a type step is replaced whole at each width, tracking included", async () => {
+    const hero = await find("about", "page-hero");
+    answered(
+      await saveStyles(
+        hero,
+        doc({
+          "field:title": {
+            base: { fontSize: "h1" },
+            tablet: { fontSize: "h2" },
+            mobile: { fontSize: "small" },
+          },
+        }),
+      ),
+    );
+
+    const tag = tagWith(
+      (await canvas("/about")).html,
+      `data-eod-address="section:${hero.id}/field:title"`,
+    );
+    assert.ok(tag, "the title is not addressable");
+    const vars = varsOf(tag);
+    assert.match(styleOf(tag), /font-size:\s*var\(--text-h1\)/);
+
+    for (const breakpoint of ["t", "m"] as const) {
+      const names = listed(tag, `data-rs-${breakpoint}`);
+      for (const property of ["font-size", "line-height", "letter-spacing"]) {
+        assert.ok(names.includes(property), `${breakpoint}: ${property} was left behind`);
+      }
+    }
+    assert.equal(vars["--rs-t-font-size"], "var(--text-h2)");
+    // `small` has no tracking in the ramp, so the override says so explicitly
+    // rather than letting the display heading's tracking survive underneath it.
+    assert.equal(vars["--rs-m-letter-spacing"], "normal");
+  });
+
+  test("a node with no responsive branch renders exactly what Batch 6 rendered", async () => {
+    const hero = await find("terms", "page-hero");
+    answered(await saveStyles(hero, doc({ "field:title": { base: { textColor: "orange" } } })));
+    const tag = tagWith(
+      (await canvas("/terms")).html,
+      `data-eod-address="section:${hero.id}/field:title"`,
+    );
+    assert.ok(tag);
+    assert.match(styleOf(tag), /color:\s*var\(--color-orange\)/);
+    assert.ok(!tag.includes("data-rs-"), "a base-only node was given responsive markup");
+    assert.deepEqual(varsOf(tag), {});
+  });
+
+  test("an untouched page carries no responsive markup at all", async () => {
+    const live = await get(server.origin, "/contact");
+    assert.ok(!live.html.includes("data-rs-"), "responsive markup appeared without any override");
+    assert.ok(!live.html.includes("--rs-"), "a responsive variable appeared without any override");
+  });
+
+  test("the rules the markup names are really in the stylesheet the page loads", async () => {
+    const page = await get(server.origin, "/privacy");
+    const href = /<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/.exec(page.html)?.[1]
+      ?? /<link[^>]+href="([^"]+\.css)"/.exec(page.html)?.[1];
+    assert.ok(href, "the page loads no stylesheet");
+    const sheet = await get(server.origin, href);
+    assert.equal(sheet.status, 200);
+    // The build must not have dropped, renamed or re-layered them. The
+    // minifier drops the quotes around an attribute value, so the assertions
+    // allow for both spellings of the same selector.
+    assert.match(sheet.html, /screen and \(max-width:\s*1024px\)/);
+    assert.match(sheet.html, /screen and \(max-width:\s*640px\)/);
+    assert.match(sheet.html, /\[data-rs-t~="?padding-block"?\]\{padding-block:var\(--rs-t-padding-block\)!important/);
+    assert.match(sheet.html, /\[data-rs-m~="?display"?\]\{display:var\(--rs-m-display\)!important/);
+    assert.match(sheet.html, /--eod-node-opacity:\s*var\(--rs-m-opacity\)/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a responsive draft is a draft", () => {
+  test("the editor and the preview see it, a visitor does not, and publishing changes that", async () => {
+    const hero = await find("disclaimer", "page-hero");
+    const clean = await get(server.origin, "/disclaimer");
+    assert.ok(!clean.html.includes("data-rs-"), "the page started out responsive");
+
+    answered(
+      await saveStyles(hero, doc({ "field:title": { mobile: { fontSize: "h3", align: "center" } } })),
+    );
+
+    // The authorised canvas has it…
+    const canvasTag = tagWith(
+      (await canvas("/disclaimer")).html,
+      `data-eod-address="section:${hero.id}/field:title"`,
+    );
+    assert.match(canvasTag ?? "", /data-rs-m="[^"]*font-size/);
+
+    // …so does the ordinary preview screen, with no bridge and no addresses…
+    const preview = await get(server.origin, "/disclaimer?preview=1", { cookie: owner.cookie });
+    assert.ok(preview.html.includes("--rs-m-font-size"), "the preview screen lost the draft");
+    assert.ok(!preview.html.includes("bridgeId"), "the ordinary preview loaded the canvas bridge");
+    assert.ok(!/data-eod-/.test(preview.html), "the ordinary preview carried editor markup");
+
+    // …and a visitor has none of it.
+    const during = await get(server.origin, "/disclaimer");
+    assert.ok(!during.html.includes("data-rs-"), "a responsive draft reached a visitor");
+    assert.ok(!during.html.includes("--rs-m-"), "a responsive draft reached a visitor");
+
+    await publishDraft(hero.id);
+
+    const after = await get(server.origin, "/disclaimer");
+    assert.ok(after.html.includes('data-rs-m="'), "publishing did not make the override public");
+    assert.ok(after.html.includes("--rs-m-font-size"), "publishing did not make the value public");
+    assert.ok(!/data-eod-/.test(after.html), "editor markup reached a visitor");
+
+    const row = await sql<{ styles: StyleDocument; draft_styles: unknown }[]>`
+      select styles, draft_styles from page_sections where id = ${hero.id}`;
+    assert.equal(row[0]!.draft_styles, null);
+    assert.deepEqual(row[0]!.styles.nodes["field:title"]!.mobile, { fontSize: "h3", align: "center" });
+  });
+
+  test("only the width that was overridden changes; the others keep the design", async () => {
+    const section = await find("about", "rich-text");
+    answered(await saveStyles(section, doc({ "field:body": { mobile: { textColor: "orange" } } })));
+    const tag = tagWith(
+      (await canvas("/about")).html,
+      `data-eod-address="section:${section.id}/field:body"`,
+    );
+    assert.ok(tag);
+    // Nothing at desktop and nothing at tablet: no inline colour, no tablet
+    // attribute. A mobile-only override is a mobile-only override.
+    assert.ok(!/(^|;)\s*color:/.test(styleOf(tag)), "a mobile override coloured every width");
+    assert.deepEqual(listed(tag, "data-rs-t"), []);
+    assert.deepEqual(listed(tag, "data-rs-m"), ["color"]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("hiding is a style, and it runs downwards", () => {
+  test("a field hidden at mobile stays in the document and takes the display rule", async () => {
+    const hero = await find("privacy", "page-hero");
+    answered(await saveStyles(hero, doc({ "field:title": { mobile: { hidden: true } } })));
+
+    const html = (await canvas("/privacy")).html;
+    const tag = tagWith(html, `data-eod-address="section:${hero.id}/field:title"`);
+    // Still rendered, still addressable, still selectable — it is hidden at one
+    // width, not removed from the page. That is what makes it recoverable.
+    assert.ok(tag, "a hidden node was dropped from the document");
+    assert.deepEqual(listed(tag, "data-rs-m"), ["display"]);
+    assert.equal(varsOf(tag)["--rs-m-display"], "none");
+    assert.deepEqual(listed(tag, "data-rs-t"), [], "hiding at mobile hid it at tablet too");
+    // `--rs-m-display` is the value the rule reads; `display` itself is not set.
+    assert.ok(
+      !/(^|;)\s*display:\s*none/.test(styleOf(tag)),
+      "a mobile hide became an unconditional one",
+    );
+  });
+
+  test("hidden at base is an ordinary declaration, at every width", async () => {
+    const hero = await find("terms", "page-hero");
+    answered(await saveStyles(hero, doc({ "field:lead": { base: { hidden: true } } })));
+    const tag = tagWith(
+      (await canvas("/terms")).html,
+      `data-eod-address="section:${hero.id}/field:lead"`,
+    );
+    // The lead is still written into the page: hiding is how it looks, not
+    // whether the renderer produced it.
+    assert.ok(tag, "a hidden node was dropped from the document");
+    assert.match(styleOf(tag), /(^|;)\s*display:\s*none/);
+    assert.ok(!tag.includes("data-rs-"), "a base hide needed a breakpoint rule");
+  });
+
+  test("one row of a list hides without taking its neighbours with it", async () => {
+    const links = await find("home", "quick-links");
+    const loaded = answered(await loadSection(links.id, links.page_id));
+    assert.ok(loaded.ok);
+    const rows = loaded.section.values.links as Record<string, unknown>[];
+    const hidden = String(rows[2]![ITEM_ID_KEY]);
+    const neighbour = String(rows[3]![ITEM_ID_KEY]);
+
+    const styled = answered(
+      await saveStyles(links, doc({ [`field:links/item:${hidden}`]: { mobile: { hidden: true } } })),
+    );
+    assert.ok(styled.ok);
+
+    const html = (await canvas("/")).html;
+    const tag = tagWith(html, `data-eod-address="section:${links.id}/field:links/item:${hidden}"`);
+    assert.ok(tag, "the hidden row left the page");
+    assert.equal(varsOf(tag)["--rs-m-display"], "none");
+    const other = tagWith(html, `data-eod-address="section:${links.id}/field:links/item:${neighbour}"`);
+    assert.ok(other, "the neighbour left the page");
+    assert.ok(!other.includes("data-rs-"), "a neighbour was hidden too");
+
+    // The list is reordered underneath it: hiding follows the row's own id.
+    const reordered = [rows[2], ...rows.filter((_, index) => index !== 2)];
+    const content = answered(
+      await saveContent(
+        { ...links, revision: styled.revision },
+        { ...loaded.section.values, links: reordered },
+      ),
+    );
+    assert.equal(content.ok, true, JSON.stringify(content));
+
+    const moved = (await canvas("/")).html;
+    const stillHidden = tagWith(moved, `data-eod-address="section:${links.id}/field:links/item:${hidden}"`);
+    assert.equal(varsOf(stillHidden)["--rs-m-display"], "none", "hiding stayed at the old position");
+    const nowSecond = tagWith(moved, `data-eod-address="section:${links.id}/field:links/item:${neighbour}"`);
+    assert.ok(!nowSecond?.includes("data-rs-"), "a row inherited hiding by moving into a position");
+  });
+
+  test("a section hidden at mobile is still a published section", async () => {
+    const section = await find("about", "why-us");
+    const before = await row(section.id);
+    answered(await saveStyles(section, doc({ root: { mobile: { hidden: true } } })));
+    await publishDraft(section.id);
+
+    const after = await row(section.id);
+    // Responsive visibility is a style token. It is not the section's
+    // publication state and it is not the structural draft's visibility, and
+    // touching either of those from here would make a layout decision into a
+    // lifecycle one.
+    assert.equal(after.is_published, before.is_published, "hiding at a width unpublished a section");
+    assert.equal(after.is_draft_only, before.is_draft_only);
+    assert.equal(after.position, before.position);
+    assert.deepEqual(after.published, before.published);
+
+    const screen = await get(server.origin, "/admin/pages/about", { cookie: owner.cookie });
+    assert.ok(!/Reload the page/i.test(screen.html));
+    const live = await get(server.origin, "/about");
+    const tag = tagWith(live.html, 'data-section="why-us"');
+    assert.ok(tag, "the section stopped being served");
+    assert.equal(varsOf(tag)["--rs-m-display"], "none");
+  });
+
+  test("a hidden draft is invisible to a visitor until it is published", async () => {
+    const section = await find("contact", "faq");
+    answered(await saveStyles(section, doc({ root: { mobile: { hidden: true } } })));
+    const during = await get(server.origin, "/contact");
+    assert.ok(!during.html.includes("--rs-m-display"), "a hide reached a visitor as a draft");
+    await publishDraft(section.id);
+    const after = await get(server.origin, "/contact");
+    assert.equal(varsOf(tagWith(after.html, 'data-section="faq"'))["--rs-m-display"], "none");
+  });
+
+  test("clearing the override brings it back with nothing stored to say so", async () => {
+    const section = await find("contact", "faq");
+    const cleared = answered(await saveStyles(section, doc({})));
+    assert.ok(cleared.ok);
+    await publishDraft(section.id);
+    const after = await get(server.origin, "/contact");
+    const tag = tagWith(after.html, 'data-section="faq"');
+    assert.ok(tag, "the section disappeared");
+    assert.ok(!tag.includes("data-rs-"), "clearing a hide left markup behind");
+    const stored = (await row(section.id)).styles as StyleDocument;
+    assert.deepEqual(stored.nodes, {}, "`hidden: false` was stored to mean shown");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("the pieces Batch 6 built keep their shape at the other two widths", () => {
+  test("a picture's crop is the picture's at every width, and the frame keeps the shape", async () => {
+    const section = await find("about", "image-text");
+    const [picture] = await sql<{ id: number }[]>`select id from media order by id limit 1`;
+    const loaded = answered(await loadSection(section.id, section.page_id));
+    assert.ok(loaded.ok);
+    answered(await saveContent(section, { ...loaded.section.values, image: picture!.id }));
+
+    const withImage = await row(section.id);
+    answered(
+      await saveStyles(
+        withImage,
+        doc({
+          "field:image": {
+            base: { objectX: 50, objectY: 50, radius: "lg" },
+            tablet: { objectY: 30 },
+            mobile: { objectX: 20, objectY: 75, border: "accent" },
+          },
+        }),
+      ),
+    );
+
+    const html = (await canvas("/about")).html;
+    const frame = tagWith(html, `data-eod-address="section:${section.id}/field:image"`);
+    assert.ok(frame, "the picture is not addressable");
+    const img = tagInside(html, frame, "img");
+    assert.ok(img, "the frame holds no picture");
+
+    // The frame: shape at every width, and never a crop.
+    assert.match(styleOf(frame), /border-radius:\s*var\(--radius-lg\)/);
+    assert.deepEqual(listed(frame, "data-rs-m"), ["border"]);
+    assert.deepEqual(listed(frame, "data-rs-t"), []);
+    assert.ok(!/object-position/.test(styleOf(frame)), "a crop was parked on the frame");
+
+    // The picture: the crop at every width, and never the frame's shape.
+    assert.match(styleOf(img), /object-position:\s*50%\s*50%/);
+    assert.deepEqual(listed(img, "data-rs-t"), ["object-position"]);
+    assert.deepEqual(listed(img, "data-rs-m"), ["object-position"]);
+    const vars = varsOf(img);
+    // The tablet branch moved only the vertical axis, so the horizontal one it
+    // inherited comes with it rather than snapping back to centre.
+    assert.equal(vars["--rs-t-object-position"], "50% 30%");
+    assert.equal(vars["--rs-m-object-position"], "20% 75%");
+    assert.ok(!/border-radius/.test(styleOf(img)), "the frame's shape was copied onto the picture");
+    assert.ok(!img.includes("data-eod-"), "the picture took an address of its own");
+  });
+
+  test("a revealed row's opacity is renamed at every width, so the fade survives", async () => {
+    const travel = await find("home", "travel-feature");
+    const loaded = answered(await loadSection(travel.id, travel.page_id));
+    assert.ok(loaded.ok);
+    const caps = loaded.section.values.capabilities as Record<string, unknown>[];
+    const path = `field:capabilities/item:${String(caps[1]![ITEM_ID_KEY])}`;
+
+    answered(
+      await saveStyles(
+        travel,
+        doc({ [path]: { base: { opacity: 1 }, tablet: { opacity: 0.75 }, mobile: { opacity: 0.45 } } }),
+      ),
+    );
+
+    const tag = tagWith((await canvas("/")).html, `data-eod-address="section:${travel.id}/${path}"`);
+    assert.ok(tag, "the row is not addressable");
+    assert.match(classOf(tag), /\breveal\b/, "this row is not revealed, so the test proves nothing");
+
+    // Not `opacity` at any width: an inline or important `opacity` outranks the
+    // class that holds a reveal at 0, and the row would sit at 45% before it
+    // had been revealed at all.
+    assert.deepEqual(listed(tag, "data-rs-t"), ["reveal-opacity"]);
+    assert.deepEqual(listed(tag, "data-rs-m"), ["reveal-opacity"]);
+    const style = styleOf(tag);
+    assert.match(style, /--eod-node-opacity:\s*1/);
+    assert.match(style, /--rs-t-opacity:\s*0\.75/);
+    assert.match(style, /--rs-m-opacity:\s*0\.45/);
+    assert.ok(!/(^|;)\s*opacity:/.test(style), `an inline opacity overrode the lifecycle: ${style}`);
+    assert.match(style, /--reveal-delay:/, "the reveal's own delay was lost");
+    assert.match(tag, /data-shown="false"/);
+  });
+
+  test("a shared heading takes its overrides at every width too", async () => {
+    const travel = await find("home", "travel-feature");
+    answered(
+      await saveStyles(
+        travel,
+        doc({
+          "field:title": { base: { textColor: "orange" }, mobile: { fontSize: "h3" } },
+        }),
+      ),
+    );
+    const tag = tagWith((await canvas("/")).html, `data-eod-address="section:${travel.id}/field:title"`);
+    assert.ok(tag, "the shared heading is not addressable");
+    assert.match(tag, /^<h2\b/);
+    assert.match(styleOf(tag), /color:\s*var\(--color-orange\)/);
+    assert.deepEqual(listed(tag, "data-rs-m"), ["font-size", "line-height", "letter-spacing"]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("one document, both directions", () => {
+  test("the same responsive overrides lay out in Arabic with nothing physical in them", async () => {
+    const hero = await find("privacy", "page-hero");
+    answered(
+      await saveStyles(
+        hero,
+        doc({
+          root: { base: { padInline: 6 }, tablet: { padInline: 4 }, mobile: { padInline: 2 } },
+          "field:title": { base: { align: "start" }, mobile: { align: "center" } },
+        }),
+      ),
+    );
+
+    for (const path of ["/privacy?preview=1", "/ar/privacy?preview=1"]) {
+      const page = await get(server.origin, path, { cookie: owner.cookie });
+      const root = tagWith(page.html, 'data-section="page-hero"');
+      assert.match(styleOf(root), /padding-inline:/, path);
+      assert.deepEqual(listed(root, "data-rs-t"), ["padding-inline"], path);
+      assert.deepEqual(listed(root, "data-rs-m"), ["padding-inline"], path);
+      assert.equal(varsOf(root)["--rs-m-padding-inline"], "0.5rem", path);
+      assert.ok(
+        !/padding-left|padding-right|margin-left|margin-right/.test(styleOf(root)),
+        `physical spacing in ${path}`,
+      );
+      assert.match(page.html, /--rs-m-text-align:\s*center/, path);
+      assert.ok(!/--rs-m-text-align:\s*(left|right)/.test(page.html), `a physical alignment in ${path}`);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a responsive branch is validated exactly as hard as base", () => {
+  test("hostile keys inside tablet and mobile do not survive", async () => {
+    const hero = await find("privacy", "page-hero");
+    const hostile = {
+      css: "color: red",
+      style: "color: red",
+      class: "danger",
+      className: "danger",
+      selector: ".title",
+      backgroundImage: "url(https://evil.example/x.png)",
+      position: "absolute",
+      left: "0px",
+      right: "0px",
+      transform: "scale(9)",
+      filter: "blur(4px)",
+      "--rogue": "red",
+      padBlock: 999,
+      opacity: Number.POSITIVE_INFINITY,
+      objectX: -20,
+      hidden: "yes",
+    };
+
+    const saved = answered(
+      await saveStyles(
+        hero,
+        doc({
+          "field:title": {
+            base: { textColor: "orange" },
+            tablet: { fontSize: "h3", ...hostile },
+            mobile: { align: "center", ...hostile },
+          },
+        }),
+      ),
+    );
+    assert.ok(saved.ok);
+    assert.deepEqual(saved.styles.nodes["field:title"]!.tablet, { fontSize: "h3" });
+    assert.deepEqual(saved.styles.nodes["field:title"]!.mobile, { align: "center" });
+
+    const serialised = JSON.stringify((await row(hero.id)).draft_styles);
+    for (const forbidden of ["css", "class", "selector", "url(", "transform", "absolute", "rogue"]) {
+      assert.ok(!serialised.includes(forbidden), `${forbidden} survived into the column`);
+    }
+
+    // …and nothing of it reaches the page either.
+    const html = (await canvas("/privacy")).html;
+    const tag = tagWith(html, `data-eod-address="section:${hero.id}/field:title"`);
+    assert.deepEqual(listed(tag, "data-rs-t"), ["font-size", "line-height", "letter-spacing"]);
+    assert.deepEqual(listed(tag, "data-rs-m"), ["text-align"]);
+  });
+
+  test("there are three branches and no others — no custom breakpoints", async () => {
+    const hero = await find("terms", "page-hero");
+    const saved = answered(
+      await saveStyles(
+        hero,
+        doc({
+          "field:title": {
+            base: { textColor: "orange" },
+            tablet: { fontSize: "h3" },
+            mobile: { align: "center" },
+            desktop: { fontSize: "display" },
+            phone: { fontSize: "small" },
+            sm: { fontSize: "small" },
+            md: { fontSize: "small" },
+            xl: { fontSize: "small" },
+            landscape: { fontSize: "small" },
+            "@media (max-width: 300px)": { hidden: true },
+            "1024": { hidden: true },
+          },
+        }),
+      ),
+    );
+    assert.ok(saved.ok);
+    assert.deepEqual(Object.keys(saved.styles.nodes["field:title"]!).sort(), [
+      "base",
+      "mobile",
+      "tablet",
+    ]);
+    const stored = JSON.stringify((await row(hero.id)).draft_styles);
+    for (const forbidden of ["desktop", "phone", "landscape", "@media", '"sm"', '"xl"']) {
+      assert.ok(!stored.includes(forbidden), `${forbidden} survived as a breakpoint`);
+    }
+  });
+
+  test("a reader may not write a responsive override, and an untokened save is refused", async () => {
+    const hero = await find("about", "page-hero");
+    const before = await row(hero.id);
+
+    const asReader = await saveStyles(hero, doc({ root: { mobile: { hidden: true } } }), {
+      cookie: viewer.cookie,
+      csrf: viewer.csrfToken,
+    });
+    assert.ok(!asReader.value?.ok, "a reader hid a section");
+
+    const noToken = await saveStyles(hero, doc({ root: { mobile: { hidden: true } } }), { csrf: null });
+    assert.ok(!noToken.value?.ok, "a save without the session's token was accepted");
+
+    const signedOut = await saveStyles(hero, doc({ root: { mobile: { hidden: true } } }), {
+      cookie: null,
+    });
+    assert.ok(!signedOut.value?.ok, "a signed-out save was accepted");
+
+    const wrongPage = await saveStyles(hero, doc({ root: { mobile: { hidden: true } } }), {
+      pageId: hero.page_id + 1000,
+    });
+    assert.ok(!wrongPage.value?.ok, "a section was styled through another page");
+
+    const after = await row(hero.id);
+    assert.deepEqual(after.draft_styles, before.draft_styles);
+    assert.equal(after.revision, before.revision);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("responsive changes nothing about how a section is saved", () => {
+  test("one revision, one save, all three branches together", async () => {
+    const hero = await find("disclaimer", "page-hero");
+    const before = await row(hero.id);
+
+    const saved = answered(
+      await saveStyles(
+        hero,
+        doc({
+          root: { base: { padBlock: 6 } },
+          "field:title": { tablet: { fontSize: "h3" } },
+          "field:lead": { mobile: { hidden: true } },
+        }),
+      ),
+    );
+    assert.ok(saved.ok);
+    // Three branches across three nodes, and the counter moved once.
+    assert.equal(saved.revision, before.revision + 1);
+    const after = await row(hero.id);
+    assert.equal(after.revision, before.revision + 1);
+    assert.deepEqual(after.published, before.published, "content went live");
+    assert.equal(after.draft, before.draft, "a content draft appeared");
+    assert.equal(after.animation, before.animation);
+    assert.equal(after.draft_animation, before.draft_animation);
+
+    // …and the normal admin needs to know nothing about breakpoints.
+    const screen = await get(server.origin, `/admin/pages/section/${hero.id}`, {
+      cookie: owner.cookie,
+    });
+    assert.match(screen.html, /Style draft/);
+  });
+
+  test("a stale responsive save conflicts exactly as a base one does", async () => {
+    const hero = await find("disclaimer", "rich-text");
+    const first = answered(await saveStyles(hero, doc({ root: { mobile: { hidden: true } } })));
+    assert.ok(first.ok);
+
+    // The same screen's revision, now one behind.
+    const stale = answered(await saveStyles(hero, doc({ root: { tablet: { padBlock: 2 } } })));
+    assert.equal(stale.ok, false);
+    assert.ok(!stale.ok && stale.reason === "conflict", JSON.stringify(stale));
+    assert.ok(!stale.ok && stale.section, "the conflict did not offer the version that won");
+    // Nothing was merged: the row still holds the first save, whole.
+    const after = await row(hero.id);
+    assert.deepEqual((after.draft_styles as StyleDocument).nodes, {
+      root: { mobile: { hidden: true } },
+    });
+  });
+
+  test("no style document and no breakpoint machinery reaches a visitor", async () => {
+    const live = await get(server.origin, "/disclaimer");
+    assert.ok(!live.html.includes('"nodes":'), "a raw style document reached the page");
+    assert.ok(!live.html.includes('"tablet":'), "a raw branch reached the page");
+    assert.ok(!live.html.includes("draft_styles"));
+    assert.ok(!live.html.includes("data-eod-"), "editor markup reached a visitor");
+    assert.ok(!live.html.includes("styleTargetFor"), "panel code reached a visitor");
+    assert.ok(!live.html.includes("Tablet override"), "panel copy reached a visitor");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
 describe("nothing else woke up", () => {
   test("motion is untouched by a style save", async () => {
     const hero = await find("privacy", "rich-text");
@@ -1388,7 +2010,7 @@ describe("nothing else woke up", () => {
     assert.equal(after.draft_animation, before.draft_animation);
   });
 
-  test("a responsive branch is stored and carried, and changes nothing that renders", async () => {
+  test("a responsive branch renders as a value and a name, and never as a rule", async () => {
     const hero = await find("privacy", "rich-text");
     const saved = answered(
       await saveStyles(
@@ -1403,18 +2025,28 @@ describe("nothing else woke up", () => {
       ),
     );
     assert.ok(saved.ok);
-    // Kept, because Batch 7 will need it where it was left.
     assert.deepEqual(saved.styles.nodes["field:body"]!.tablet, { fontSize: "h3" });
     assert.deepEqual(saved.styles.nodes["field:body"]!.mobile, { align: "center" });
 
-    // …and not rendered: base only, with no media query anywhere near it.
     const preview = await canvas("/privacy");
     const tag = tagWith(preview.html, `data-eod-address="section:${hero.id}/field:body"`);
     assert.ok(tag, "the body is not addressable on the canvas");
-    assert.match(styleOf(tag), /color:\s*var\(--color-peach\)/);
-    assert.ok(!/text-align:\s*center/.test(styleOf(tag)), "a mobile override rendered at desktop");
-    assert.ok(!/font-size/.test(styleOf(tag)), "a tablet override rendered at desktop");
-    assert.ok(!/@media/.test(preview.html.slice(0, 60_000)) || true);
+    const style = styleOf(tag);
+
+    // Base is still the declaration it always was.
+    assert.match(style, /color:\s*var\(--color-peach\)/);
+    // The other two widths are values parked under names this repository owns,
+    // read by rules that live in the stylesheet. Nothing conditional, and no
+    // second declaration of the same property, reaches the element.
+    assert.match(tag, /data-rs-t="[^"]*font-size/);
+    assert.match(tag, /data-rs-m="[^"]*text-align/);
+    assert.match(style, /--rs-t-font-size:\s*var\(--text-h3\)/);
+    assert.match(style, /--rs-m-text-align:\s*center/);
+    assert.ok(!/(^|;)\s*font-size:/.test(style), "a tablet override became a desktop declaration");
+    assert.ok(!/(^|;)\s*text-align:/.test(style), "a mobile override became a desktop declaration");
+    // And the document itself never travels to the page, at any width.
+    assert.ok(!/@media/.test(tag), "a media query was written into an element");
+    assert.ok(!preview.html.includes('"tablet":'), "a raw style branch reached the page");
   });
 
   test("a visitor gets no editor code, no bridge and no style document", async () => {

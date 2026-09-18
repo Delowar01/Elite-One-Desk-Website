@@ -12,7 +12,18 @@ import path from "node:path";
 import { describe, test } from "node:test";
 
 import { formatNodePath, parseNodePath } from "@/lib/cms/address";
-import { mediaNodeStyle, nodeStyle, tokensToStyle } from "@/lib/cms/style-css";
+import {
+  RESPONSIVE_ATTR,
+  RESPONSIVE_PREFIX,
+  RESPONSIVE_PROPERTIES,
+  REVEAL_OPACITY_PROPERTY,
+  mediaNodeStyle,
+  nodeStyle,
+  responsiveMediaStyle,
+  responsiveStyle,
+  tokensToStyle,
+} from "@/lib/cms/style-css";
+import { blockNode, mediaNode } from "@/lib/cms/node";
 import {
   BACKGROUNDS,
   BORDERS,
@@ -20,14 +31,25 @@ import {
   MAX_WIDTHS,
   RADII,
   SHADOWS,
+  RESPONSIVE_BREAKPOINTS,
+  RESPONSIVE_WIDTHS,
   SPACING_STEPS,
   STYLE_DOCUMENT_VERSION,
+  STYLE_TOKEN_KEYS,
   TEXT_COLORS,
+  resolveTokens,
   validateStyleDocument,
   type StyleDocument,
+  type StyleTokens,
 } from "@/lib/cms/styles";
-import { FINAL_OPACITY, revealStyle } from "@/components/site/reveal";
-import { relativePath, withToken, withoutBase } from "@/lib/visual-editor/style-edit";
+import { FINAL_OPACITY, revealMarks, revealStyle } from "@/components/site/reveal";
+import {
+  INHERITS_FROM,
+  relativePath,
+  tokenState,
+  withToken,
+  withoutBranch,
+} from "@/lib/visual-editor/style-edit";
 import { styleTargetFor } from "@/lib/visual-editor/style-targets";
 
 const doc = (nodes: StyleDocument["nodes"]): StyleDocument => ({
@@ -193,16 +215,19 @@ describe("a node is only offered the controls that mean something on it", () => 
     assert.ok(styleTargetFor("one-desk", "slot:cta").tokens.includes("gap"));
   });
 
-  test("`hidden` is never offered — it belongs to the responsive batch", () => {
+  test("`hidden` is offered on every kind of node, because anything can be hidden", () => {
     for (const path of [
       undefined,
       "field:title",
       "field:backgroundImage",
       "field:links",
       "field:links/item:i_aaaaaaaaaa",
+      "field:links/item:i_aaaaaaaaaa/field:label",
+      "field:links/item:i_aaaaaaaaaa/field:icon",
+      "slot:cta",
     ]) {
       const target = styleTargetFor("quick-links", path);
-      assert.ok(!target.tokens.includes("hidden"), `hidden offered on ${path ?? "root"}`);
+      assert.ok(target.tokens.includes("hidden"), `hidden not offered on ${path ?? "root"}`);
     }
   });
 });
@@ -262,40 +287,127 @@ describe("an edit leaves the document sparse, and leaves the invisible parts alo
   });
 
   test("setting a token adds it; setting it to default removes it", () => {
-    const set = withToken(doc({}), "field:title", "textColor", "orange");
+    const set = withToken(doc({}), "field:title", "base", "textColor", "orange");
     assert.deepEqual(set.nodes["field:title"], { base: { textColor: "orange" } });
 
-    const cleared = withToken(set, "field:title", "textColor", undefined);
+    const cleared = withToken(set, "field:title", "base", "textColor", undefined);
     assert.deepEqual(cleared.nodes, {}, "an empty node was left behind");
   });
 
   test("a token is never stored as the value the design happens to use", () => {
-    const cleared = withToken(withResponsive, "field:title", "fontSize", undefined);
+    const cleared = withToken(withResponsive, "field:title", "base", "fontSize", undefined);
     assert.deepEqual(cleared.nodes["field:title"]!.base, { textColor: "orange" });
     assert.ok(!("fontSize" in cleared.nodes["field:title"]!.base!));
   });
 
   test("editing base does not touch tablet or mobile", () => {
-    const edited = withToken(withResponsive, "field:title", "textColor", "peach");
+    const edited = withToken(withResponsive, "field:title", "base", "textColor", "peach");
     assert.deepEqual(edited.nodes["field:title"]!.tablet, { fontSize: "h3" });
     assert.deepEqual(edited.nodes["field:title"]!.mobile, { align: "center" });
   });
 
-  test("resetting this element removes base and keeps what cannot be seen yet", () => {
-    const reset = withoutBase(withResponsive, "field:title");
-    assert.equal(reset.nodes["field:title"]!.base, undefined);
-    assert.deepEqual(reset.nodes["field:title"]!.tablet, { fontSize: "h3" });
-    assert.deepEqual(reset.nodes["field:title"]!.mobile, { align: "center" });
+  test("editing one breakpoint leaves the other two exactly as they were", () => {
+    const tablet = withToken(withResponsive, "field:title", "tablet", "padBlock", 4);
+    assert.deepEqual(tablet.nodes["field:title"]!.base, { textColor: "orange", fontSize: "h2" });
+    assert.deepEqual(tablet.nodes["field:title"]!.tablet, { fontSize: "h3", padBlock: 4 });
+    assert.deepEqual(tablet.nodes["field:title"]!.mobile, { align: "center" });
+
+    const mobile = withToken(withResponsive, "field:title", "mobile", "fontSize", "small");
+    assert.deepEqual(mobile.nodes["field:title"]!.base, { textColor: "orange", fontSize: "h2" });
+    assert.deepEqual(mobile.nodes["field:title"]!.tablet, { fontSize: "h3" });
+    assert.deepEqual(mobile.nodes["field:title"]!.mobile, { align: "center", fontSize: "small" });
+  });
+
+  test("clearing a breakpoint's token inherits again rather than copying a parent", () => {
+    const set = withToken(withResponsive, "field:title", "mobile", "fontSize", "small");
+    const cleared = withToken(set, "field:title", "mobile", "fontSize", undefined);
+    assert.deepEqual(cleared.nodes["field:title"]!.mobile, { align: "center" });
+    assert.ok(
+      !("fontSize" in cleared.nodes["field:title"]!.mobile!),
+      "the parent's value was written into the branch that cleared it",
+    );
+  });
+
+  test("a branch emptied by clearing its last token is removed, not left as {}", () => {
+    const onlyMobile = doc({ "field:title": { base: { opacity: 0.5 }, mobile: { hidden: true } } });
+    const cleared = withToken(onlyMobile, "field:title", "mobile", "hidden", undefined);
+    assert.deepEqual(cleared.nodes["field:title"], { base: { opacity: 0.5 } });
+  });
+
+  test("resetting one breakpoint keeps the other two", () => {
+    const base = withoutBranch(withResponsive, "field:title", "base");
+    assert.equal(base.nodes["field:title"]!.base, undefined);
+    assert.deepEqual(base.nodes["field:title"]!.tablet, { fontSize: "h3" });
+    assert.deepEqual(base.nodes["field:title"]!.mobile, { align: "center" });
+
+    const tablet = withoutBranch(withResponsive, "field:title", "tablet");
+    assert.equal(tablet.nodes["field:title"]!.tablet, undefined);
+    assert.deepEqual(tablet.nodes["field:title"]!.base, { textColor: "orange", fontSize: "h2" });
+    assert.deepEqual(tablet.nodes["field:title"]!.mobile, { align: "center" });
+
+    const mobile = withoutBranch(withResponsive, "field:title", "mobile");
+    assert.equal(mobile.nodes["field:title"]!.mobile, undefined);
+    assert.deepEqual(mobile.nodes["field:title"]!.base, { textColor: "orange", fontSize: "h2" });
+    assert.deepEqual(mobile.nodes["field:title"]!.tablet, { fontSize: "h3" });
   });
 
   test("a node with nothing left at all is removed", () => {
     const baseOnly = doc({ "field:title": { base: { opacity: 0.5 } } });
-    assert.deepEqual(withoutBase(baseOnly, "field:title").nodes, {});
+    assert.deepEqual(withoutBranch(baseOnly, "field:title", "base").nodes, {});
+    const mobileOnly = doc({ "field:title": { mobile: { hidden: true } } });
+    assert.deepEqual(withoutBranch(mobileOnly, "field:title", "mobile").nodes, {});
+  });
+
+  test("resetting a branch that is not there changes nothing at all", () => {
+    const same = withoutBranch(withResponsive, "field:image", "tablet");
+    assert.equal(same, withResponsive, "an absent branch produced a new document");
   });
 
   test("an edited document still survives the validator unchanged", () => {
-    const edited = withToken(withResponsive, "field:title", "marginBlock", 3);
+    const edited = withToken(withResponsive, "field:title", "base", "marginBlock", 3);
     assert.deepEqual(validateStyleDocument(edited), edited);
+    const responsive = withToken(edited, "field:title", "mobile", "hidden", true);
+    assert.deepEqual(validateStyleDocument(responsive), responsive);
+  });
+
+  test("a control knows whether it is showing an override or an inheritance", () => {
+    const node = withResponsive.nodes["field:title"]!;
+
+    assert.deepEqual(tokenState(node, "base", "fontSize"), {
+      value: "h2",
+      inherited: undefined,
+      from: null,
+    });
+    assert.deepEqual(tokenState(node, "tablet", "fontSize"), {
+      value: "h3",
+      inherited: "h2",
+      from: "base",
+    });
+    // Mobile does not set a size, and what it would show comes from tablet —
+    // the nearest branch that has one, not from base.
+    assert.deepEqual(tokenState(node, "mobile", "fontSize"), {
+      value: undefined,
+      inherited: "h3",
+      from: "tablet",
+    });
+    // A token nobody has set anywhere has no source at all: the component's own
+    // design is not something the document can name.
+    assert.deepEqual(tokenState(node, "mobile", "shadow"), {
+      value: undefined,
+      inherited: undefined,
+      from: null,
+    });
+    assert.deepEqual(tokenState(undefined, "tablet", "fontSize"), {
+      value: undefined,
+      inherited: undefined,
+      from: null,
+    });
+  });
+
+  test("the inheritance chain is base, then tablet — mobile inherits through it", () => {
+    assert.deepEqual(INHERITS_FROM.base, []);
+    assert.deepEqual(INHERITS_FROM.tablet, ["base"]);
+    assert.deepEqual(INHERITS_FROM.mobile, ["base", "tablet"]);
   });
 
   test("a relative path is normalised through the parser, and a runtime address is not one", () => {
@@ -403,6 +515,441 @@ describe("the stylesheet reads that property in every state a reveal can be in",
         new RegExp(`\\.reveal\\s*\\{[^}]*opacity:\\s*var\\(${FINAL_OPACITY}, 1\\)`),
         `${section} forces a revealed element back to full strength`,
       );
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a narrower width inherits what it does not override", () => {
+  const at = (node: StyleDocument["nodes"][string]) => ({
+    base: resolveTokens(node, "base"),
+    tablet: resolveTokens(node, "tablet"),
+    mobile: resolveTokens(node, "mobile"),
+  });
+
+  test("base only: every width shows it", () => {
+    const r = at({ base: { fontSize: "h2", textColor: "strong" } });
+    assert.deepEqual(r.base, { fontSize: "h2", textColor: "strong" });
+    assert.deepEqual(r.tablet, { fontSize: "h2", textColor: "strong" });
+    assert.deepEqual(r.mobile, { fontSize: "h2", textColor: "strong" });
+  });
+
+  test("tablet only: the two narrower widths show it and the widest does not", () => {
+    const r = at({ tablet: { fontSize: "h3" } });
+    assert.deepEqual(r.base, {});
+    assert.deepEqual(r.tablet, { fontSize: "h3" });
+    assert.deepEqual(r.mobile, { fontSize: "h3" });
+  });
+
+  test("mobile only: nothing above it changes", () => {
+    const r = at({ mobile: { align: "center" } });
+    assert.deepEqual(r.base, {});
+    assert.deepEqual(r.tablet, {});
+    assert.deepEqual(r.mobile, { align: "center" });
+  });
+
+  test("base and tablet", () => {
+    const r = at({ base: { fontSize: "h2", textColor: "strong" }, tablet: { fontSize: "h3" } });
+    assert.equal(r.base.fontSize, "h2");
+    assert.equal(r.tablet.fontSize, "h3");
+    assert.equal(r.mobile.fontSize, "h3", "mobile did not inherit through tablet");
+    assert.equal(r.mobile.textColor, "strong", "mobile lost a base token tablet never touched");
+  });
+
+  test("base and mobile", () => {
+    const r = at({ base: { fontSize: "h2" }, mobile: { fontSize: "small" } });
+    assert.equal(r.tablet.fontSize, "h2", "a mobile override reached tablet");
+    assert.equal(r.mobile.fontSize, "small");
+  });
+
+  test("tablet and mobile, with no base at all", () => {
+    const r = at({ tablet: { padBlock: 4 }, mobile: { padBlock: 2 } });
+    assert.deepEqual(r.base, {});
+    assert.equal(r.tablet.padBlock, 4);
+    assert.equal(r.mobile.padBlock, 2);
+  });
+
+  test("all three, token by token", () => {
+    const node = {
+      base: { fontSize: "h2", textColor: "strong" },
+      tablet: { fontSize: "h3" },
+      mobile: { textColor: "orange" },
+    } as const;
+    const r = at(node);
+    // The worked example from the brief: sparse branches, three different
+    // answers, and not one copied value anywhere in the document.
+    assert.deepEqual(r.base, { fontSize: "h2", textColor: "strong" });
+    assert.deepEqual(r.tablet, { fontSize: "h3", textColor: "strong" });
+    assert.deepEqual(r.mobile, { fontSize: "h3", textColor: "orange" });
+  });
+
+  test("the document itself stays sparse — nothing inherited is ever stored", () => {
+    const document = doc({
+      "field:title": {
+        base: { fontSize: "h2", textColor: "strong" },
+        tablet: { fontSize: "h3" },
+        mobile: { textColor: "orange" },
+      },
+    });
+    assert.deepEqual(validateStyleDocument(document), document);
+    assert.deepEqual(Object.keys(document.nodes["field:title"]!.tablet!), ["fontSize"]);
+    assert.deepEqual(Object.keys(document.nodes["field:title"]!.mobile!), ["textColor"]);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a responsive override reaches the page as a value and a name, never as CSS", () => {
+  const document = (nodes: StyleDocument["nodes"]) => doc(nodes);
+
+  test("a branch contributes one variable and one listed declaration per property", () => {
+    const out = responsiveStyle(
+      document({ "field:title": { base: { textColor: "strong" }, tablet: { textColor: "orange" } } }),
+      "field:title",
+    );
+    assert.deepEqual(out?.attrs, { "data-rs-t": "color" });
+    assert.deepEqual(out?.vars, { "--rs-t-color": "var(--color-orange)" });
+  });
+
+  test("both branches at once, each under its own attribute", () => {
+    const out = responsiveStyle(
+      document({ "field:title": { tablet: { padBlock: 4 }, mobile: { padBlock: 2 } } }),
+      "field:title",
+    );
+    assert.deepEqual(out?.attrs, { "data-rs-t": "padding-block", "data-rs-m": "padding-block" });
+    assert.equal(out?.vars["--rs-t-padding-block"], "1rem");
+    assert.equal(out?.vars["--rs-m-padding-block"], "0.5rem");
+  });
+
+  test("a type step is replaced whole, so an old tracking cannot survive under a new size", () => {
+    const out = responsiveStyle(
+      document({ "field:title": { base: { fontSize: "h1" }, mobile: { fontSize: "small" } } }),
+      "field:title",
+    );
+    const listed = out!.attrs["data-rs-m"]!.split(" ");
+    assert.ok(listed.includes("font-size"));
+    assert.ok(listed.includes("line-height"));
+    assert.ok(listed.includes("letter-spacing"), "the step's tracking was not overridden");
+    // `small` has no tracking of its own, so the override is an explicit none
+    // rather than whatever the wider width happened to set.
+    assert.equal(out!.vars["--rs-m-letter-spacing"], "normal");
+  });
+
+  test("a step that has tracking carries its own", () => {
+    const out = responsiveStyle(
+      document({ "field:title": { mobile: { fontSize: "h3" } } }),
+      "field:title",
+    );
+    assert.equal(out!.vars["--rs-m-letter-spacing"], "var(--text-h3--letter-spacing)");
+  });
+
+  test("one focal axis moved at a breakpoint carries the other one with it", () => {
+    const out = responsiveStyle(
+      document({ "field:image": { base: { objectX: 20, objectY: 40 }, mobile: { objectY: 90 } } }),
+      "field:image",
+    );
+    // Not `50% 90%`: the horizontal point the wider width chose is inherited,
+    // and a branch that only moved the vertical one must not recentre it.
+    assert.equal(out!.vars["--rs-m-object-position"], "20% 90%");
+  });
+
+  test("with nothing to inherit the untouched axis is centred, exactly as base does it", () => {
+    const out = responsiveStyle(
+      document({ "field:image": { mobile: { objectY: 90 } } }),
+      "field:image",
+    );
+    assert.equal(out!.vars["--rs-m-object-position"], "50% 90%");
+  });
+
+  test("hidden is a display, and only when it is true", () => {
+    const hide = responsiveStyle(document({ root: { mobile: { hidden: true } } }), "root");
+    assert.deepEqual(hide?.attrs, { "data-rs-m": "display" });
+    assert.equal(hide?.vars["--rs-m-display"], "none");
+
+    // `hidden: false` is not how the document says "shown" — inheriting is.
+    const shown = responsiveStyle(document({ root: { mobile: { hidden: false } } }), "root");
+    assert.equal(shown, undefined);
+  });
+
+  test("a base-only node produces nothing at all", () => {
+    assert.equal(
+      responsiveStyle(document({ "field:title": { base: { textColor: "orange" } } }), "field:title"),
+      undefined,
+    );
+  });
+
+  test("an empty document produces nothing, for any path", () => {
+    for (const path of [undefined, "root", "field:title", "field:links/item:i_aaaaaaaaaa"]) {
+      assert.equal(responsiveStyle(doc({}), path), undefined, path ?? "root");
+    }
+    assert.equal(responsiveStyle(undefined, "field:title"), undefined);
+  });
+
+  test("a key that is not a node path resolves to no node and therefore no output", () => {
+    const hostile = { v: 1, nodes: { ".card h1": { mobile: { hidden: true } } } } as StyleDocument;
+    assert.equal(responsiveStyle(hostile, ".card h1"), undefined);
+  });
+
+  test("every declaration a token can produce is one this file knows the name of", () => {
+    const samples: StyleTokens = {
+      align: "center",
+      fontSize: "h2",
+      fontWeight: 800,
+      textColor: "orange",
+      background: "ink-700",
+      padBlock: 4,
+      padInline: 4,
+      marginBlock: 4,
+      marginInline: 4,
+      gap: 4,
+      radius: "lg",
+      border: "accent",
+      shadow: "lift",
+      opacity: 0.5,
+      maxWidth: "prose",
+      objectX: 20,
+      objectY: 80,
+      hidden: true,
+    };
+    // Nothing in the vocabulary is left out of the sample, so a token added
+    // later fails here rather than rendering at one width and not the others.
+    for (const token of STYLE_TOKEN_KEYS) {
+      assert.ok(token in samples, `${token} is not covered by this test`);
+    }
+    const produced = Object.keys(tokensToStyle(samples) ?? {}).map((property) =>
+      property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`),
+    );
+    for (const property of produced) {
+      assert.ok(
+        (RESPONSIVE_PROPERTIES as readonly string[]).includes(property),
+        `${property} can be produced at base and has no responsive name`,
+      );
+    }
+    for (const property of RESPONSIVE_PROPERTIES) {
+      assert.ok(produced.includes(property), `${property} is named but no token produces it`);
+    }
+  });
+
+  test("nothing but a validated value and a known name ever leaves the mapper", () => {
+    const hostile = validateStyleDocument({
+      v: 1,
+      nodes: {
+        "field:title": {
+          tablet: {
+            textColor: "orange",
+            css: "color: red",
+            selector: ".title",
+            class: "danger",
+            position: "absolute",
+            left: "0px",
+            transform: "scale(9)",
+            backgroundImage: "url(https://evil.example/x.png)",
+            "--rogue": "red",
+            padBlock: 999,
+            opacity: Number.POSITIVE_INFINITY,
+          },
+          "@media (max-width: 1px)": { hidden: true },
+          desktop: { hidden: true },
+          sm: { hidden: true },
+        },
+      },
+    });
+    const out = responsiveStyle(hostile, "field:title")!;
+    assert.deepEqual(out.attrs, { "data-rs-t": "color" });
+    assert.deepEqual(Object.keys(out.vars), ["--rs-t-color"]);
+    const serialised = JSON.stringify(out);
+    for (const forbidden of ["url(", "absolute", "scale(", "danger", "selector", "rogue", "@media"]) {
+      assert.ok(!serialised.includes(forbidden), `${forbidden} reached the page`);
+    }
+    // Only the three known branches exist, so a made-up one cannot render.
+    assert.deepEqual(Object.keys(hostile.nodes["field:title"]!), ["tablet"]);
+  });
+
+  test("the attribute and variable names are this file's, not the document's", () => {
+    assert.deepEqual(RESPONSIVE_ATTR, { tablet: "data-rs-t", mobile: "data-rs-m" });
+    assert.deepEqual(RESPONSIVE_PREFIX, { tablet: "--rs-t-", mobile: "--rs-m-" });
+    // Outside the editor's own namespace on purpose: `data-eod-` means editor
+    // plumbing and is swept for on public pages, and these are page rendering.
+    for (const attribute of Object.values(RESPONSIVE_ATTR)) {
+      assert.ok(!attribute.startsWith("data-eod-"), attribute);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a crop stays on the picture at every width", () => {
+  const document = doc({
+    "field:image": {
+      base: { radius: "lg", objectX: 50, objectY: 50 },
+      tablet: { objectY: 30, border: "accent" },
+      mobile: { objectX: 20, objectY: 75 },
+    },
+  });
+
+  test("the frame takes the shape and the picture takes the crop, per breakpoint", () => {
+    const { box, image } = responsiveMediaStyle(document, "field:image");
+    assert.deepEqual(box?.attrs, { "data-rs-t": "border" });
+    assert.equal(box?.vars["--rs-t-border"], "1px solid var(--color-orange)");
+    assert.ok(!("--rs-t-object-position" in (box?.vars ?? {})), "a crop was parked on the frame");
+
+    assert.deepEqual(image?.attrs, {
+      "data-rs-t": "object-position",
+      "data-rs-m": "object-position",
+    });
+    assert.equal(image?.vars["--rs-t-object-position"], "50% 30%");
+    assert.equal(image?.vars["--rs-m-object-position"], "20% 75%");
+  });
+
+  test("a media node with no responsive branch splits into nothing", () => {
+    const { box, image } = responsiveMediaStyle(
+      doc({ "field:image": { base: { objectX: 20, objectY: 80 } } }),
+      "field:image",
+    );
+    assert.equal(box, undefined);
+    assert.equal(image, undefined);
+  });
+
+  test("the node helper hands a block the two halves already separated", () => {
+    const picture = mediaNode({ styles: document })("field:image");
+    assert.equal(picture.box["data-rs-t"], "border");
+    assert.equal(picture.box["data-rs-m"], undefined);
+    assert.equal(picture.image["data-rs-t"], "object-position");
+    assert.equal(picture.image["data-rs-m"], "object-position");
+    assert.match(String(picture.box.style?.borderRadius), /radius-lg/);
+    assert.equal(picture.image.style?.objectPosition, "50% 50%");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a node with no responsive branch renders exactly what it rendered before", () => {
+  const baseOnly = doc({
+    "field:title": { base: { fontSize: "h2", textColor: "orange", marginBlock: 4 } },
+  });
+
+  test("no attribute, no variable, just the style attribute Batch 6 wrote", () => {
+    const attrs = blockNode({ styles: baseOnly })("field:title");
+    assert.equal(attrs["data-rs-t"], undefined);
+    assert.equal(attrs["data-rs-m"], undefined);
+    assert.deepEqual(attrs.style, nodeStyle(baseOnly, "field:title"));
+    for (const key of Object.keys(attrs.style ?? {})) {
+      assert.ok(!key.startsWith("--"), `${key} appeared on a node nobody made responsive`);
+    }
+  });
+
+  test("and an unstyled node is still an empty object", () => {
+    assert.deepEqual(blockNode({ styles: doc({}) })("field:title"), {});
+    assert.deepEqual(blockNode({})("field:title"), {});
+  });
+
+  test("a responsive node keeps its base style and gains variables beside it", () => {
+    const mixed = doc({
+      "field:title": { base: { textColor: "orange" }, mobile: { textColor: "peach" } },
+    });
+    const attrs = blockNode({ styles: mixed })("field:title");
+    assert.equal(attrs.style?.color, "var(--color-orange)", "the base style was replaced");
+    assert.equal(
+      (attrs.style as Record<string, string>)["--rs-m-color"],
+      "var(--color-peach)",
+    );
+    assert.equal(attrs["data-rs-m"], "color");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a revealed element's opacity is its finished state at every width", () => {
+  test("the declaration is renamed so the reveal rules read it, not `opacity`", () => {
+    const marks = revealMarks("reveal", {
+      "data-rs-t": "opacity border-radius",
+      "data-rs-m": "opacity",
+    });
+    assert.equal(marks["data-rs-t"], `${REVEAL_OPACITY_PROPERTY} border-radius`);
+    assert.equal(marks["data-rs-m"], REVEAL_OPACITY_PROPERTY);
+  });
+
+  test("with no reveal class there is no lifecycle to protect and nothing is renamed", () => {
+    const marks = { "data-rs-m": "opacity" };
+    assert.equal(revealMarks("", marks), marks);
+  });
+
+  test("a list with no opacity in it is handed back untouched", () => {
+    const marks = { "data-rs-t": "padding-block color" };
+    assert.equal(revealMarks("reveal", marks), marks);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("the stylesheet and the constants say the same thing about widths", () => {
+  const css = readFileSync(
+    path.join(import.meta.dirname ?? __dirname, "..", "src", "styles", "globals.css"),
+    "utf8",
+  );
+
+  test("the two breakpoints are 1024 and 640, and nothing else is one", () => {
+    assert.deepEqual(RESPONSIVE_WIDTHS, { tablet: 1024, mobile: 640 });
+    assert.deepEqual([...RESPONSIVE_BREAKPOINTS], ["tablet", "mobile"]);
+  });
+
+  test("every responsive rule sits behind exactly those widths, on screen only", () => {
+    const queries = [...css.matchAll(/@media[^{]*\[data-rs-/g)];
+    assert.equal(queries.length, 0, "a responsive rule is not inside its own media block");
+
+    const blocks = [...css.matchAll(/@media ([^{]+)\{((?:[^{}]|\{[^{}]*\})*)\}/g)].filter((match) =>
+      match[2]!.includes("[data-rs-"),
+    );
+    assert.equal(blocks.length, 2, `expected one block per breakpoint, found ${blocks.length}`);
+    assert.match(blocks[0]![1]!, new RegExp(`screen and \\(max-width: ${RESPONSIVE_WIDTHS.tablet}px\\)`));
+    assert.match(blocks[1]![1]!, new RegExp(`screen and \\(max-width: ${RESPONSIVE_WIDTHS.mobile}px\\)`));
+    // Tablet first: at 390px both blocks match, and the cascade decides by
+    // source order. Written the other way round, mobile would lose to tablet.
+    assert.ok(
+      css.indexOf(blocks[0]![0]!) < css.indexOf(blocks[1]![0]!),
+      "mobile is written before tablet, so a tablet override would win at 390px",
+    );
+    // `screen`, so a printed page — which is narrow enough to match — is not
+    // quietly given the mobile design or the mobile hiding.
+    for (const block of blocks) assert.match(block[1]!, /^\s*screen and/);
+  });
+
+  test("every declaration that can be overridden has a rule at both breakpoints", () => {
+    for (const breakpoint of RESPONSIVE_BREAKPOINTS) {
+      const attribute = RESPONSIVE_ATTR[breakpoint];
+      const prefix = RESPONSIVE_PREFIX[breakpoint];
+      for (const property of RESPONSIVE_PROPERTIES) {
+        const rule = new RegExp(
+          `\\[${attribute}~="${property}"\\]\\s*\\{\\s*${property}:\\s*var\\(${prefix}${property}\\)\\s*!important;\\s*\\}`,
+        );
+        assert.match(css, rule, `${breakpoint} has no rule for ${property}`);
+      }
+      // …and the reveal's rename, which writes the property the reveal rules
+      // read rather than the one it was named after.
+      assert.match(
+        css,
+        new RegExp(
+          `\\[${attribute}~="${REVEAL_OPACITY_PROPERTY}"\\]\\s*\\{\\s*${FINAL_OPACITY}:\\s*var\\(${prefix}opacity\\)\\s*!important;\\s*\\}`,
+        ),
+        `${breakpoint} has no reveal-opacity rule`,
+      );
+    }
+  });
+
+  test("the responsive layer names no selector of its own beyond those attributes", () => {
+    const blocks = [...css.matchAll(/@media ([^{]+)\{((?:[^{}]|\{[^{}]*\})*)\}/g)].filter((match) =>
+      match[2]!.includes("[data-rs-"),
+    );
+    for (const block of blocks) {
+      const body = block[2]!.replace(/\/\*[\s\S]*?\*\//g, "");
+      for (const selector of body.matchAll(/([^{}]+)\{/g)) {
+        assert.match(
+          selector[1]!.trim(),
+          /^\[data-rs-[tm]~="[a-z-]+"\]$/,
+          `a responsive rule matches something other than its own attribute: ${selector[1]}`,
+        );
+      }
     }
   });
 });

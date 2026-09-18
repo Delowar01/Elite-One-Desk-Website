@@ -126,7 +126,7 @@ export function DestinationFeatureBlock({ values, ctx, editor, styles }: BlockPr
                 sizes="(max-width: 1024px) 92vw, 42vw"
                 ratio="4 / 5"
                 className="w-full"
-                style={imageNode.image}
+                {...imageNode.image}
               />
               <span
                 aria-hidden

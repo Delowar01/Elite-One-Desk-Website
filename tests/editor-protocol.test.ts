@@ -236,10 +236,42 @@ describe("version 2: structure, hover, selection and bounds", () => {
         node: null,
         rect: null,
       });
-      // Half a message is not a message.
-      assert.equal(readCanvasMessage(wrap({ type, node: NODE, rect: null }), { bridgeId: BRIDGE }), null);
+      // A rectangle with nothing it belongs to is half a message.
       assert.equal(readCanvasMessage(wrap({ type, rect: RECT }), { bridgeId: BRIDGE }), null);
     }
+  });
+
+  test("a selection may have nothing to draw; a hover may not", () => {
+    // The asymmetry is deliberate. A hover is the answer to "what is under the
+    // pointer", and something with no box is not under anything. A selection is
+    // the answer to "what is being edited", and an element hidden at the width
+    // being previewed is exactly that — still in the document, measuring 0×0,
+    // and the only place the control that un-hides it can be reached from.
+    assert.deepEqual(
+      readCanvasMessage(wrap({ type: "canvas.selection", node: NODE, rect: null }), { bridgeId: BRIDGE }),
+      { type: "canvas.selection", node: NODE, rect: null },
+    );
+    assert.equal(
+      readCanvasMessage(wrap({ type: "canvas.hover", node: NODE, rect: null }), { bridgeId: BRIDGE }),
+      null,
+    );
+    // A rectangle that is there but unusable reads as no rectangle rather than
+    // as no selection: dropping the message would lose a selection the canvas
+    // really made.
+    assert.deepEqual(
+      readCanvasMessage(
+        wrap({ type: "canvas.selection", node: NODE, rect: { x: 0, y: 0, width: 0, height: 0 } }),
+        { bridgeId: BRIDGE },
+      ),
+      { type: "canvas.selection", node: NODE, rect: null },
+    );
+    // …but a selection still has to name a node the reader can rebuild.
+    assert.equal(
+      readCanvasMessage(wrap({ type: "canvas.selection", node: { ...NODE, address: "div > p" }, rect: null }), {
+        bridgeId: BRIDGE,
+      }),
+      null,
+    );
   });
 
   test("node metadata is rebuilt field by field, and the two halves must agree", () => {

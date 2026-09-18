@@ -156,9 +156,20 @@ export type CanvasHover = { type: "canvas.hover"; node: EditorNodeMeta; rect: Re
   rect: null;
 };
 
-/** What is selected, or nothing. */
+/**
+ * What is selected, or nothing.
+ *
+ * `rect: null` with a node is a real state, not a malformed message: the
+ * element is in the document and has nothing to draw around. A section hidden
+ * at this breakpoint is the ordinary case — `display: none` measures 0×0 — and
+ * so is a reveal that has not run, or anything mid-transition. Selecting it is
+ * how an editor gets the control that un-hides it back, so "no rectangle" has
+ * to mean "no outline this frame" rather than "no selection". Hover is
+ * different and stays strict: there is nothing to hover if there is nothing
+ * under the pointer.
+ */
 export type CanvasSelection =
-  | { type: "canvas.selection"; node: EditorNodeMeta; rect: Rect }
+  | { type: "canvas.selection"; node: EditorNodeMeta; rect: Rect | null }
   | { type: "canvas.selection"; node: null; rect: null };
 
 /**
@@ -352,14 +363,22 @@ export function readCanvasMessage(
       }
       return { type: "canvas.structure", sections };
     }
-    case "canvas.hover":
-    case "canvas.selection": {
-      const type = message.type;
-      if (message.node === null) return { type, node: null, rect: null };
+    case "canvas.hover": {
+      if (message.node === null) return { type: "canvas.hover", node: null, rect: null };
       const node = readNode(message.node);
       const rect = readRect(message.rect);
       if (!node || !rect) return null;
-      return { type, node, rect };
+      return { type: "canvas.hover", node, rect };
+    }
+    case "canvas.selection": {
+      if (message.node === null) return { type: "canvas.selection", node: null, rect: null };
+      const node = readNode(message.node);
+      if (!node) return null;
+      // A selected node may legitimately have nothing to draw; an unreadable
+      // rectangle is treated the same way, because the alternative is dropping
+      // a selection the canvas really made.
+      const rect = message.rect === null ? null : readRect(message.rect);
+      return { type: "canvas.selection", node, rect };
     }
     case "canvas.bounds": {
       if (typeof message.address !== "string" || !parseAddress(message.address)) return null;

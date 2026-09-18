@@ -80,7 +80,7 @@ export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
                           alt=""
                           sizes="(max-width: 640px) 46vw, (max-width: 1280px) 31vw, 23vw"
                           className="ql-img"
-                          style={shot.image}
+                          {...shot.image}
                         />
                       ) : null}
                     </span>

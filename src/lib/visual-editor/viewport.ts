@@ -1,3 +1,4 @@
+import type { Breakpoint } from "@/lib/cms/styles";
 import type { IconName } from "@/lib/icons";
 
 /**
@@ -40,3 +41,20 @@ export const deviceOrDefault = (value: unknown): DeviceKey =>
   isDeviceKey(value) ? value : DEFAULT_DEVICE;
 
 export const deviceWidth = (key: DeviceKey): number => BY_KEY.get(key)!.width;
+
+/**
+ * Which style branch a device edits.
+ *
+ * The device picker is the only breakpoint switch there is: previewing a width
+ * and editing the overrides that apply at it are the same act, and a second
+ * control for the same choice is a way for the two to disagree — an editor
+ * looking at Mobile while typing into Tablet.
+ *
+ * Desktop maps to `base` rather than to a "desktop override", because base is
+ * not one width's opinion: it is the design every width starts from.
+ */
+export const DEVICE_BREAKPOINT: Record<DeviceKey, Breakpoint> = {
+  desktop: "base",
+  tablet: "tablet",
+  mobile: "mobile",
+};

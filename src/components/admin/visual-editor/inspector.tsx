@@ -4,7 +4,7 @@ import { Icon } from "@/components/ui/icon";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { getBlock } from "@/lib/cms/blocks";
 import { DRAFT_LABEL, type DraftKind } from "@/lib/cms/drafts";
-import type { StyleDocument } from "@/lib/cms/styles";
+import type { Breakpoint, StyleDocument } from "@/lib/cms/styles";
 import type { Locale } from "@/lib/i18n/config";
 import type { VisualSectionData } from "@/lib/visual-editor/content";
 import { describeAddress } from "@/lib/visual-editor/labels";
@@ -80,6 +80,7 @@ export function InspectorPanel({
   media,
   canManage,
   buffer,
+  breakpoint,
   tab,
   onTab,
   loading,
@@ -97,6 +98,8 @@ export function InspectorPanel({
   media: MediaOption[];
   canManage: boolean;
   buffer: SectionBuffer | null;
+  /** Which branch the Style tab edits — the device being previewed decides. */
+  breakpoint: Breakpoint;
   tab: EditDomain;
   onTab: (next: EditDomain) => void;
   loading: boolean;
@@ -189,6 +192,7 @@ export function InspectorPanel({
                   <StyleInspector
                     node={node}
                     styles={buffer.styles}
+                    breakpoint={breakpoint}
                     canManage={canManage}
                     onChange={onStyles}
                   />

@@ -40,7 +40,7 @@ export function ImageTextBlock({ values, ctx, editor, styles }: BlockProps) {
                 sizes="(max-width: 1024px) 92vw, 45vw"
                 ratio="4 / 3"
                 className="w-full"
-                style={imageNode.image}
+                {...imageNode.image}
               />
             </div>
           </Reveal>

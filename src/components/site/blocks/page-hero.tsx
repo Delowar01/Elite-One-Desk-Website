@@ -27,7 +27,7 @@ export function PageHeroBlock({ values, ctx, index, editor, styles }: BlockProps
             sizes="100vw"
             priority
             className="size-full object-cover opacity-30"
-            style={backgroundNode.image}
+            {...backgroundNode.image}
           />
           <div
             className="absolute inset-0"

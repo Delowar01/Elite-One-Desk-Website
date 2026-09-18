@@ -16,7 +16,7 @@ import { previewPagePath } from "@/lib/page-path";
 import { blockNameOf } from "@/lib/visual-editor/labels";
 import type { VisualSectionData } from "@/lib/visual-editor/content";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
-import { EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
+import { DEVICE_BREAKPOINT, EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
 
 import { VisualCanvas, type CanvasState, type SelectRequest } from "./canvas";
 import { InspectorPanel, isDirty, type EditDomain, type SectionBuffer } from "./inspector";
@@ -743,6 +743,7 @@ export function VisualEditorShell({
           media={media}
           canManage={canManage}
           buffer={buffer}
+          breakpoint={DEVICE_BREAKPOINT[device]}
           tab={tab}
           onTab={setTab}
           loading={loadingId !== null && loadingId === activeId}

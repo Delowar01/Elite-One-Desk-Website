@@ -46,7 +46,7 @@ export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) 
                 sizes="(max-width: 1024px) 92vw, 44vw"
                 ratio="5 / 6"
                 className="w-full"
-                style={imageNode.image}
+                {...imageNode.image}
               />
               <div
                 aria-hidden

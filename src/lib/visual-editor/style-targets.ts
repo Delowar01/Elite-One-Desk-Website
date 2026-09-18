@@ -18,7 +18,7 @@ import type { StyleTokens } from "@/lib/cms/styles";
  * back here.
  */
 
-export type StyleGroup = "typography" | "spacing" | "surface" | "size" | "media";
+export type StyleGroup = "typography" | "spacing" | "surface" | "size" | "media" | "visibility";
 
 export type StyleTarget = {
   /** Which family of element this is, for the panel's heading. */
@@ -36,6 +36,7 @@ const SECTION_TOKENS = [
   "border",
   "shadow",
   "opacity",
+  "hidden",
 ] as const;
 
 /**
@@ -57,6 +58,7 @@ const SLOT_TOKENS = [
   "shadow",
   "opacity",
   "maxWidth",
+  "hidden",
 ] as const;
 
 /**
@@ -81,6 +83,7 @@ const CONTAINER_TOKENS = [
   "shadow",
   "opacity",
   "maxWidth",
+  "hidden",
 ] as const;
 
 const TEXT_TOKENS = [
@@ -92,6 +95,7 @@ const TEXT_TOKENS = [
   "marginInline",
   "maxWidth",
   "opacity",
+  "hidden",
 ] as const;
 
 /**
@@ -112,6 +116,7 @@ const ITEM_TOKENS = [
   "shadow",
   "opacity",
   "maxWidth",
+  "hidden",
 ] as const;
 
 const MEDIA_TOKENS = [
@@ -122,6 +127,7 @@ const MEDIA_TOKENS = [
   "maxWidth",
   "objectX",
   "objectY",
+  "hidden",
 ] as const;
 
 const SECTION: StyleTarget = { category: "section", tokens: SECTION_TOKENS };
@@ -172,7 +178,7 @@ export function styleTargetFor(blockType: string, path: string | undefined): Sty
     const sub = field?.itemFields?.find((entry) => entry.name === third.name);
     // An icon is a glyph, not a picture: shape and opacity make sense, focal
     // point does not.
-    if (sub?.type === "icon") return { category: "media", tokens: ["textColor", "opacity"] };
+    if (sub?.type === "icon") return { category: "media", tokens: ["textColor", "opacity", "hidden"] };
     return fieldTarget(sub);
   }
 
@@ -188,6 +194,15 @@ export const STYLE_GROUPS: Record<StyleGroup, readonly (keyof StyleTokens)[]> = 
   surface: ["background", "border", "radius", "shadow", "opacity"],
   size: ["maxWidth"],
   media: ["objectX", "objectY"],
+  /**
+   * Last, and on every node.
+   *
+   * Hiding is the one override that is about the element existing rather than
+   * about how it looks, which is why it sits on its own at the bottom rather
+   * than among the surface controls — and why it is offered wherever a node is,
+   * from a section down to one word of a heading.
+   */
+  visibility: ["hidden"],
 };
 
 export const STYLE_GROUP_LABELS: Record<StyleGroup, string> = {
@@ -196,6 +211,7 @@ export const STYLE_GROUP_LABELS: Record<StyleGroup, string> = {
   surface: "Surface",
   size: "Size",
   media: "Focal point",
+  visibility: "Visibility",
 };
 
 export const STYLE_TOKEN_LABELS: Record<keyof StyleTokens, string> = {

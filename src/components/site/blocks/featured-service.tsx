@@ -109,7 +109,7 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles }: BlockProps
                     sizes="(max-width: 1024px) 90vw, 38vw"
                     ratio="4 / 3"
                     className="w-full"
-                    style={imageNode.image}
+                    {...imageNode.image}
                   />
                 </div>
               ) : null}

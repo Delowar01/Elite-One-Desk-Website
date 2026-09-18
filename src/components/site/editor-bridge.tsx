@@ -278,7 +278,11 @@ export function EditorBridge({
 
       const next = track(element);
       const node = next ? describe(element) : null;
-      if (!next || !node || !next.rect) return clearSelection();
+      // Connected but unmeasurable is a selection, not a non-selection. An
+      // element hidden at the width being previewed measures 0×0, and refusing
+      // to select it would mean the only way to un-hide something was to stop
+      // hiding it first. The overlay simply has nothing to draw until it does.
+      if (!next || !node) return clearSelection();
 
       selection = next;
       syncObservers();
