@@ -45,11 +45,13 @@ import {
 import { FINAL_OPACITY, revealMarks, revealStyle } from "@/components/site/reveal";
 import {
   INHERITS_FROM,
+  hiddenBasePaths,
   relativePath,
   tokenState,
   withToken,
   withoutBranch,
 } from "@/lib/visual-editor/style-edit";
+import { describeStoredPath } from "@/lib/visual-editor/labels";
 import { styleTargetFor } from "@/lib/visual-editor/style-targets";
 
 const doc = (nodes: StyleDocument["nodes"]): StyleDocument => ({
@@ -667,8 +669,13 @@ describe("a responsive override reaches the page as a value and a name, never as
     assert.deepEqual(hide?.attrs, { "data-rs-m": "display" });
     assert.equal(hide?.vars["--rs-m-display"], "none");
 
-    // `hidden: false` is not how the document says "shown" — inheriting is.
-    const shown = responsiveStyle(document({ root: { mobile: { hidden: false } } }), "root");
+    // `hidden: false` is not how the document says "shown" — inheriting is —
+    // and the validator drops it, so the mapper never sees one. Cast, because
+    // the type says the same thing the validator does.
+    const shown = responsiveStyle(
+      document({ root: { mobile: { hidden: false } as never } }),
+      "root",
+    );
     assert.equal(shown, undefined);
   });
 
@@ -951,5 +958,154 @@ describe("the stylesheet and the constants say the same thing about widths", () 
         );
       }
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("hiding is true or it is not stored", () => {
+  /**
+   * The responsive contract has one spelling for "shown": the absence of the
+   * key. A stored `false` would be a second one, and two spellings of one state
+   * drift — a node saying nothing and a node saying `false` would look
+   * different in the panel, diff differently, and make "does this branch
+   * override anything" a question with two answers. It would also be the first
+   * half of a re-show model that does not exist, because hiding runs downwards.
+   */
+  const through = (node: Record<string, unknown>) =>
+    validateStyleDocument({ v: 1, nodes: { "field:title": node } }).nodes["field:title"];
+
+  test("`false` is dropped from Base, and the rest of the branch survives", () => {
+    assert.deepEqual(through({ base: { hidden: false, textColor: "orange" } }), {
+      base: { textColor: "orange" },
+    });
+  });
+
+  test("…from Tablet", () => {
+    assert.deepEqual(through({ tablet: { hidden: false, fontSize: "h3" } }), {
+      tablet: { fontSize: "h3" },
+    });
+  });
+
+  test("…and from Mobile", () => {
+    assert.deepEqual(through({ mobile: { hidden: false, align: "center" } }), {
+      mobile: { align: "center" },
+    });
+  });
+
+  test("a branch whose only token was `false` is removed, and so is an empty node", () => {
+    assert.deepEqual(
+      through({ base: { hidden: false }, mobile: { hidden: true } }),
+      { mobile: { hidden: true } },
+    );
+    assert.deepEqual(validateStyleDocument({ v: 1, nodes: { root: { base: { hidden: false } } } }).nodes, {});
+  });
+
+  test("nothing that merely looks false-ish survives either", () => {
+    for (const value of [false, "false", "true", 0, 1, null, "", [], {}, "yes"]) {
+      assert.deepEqual(
+        through({ base: { hidden: value, textColor: "orange" } }),
+        { base: { textColor: "orange" } },
+        `${JSON.stringify(value)} survived`,
+      );
+    }
+  });
+
+  test("`true` survives in all three branches", () => {
+    assert.deepEqual(
+      through({ base: { hidden: true }, tablet: { hidden: true }, mobile: { hidden: true } }),
+      { base: { hidden: true }, tablet: { hidden: true }, mobile: { hidden: true } },
+    );
+  });
+
+  test("and validating twice changes nothing", () => {
+    const once = validateStyleDocument({
+      v: 1,
+      nodes: { "field:title": { base: { hidden: false, opacity: 0.5 }, mobile: { hidden: true } } },
+    });
+    assert.deepEqual(validateStyleDocument(once), once);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a Base hide leaves a way back", () => {
+  const document = doc({
+    root: { base: { hidden: true } },
+    "field:title": { base: { hidden: true, textColor: "orange" } },
+    "field:intro": { base: { textColor: "peach" } },
+    "field:links/item:i_aaaaaaaaaa": { base: { hidden: true } },
+    "field:links/item:i_bbbbbbbbbb": { mobile: { hidden: true } },
+    "field:links/item:i_cccccccccc/field:label": { tablet: { hidden: true } },
+  });
+
+  test("the document lists what is hidden at every width, and nothing else", () => {
+    // Only Base. A tablet or mobile hide undoes itself by switching device, so
+    // listing those would be a list of things that are not lost.
+    assert.deepEqual(hiddenBasePaths(document).sort(), [
+      "field:links/item:i_aaaaaaaaaa",
+      "field:title",
+    ]);
+  });
+
+  test("the section root is not in it — Layers can always reach that", () => {
+    assert.ok(!hiddenBasePaths(document).includes("root"));
+  });
+
+  test("a document with nothing hidden lists nothing", () => {
+    assert.deepEqual(hiddenBasePaths(doc({})), []);
+    assert.deepEqual(hiddenBasePaths(doc({ "field:title": { base: { opacity: 0.5 } } })), []);
+  });
+
+  test("Restore clears the token and leaves the rest of the node alone", () => {
+    const restored = withToken(document, "field:title", "base", "hidden", undefined);
+    assert.deepEqual(restored.nodes["field:title"], { base: { textColor: "orange" } });
+    assert.deepEqual(hiddenBasePaths(restored), ["field:links/item:i_aaaaaaaaaa"]);
+    // …and the node goes entirely when the hide was all it had.
+    const row = withToken(restored, "field:links/item:i_aaaaaaaaaa", "base", "hidden", undefined);
+    assert.equal(row.nodes["field:links/item:i_aaaaaaaaaa"], undefined);
+    assert.deepEqual(hiddenBasePaths(row), []);
+    // Nothing else moved: the neighbour's own mobile hide is untouched.
+    assert.deepEqual(row.nodes["field:links/item:i_bbbbbbbbbb"], { mobile: { hidden: true } });
+  });
+
+  test("a hidden row is named by its own words, found by its id and not its position", () => {
+    const values = {
+      links: [
+        { _id: "i_zzzzzzzzzz", label: { en: "Visa Assistance", ar: "" } },
+        { _id: "i_aaaaaaaaaa", label: { en: "Plan a Trip", ar: "" } },
+      ],
+    };
+    const described = describeStoredPath("quick-links", "field:links/item:i_aaaaaaaaaa", values, "en");
+    assert.equal(described.label, "Plan a Trip");
+    assert.deepEqual(described.crumbs, ["Quick service navigation", "Links", "Plan a Trip"]);
+
+    // The same row, moved to the front: the name follows the id.
+    const moved = { links: [values.links[1]!, values.links[0]!] };
+    assert.equal(
+      describeStoredPath("quick-links", "field:links/item:i_aaaaaaaaaa", moved, "en").label,
+      "Plan a Trip",
+    );
+  });
+
+  test("an ordinary field is named from the registry", () => {
+    const described = describeStoredPath("quick-links", "field:title", {}, "en");
+    assert.equal(described.label, "Title");
+  });
+
+  test("a row the values no longer hold is still named, never shown as an id", () => {
+    const described = describeStoredPath("quick-links", "field:links/item:i_aaaaaaaaaa", {}, "en");
+    assert.equal(described.label, "Item");
+    assert.ok(!described.crumbs.join(" ").includes("i_aaaaaaaaaa"));
+  });
+
+  test("Arabic names it in Arabic", () => {
+    const values = {
+      links: [{ _id: "i_aaaaaaaaaa", label: { en: "Plan a Trip", ar: "خطّط لرحلة" } }],
+    };
+    assert.equal(
+      describeStoredPath("quick-links", "field:links/item:i_aaaaaaaaaa", values, "ar").label,
+      "خطّط لرحلة",
+    );
   });
 });

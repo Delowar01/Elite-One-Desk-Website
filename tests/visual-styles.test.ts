@@ -1676,6 +1676,87 @@ describe("hiding is a style, and it runs downwards", () => {
     assert.equal(varsOf(tagWith(after.html, 'data-section="faq"'))["--rs-m-display"], "none");
   });
 
+  test("`hidden: false` does not survive the save, in any branch", async () => {
+    const hero = await find("terms", "page-hero");
+    const before = await row(hero.id);
+
+    const saved = answered(
+      await saveStyles(
+        hero,
+        doc({
+          root: { base: { hidden: false, padBlock: 4 } },
+          "field:title": {
+            base: { hidden: false, textColor: "orange" },
+            tablet: { hidden: false, fontSize: "h3" },
+            mobile: { hidden: false, align: "center" },
+          },
+          "field:lead": { base: { hidden: false } },
+        }),
+      ),
+    );
+    assert.ok(saved.ok);
+
+    // The document has exactly one spelling for "shown", and it is silence.
+    assert.deepEqual(saved.styles.nodes.root, { base: { padBlock: 4 } });
+    assert.deepEqual(saved.styles.nodes["field:title"], {
+      base: { textColor: "orange" },
+      tablet: { fontSize: "h3" },
+      mobile: { align: "center" },
+    });
+    assert.equal(saved.styles.nodes["field:lead"], undefined, "a node was kept for a false");
+
+    const stored = JSON.stringify((await row(hero.id)).draft_styles);
+    assert.ok(!stored.includes("hidden"), `a hide was stored: ${stored}`);
+    assert.ok(!stored.includes("false"), `a false was stored: ${stored}`);
+
+    // …and nothing of it renders: no display declaration and no display marker.
+    const html = (await canvas("/terms")).html;
+    const rootTag = tagWith(html, 'data-section="page-hero"');
+    assert.ok(!/(^|;)\s*display:\s*none/.test(styleOf(rootTag)), "a false hid the section");
+    const titleTag = tagWith(html, `data-eod-address="section:${hero.id}/field:title"`);
+    assert.ok(titleTag, "the title is not addressable");
+    assert.deepEqual(listed(titleTag, "data-rs-t"), ["font-size", "line-height", "letter-spacing"]);
+    assert.deepEqual(listed(titleTag, "data-rs-m"), ["text-align"]);
+    assert.ok(!listed(titleTag, "data-rs-t").includes("display"), "a false became a tablet rule");
+    assert.ok(!listed(titleTag, "data-rs-m").includes("display"), "a false became a mobile rule");
+
+    // The save itself was an ordinary one.
+    const after = await row(hero.id);
+    assert.equal(after.revision, before.revision + 1);
+    assert.equal(saved.revision, before.revision + 1);
+    assert.deepEqual(after.published, before.published);
+    assert.equal(after.draft, before.draft);
+  });
+
+  test("…and `hidden: true` still does, in the same three places", async () => {
+    const hero = await find("terms", "page-hero");
+    const saved = answered(
+      await saveStyles(
+        hero,
+        doc({
+          root: { base: { hidden: true } },
+          "field:title": { tablet: { hidden: true } },
+          "field:lead": { mobile: { hidden: true } },
+        }),
+      ),
+    );
+    assert.ok(saved.ok);
+    assert.deepEqual(saved.styles.nodes.root, { base: { hidden: true } });
+    assert.deepEqual(saved.styles.nodes["field:title"], { tablet: { hidden: true } });
+    assert.deepEqual(saved.styles.nodes["field:lead"], { mobile: { hidden: true } });
+
+    const html = (await canvas("/terms")).html;
+    assert.match(styleOf(tagWith(html, 'data-section="page-hero"')), /(^|;)\s*display:\s*none/);
+    assert.deepEqual(
+      listed(tagWith(html, `data-eod-address="section:${hero.id}/field:title"`), "data-rs-t"),
+      ["display"],
+    );
+    assert.deepEqual(
+      listed(tagWith(html, `data-eod-address="section:${hero.id}/field:lead"`), "data-rs-m"),
+      ["display"],
+    );
+  });
+
   test("clearing the override brings it back with nothing stored to say so", async () => {
     const section = await find("contact", "faq");
     const cleared = answered(await saveStyles(section, doc({})));

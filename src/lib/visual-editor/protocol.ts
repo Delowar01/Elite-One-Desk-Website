@@ -167,6 +167,10 @@ export type CanvasHover = { type: "canvas.hover"; node: EditorNodeMeta; rect: Re
  * to mean "no outline this frame" rather than "no selection". Hover is
  * different and stays strict: there is nothing to hover if there is nothing
  * under the pointer.
+ *
+ * Three shapes are legal and nothing else is: `{node, rect}`, `{node, null}`
+ * and `{null, null}`. A rectangle the reader cannot make sense of is refused
+ * rather than rounded down to the second of those — see the reader.
  */
 export type CanvasSelection =
   | { type: "canvas.selection"; node: EditorNodeMeta; rect: Rect | null }
@@ -364,21 +368,35 @@ export function readCanvasMessage(
       return { type: "canvas.structure", sections };
     }
     case "canvas.hover": {
-      if (message.node === null) return { type: "canvas.hover", node: null, rect: null };
+      // Nothing hovered is one shape and one only: both fields null. A node
+      // with no rectangle, or a rectangle with no node, is half a message.
+      if (message.node === null) return message.rect === null ? { type: "canvas.hover", node: null, rect: null } : null;
       const node = readNode(message.node);
       const rect = readRect(message.rect);
       if (!node || !rect) return null;
       return { type: "canvas.hover", node, rect };
     }
     case "canvas.selection": {
-      if (message.node === null) return { type: "canvas.selection", node: null, rect: null };
+      if (message.node === null) {
+        return message.rect === null ? { type: "canvas.selection", node: null, rect: null } : null;
+      }
       const node = readNode(message.node);
       if (!node) return null;
-      // A selected node may legitimately have nothing to draw; an unreadable
-      // rectangle is treated the same way, because the alternative is dropping
-      // a selection the canvas really made.
-      const rect = message.rect === null ? null : readRect(message.rect);
-      return { type: "canvas.selection", node, rect };
+      /**
+       * `null` is a claim; a bad rectangle is a bug.
+       *
+       * An explicit `rect: null` says "this node is connected and measures
+       * nothing" — the canvas decided that, and it is the state a node hidden
+       * at the width being previewed is in. A *non-null* rectangle that cannot
+       * be read says something went wrong on the way here, and quietly
+       * rewriting it to `null` would file a fault under a legitimate state:
+       * the editor would show a selection with no outline and no reason, and
+       * whatever produced `NaN` would never be noticed. So the message is
+       * refused, exactly as a malformed hover is.
+       */
+      if (message.rect === null) return { type: "canvas.selection", node, rect: null };
+      const rect = readRect(message.rect);
+      return rect ? { type: "canvas.selection", node, rect } : null;
     }
     case "canvas.bounds": {
       if (typeof message.address !== "string" || !parseAddress(message.address)) return null;

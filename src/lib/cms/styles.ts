@@ -106,7 +106,8 @@ export type StyleTokens = {
   maxWidth?: "none" | "prose" | "site" | "wide";
   objectX?: number;
   objectY?: number;
-  hidden?: boolean;
+  /** True or absent. There is no stored `false` — see `onlyTrue`. */
+  hidden?: true;
 };
 
 export type StyleNode = Partial<Record<Breakpoint, StyleTokens>>;
@@ -152,7 +153,22 @@ const percent = (): Check => (raw) => {
   return Math.round(value);
 };
 
-const flag = (): Check => (raw) => (typeof raw === "boolean" ? raw : undefined);
+/**
+ * Hiding is true or it is not stored at all.
+ *
+ * `hidden: false` is not how this document says "shown" — the absence of the
+ * key is, at every branch. Keeping a stored `false` would give the same state
+ * two spellings, and they would drift: one node saying nothing and another
+ * saying `false` would look different in the panel, diff differently, and make
+ * "does this branch override anything" a question with two answers. It would
+ * also be the first half of a re-show model the responsive contract does not
+ * have, since hiding runs downwards and there is no way to bring something
+ * back at a narrower width.
+ *
+ * So anything that is not exactly `true` — `false`, `"false"`, `0`, `null` —
+ * is dropped, and an editor who turns hiding off deletes the key.
+ */
+const onlyTrue = (): Check => (raw) => (raw === true ? true : undefined);
 
 /**
  * Every spatial key is logical. There is no `marginLeft`, no `paddingRight`,
@@ -178,7 +194,7 @@ const TOKENS: Record<keyof StyleTokens, Check> = {
   maxWidth: oneOf(MAX_WIDTHS),
   objectX: percent(),
   objectY: percent(),
-  hidden: flag(),
+  hidden: onlyTrue(),
 };
 
 export const STYLE_TOKEN_KEYS = Object.keys(TOKENS) as (keyof StyleTokens)[];

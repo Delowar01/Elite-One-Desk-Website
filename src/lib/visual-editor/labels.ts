@@ -1,5 +1,7 @@
 import { parseNodePath } from "@/lib/cms/address";
 import { getBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
+import { ITEM_ID_KEY } from "@/lib/cms/item-id";
+import { pick, type Locale } from "@/lib/i18n/config";
 
 /**
  * Turning an address into something a person can read.
@@ -84,3 +86,70 @@ const truncate = (value: string, max = 42): string =>
 /** The registry's name for a block, for Layers rows. */
 export const blockNameOf = (blockType: string): string =>
   getBlock(blockType)?.name ?? humanise(blockType);
+
+/**
+ * The same description, for a path nothing on screen is showing.
+ *
+ * `describeAddress` names a repeatable row from the words the canvas could see
+ * on it, which is the right source when there is something to look at. A node
+ * hidden at Base is not on screen anywhere, and "Item" is not a name anybody
+ * can act on — so the row's words are read out of the section's own values
+ * instead, by the row's stable `_id` and never by its position.
+ *
+ * Which field supplies them is the registry's first declared one, the same
+ * field `items()` treats as a row's primary text, so the name here is the name
+ * the panel uses everywhere else.
+ */
+export function describeStoredPath(
+  blockType: string,
+  relativePath: string,
+  values: Record<string, unknown>,
+  locale: Locale,
+): AddressDescription {
+  return describeAddress(blockType, relativePath, rowText(blockType, relativePath, values, locale));
+}
+
+function rowText(
+  blockType: string,
+  relativePath: string,
+  values: Record<string, unknown>,
+  locale: Locale,
+): string | undefined {
+  const path = parseNodePath(relativePath);
+  if (!path) return undefined;
+
+  const block = getBlock(blockType);
+  let fields: readonly (FieldDef | ItemFieldDef)[] = block?.fields ?? [];
+  let list: unknown = undefined;
+  let text: string | undefined;
+
+  for (const segment of path) {
+    if (segment.kind === "item") {
+      const row = Array.isArray(list)
+        ? (list as Record<string, unknown>[]).find((entry) => entry?.[ITEM_ID_KEY] === segment.name)
+        : undefined;
+      // The row's primary field, whatever the registry calls it here.
+      const primary = fields[0]?.name;
+      const raw = primary && row ? row[primary] : undefined;
+      text =
+        typeof raw === "string"
+          ? raw
+          : typeof raw === "object" && raw !== null
+            ? pick(locale, String((raw as { en?: unknown }).en ?? ""), String((raw as { ar?: unknown }).ar ?? ""))
+            : undefined;
+      list = undefined;
+      continue;
+    }
+
+    const declared = fields.find((field) => field.name === segment.name);
+    if (declared && "itemFields" in declared && declared.itemFields) {
+      fields = declared.itemFields;
+      list = values?.[segment.name];
+    } else {
+      fields = [];
+      list = undefined;
+    }
+  }
+
+  return text?.trim() ? text.trim() : undefined;
+}

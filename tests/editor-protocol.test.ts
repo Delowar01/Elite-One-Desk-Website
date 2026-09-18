@@ -255,23 +255,79 @@ describe("version 2: structure, hover, selection and bounds", () => {
       readCanvasMessage(wrap({ type: "canvas.hover", node: NODE, rect: null }), { bridgeId: BRIDGE }),
       null,
     );
-    // A rectangle that is there but unusable reads as no rectangle rather than
-    // as no selection: dropping the message would lose a selection the canvas
-    // really made.
-    assert.deepEqual(
-      readCanvasMessage(
-        wrap({ type: "canvas.selection", node: NODE, rect: { x: 0, y: 0, width: 0, height: 0 } }),
-        { bridgeId: BRIDGE },
-      ),
-      { type: "canvas.selection", node: NODE, rect: null },
-    );
-    // …but a selection still has to name a node the reader can rebuild.
+    // A selection still has to name a node the reader can rebuild.
     assert.equal(
       readCanvasMessage(wrap({ type: "canvas.selection", node: { ...NODE, address: "div > p" }, rect: null }), {
         bridgeId: BRIDGE,
       }),
       null,
     );
+  });
+
+  test("an explicit null is a claim; a rectangle that cannot be read is a fault", () => {
+    /**
+     * `rect: null` says "the canvas looked and there was nothing to draw".
+     * A *non-null* rectangle the reader cannot make sense of says something
+     * went wrong on the way here. Collapsing the second into the first would
+     * file a bug under a legitimate state: the editor would show a selection
+     * with no outline and no reason, and whatever produced the `NaN` would
+     * never be noticed. Every one of these is refused outright.
+     */
+    const malformed: unknown[] = [
+      { x: 0, y: 0, width: 0, height: 10 },
+      { x: 0, y: 0, width: 10, height: 0 },
+      { x: 0, y: 0, width: 0, height: 0 },
+      { x: Number.NaN, y: 0, width: 10, height: 10 },
+      { x: 0, y: Number.POSITIVE_INFINITY, width: 10, height: 10 },
+      { x: 0, y: 0, width: Number.NaN, height: 10 },
+      { x: 0, y: 0, width: 10, height: Number.NEGATIVE_INFINITY },
+      { x: "0", y: 0, width: 10, height: 10 },
+      { x: 0, y: 0, width: "10", height: 10 },
+      { x: 0, y: 0, width: 1e9, height: 10 },
+      { x: -1e9, y: 0, width: 10, height: 10 },
+      { x: 0, y: 0, width: 10 },
+      { left: 0, top: 0, width: 10, height: 10 },
+      {},
+      [],
+      "bad",
+      0,
+      true,
+    ];
+    for (const rect of malformed) {
+      for (const type of ["canvas.hover", "canvas.selection"] as const) {
+        assert.equal(
+          readCanvasMessage(wrap({ type, node: NODE, rect }), { bridgeId: BRIDGE }),
+          null,
+          `${type} accepted ${JSON.stringify(rect)}`,
+        );
+      }
+    }
+    // `undefined` is not `null`: a message that simply left the field out is
+    // not a claim about anything.
+    assert.equal(
+      readCanvasMessage(wrap({ type: "canvas.selection", node: NODE }), { bridgeId: BRIDGE }),
+      null,
+    );
+  });
+
+  test("nothing selected and nothing hovered have exactly one spelling", () => {
+    for (const type of ["canvas.hover", "canvas.selection"] as const) {
+      assert.deepEqual(readCanvasMessage(wrap({ type, node: null, rect: null }), { bridgeId: BRIDGE }), {
+        type,
+        node: null,
+        rect: null,
+      });
+      // A rectangle belonging to nothing is not a message, however valid the
+      // rectangle is.
+      assert.equal(readCanvasMessage(wrap({ type, node: null, rect: RECT }), { bridgeId: BRIDGE }), null);
+      assert.equal(
+        readCanvasMessage(wrap({ type, node: null, rect: { x: 0, y: 0, width: 0, height: 0 } }), {
+          bridgeId: BRIDGE,
+        }),
+        null,
+      );
+      assert.equal(readCanvasMessage(wrap({ type, node: null }), { bridgeId: BRIDGE }), null);
+    }
   });
 
   test("node metadata is rebuilt field by field, and the two halves must agree", () => {

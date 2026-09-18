@@ -126,3 +126,25 @@ export function tokenState(
   }
   return { value, inherited, from };
 }
+
+/**
+ * The paths a section has hidden at Base, in the order they were written.
+ *
+ * This is the one override an editor cannot undo by looking somewhere else. A
+ * mobile hide is recoverable by switching to Tablet, a tablet hide by switching
+ * to Desktop — the element comes back, gets clicked, and the control is right
+ * there. A *Base* hide is `display: none` at every width, so the moment the
+ * selection that made it is gone — a reload, a new session tomorrow — there is
+ * nothing on the canvas left to point at, and Layers is section-level by
+ * design.
+ *
+ * So the section's own document is the index: the panel reads the hidden
+ * descendants back out of it and offers each one by name. `root` is excluded
+ * because a hidden section is still a row in Layers, and clicking that row
+ * selects it however much of it is drawn.
+ */
+export function hiddenBasePaths(document: StyleDocument): string[] {
+  return Object.entries(document.nodes)
+    .filter(([path, node]) => path !== "root" && node.base?.hidden === true)
+    .map(([path]) => path);
+}

@@ -192,6 +192,8 @@ export function InspectorPanel({
                   <StyleInspector
                     node={node}
                     styles={buffer.styles}
+                    values={buffer.values}
+                    locale={locale}
                     breakpoint={breakpoint}
                     canManage={canManage}
                     onChange={onStyles}

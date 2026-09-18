@@ -20,9 +20,17 @@ import {
   type StyleDocument,
   type StyleTokens,
 } from "@/lib/cms/styles";
-import { describeAddress } from "@/lib/visual-editor/labels";
-import { relativePath, tokenState, withToken, withoutBranch, type TokenState } from "@/lib/visual-editor/style-edit";
+import { describeAddress, describeStoredPath } from "@/lib/visual-editor/labels";
+import {
+  hiddenBasePaths,
+  relativePath,
+  tokenState,
+  withToken,
+  withoutBranch,
+  type TokenState,
+} from "@/lib/visual-editor/style-edit";
 import type { EditorNodeMeta } from "@/lib/visual-editor/protocol";
+import type { Locale } from "@/lib/i18n/config";
 import {
   STYLE_GROUPS,
   STYLE_GROUP_LABELS,
@@ -88,12 +96,17 @@ const FROM_LABEL: Record<Breakpoint, string> = {
 export function StyleInspector({
   node,
   styles,
+  values,
+  locale,
   breakpoint,
   canManage,
   onChange,
 }: {
   node: EditorNodeMeta | null;
   styles: StyleDocument;
+  /** The section's own content, only ever read to name a hidden row. */
+  values: Record<string, unknown>;
+  locale: Locale;
   breakpoint: Breakpoint;
   canManage: boolean;
   onChange: (next: StyleDocument) => void;
@@ -174,6 +187,91 @@ export function StyleInspector({
             : `Reset ${FROM_LABEL[breakpoint].toLowerCase()} overrides`}
         </button>
       ) : null}
+
+      {path === "root" ? (
+        <HiddenElements
+          styles={styles}
+          blockType={node.blockType}
+          values={values}
+          locale={locale}
+          canManage={canManage}
+          onChange={onChange}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The way back from a Base hide.
+ *
+ * Hiding at Tablet or Mobile is its own undo: switch device, the element comes
+ * back, click it, clear the override. Hiding at **Base** is `display: none` at
+ * every width, so once the selection that made it is gone — a reload, a new
+ * session tomorrow — there is nothing on the canvas to point at. Layers is
+ * section-level and stays that way, so the section's own style document is the
+ * index instead: a list of what it has hidden, by name, with the one button
+ * that undoes it.
+ *
+ * It lives under the section root because that is the node an editor can always
+ * reach — a hidden section is still a row in Layers — and because the question
+ * "what has this section got hidden?" is a question about the section.
+ *
+ * Restore is an edit like any other: it clears the token in the local buffer,
+ * the panel goes dirty, and nothing reaches the database until Save styles.
+ * There is no second action and nothing is done to the canvas directly.
+ */
+function HiddenElements({
+  styles,
+  blockType,
+  values,
+  locale,
+  canManage,
+  onChange,
+}: {
+  styles: StyleDocument;
+  blockType: string;
+  values: Record<string, unknown>;
+  locale: Locale;
+  canManage: boolean;
+  onChange: (next: StyleDocument) => void;
+}) {
+  const hidden = hiddenBasePaths(styles);
+  if (!hidden.length) return null;
+
+  return (
+    <div className="border-t border-[var(--admin-line)] pt-3">
+      <p className="mb-1.5 text-[0.66rem] font-semibold uppercase tracking-[0.07em] text-muted">
+        Hidden elements
+      </p>
+      <ul className="flex flex-col gap-1.5" data-hidden-elements>
+        {hidden.map((target) => {
+          const described = describeStoredPath(blockType, target, values, locale);
+          return (
+            <li
+              key={target}
+              data-hidden-path={target}
+              className="flex items-center justify-between gap-2"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-[0.74rem] text-body">{described.label}</span>
+                <span className="block text-[0.66rem] text-muted">Hidden at all widths</span>
+              </span>
+              {canManage ? (
+                <button
+                  type="button"
+                  onClick={() => onChange(withToken(styles, target, "base", "hidden", undefined))}
+                  className="admin-btn admin-btn-sm shrink-0"
+                >
+                  Restore
+                </button>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }
