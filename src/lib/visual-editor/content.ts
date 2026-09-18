@@ -1,3 +1,4 @@
+import type { PageStructure } from "@/lib/cms/structure";
 import { parseNodePath } from "@/lib/cms/address";
 import type { StyleDocument } from "@/lib/cms/styles";
 
@@ -104,3 +105,21 @@ export function focusOf(relativePath: string): FieldFocus {
   const item = path.find((segment) => segment.kind === "item");
   return { field: first.name, itemId: item?.name ?? null };
 }
+
+/**
+ * What a structural action answers with.
+ *
+ * The whole page structure comes back on success, so the panel redraws Layers
+ * and the removed list from what the server now holds rather than from what it
+ * guessed the operation would do. `sectionId` is the section the operation
+ * created or acted on, which is what the selection follows.
+ */
+export type VisualStructureResult =
+  | {
+      ok: true;
+      revision: number;
+      sectionId: number | null;
+      message: string;
+      structure: PageStructure | null;
+    }
+  | { ok: false; reason: "conflict" | "invalid" | "denied"; message: string };

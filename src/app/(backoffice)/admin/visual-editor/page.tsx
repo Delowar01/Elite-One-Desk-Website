@@ -2,6 +2,7 @@ import { asc } from "drizzle-orm";
 
 import { VisualEditorShell, type EditablePage } from "@/components/admin/visual-editor/shell";
 import { requirePermission } from "@/lib/auth/guard";
+import { blocksForPage, type BlockDef } from "@/lib/cms/blocks";
 import { db } from "@/lib/db";
 import { media, pages } from "@/lib/db/schema";
 import { localeOrDefault, publicPathForPage } from "@/lib/page-path";
@@ -82,6 +83,16 @@ export default async function VisualEditorPage({
   const asked = typeof query.page === "string" ? query.page : "";
   const chosen = editable.find((row) => row.slug === asked) ?? editable[0];
 
+  /**
+   * What each page may have added to it, from the one registry the ordinary
+   * admin form is generated from — deprecated types are already absent from it.
+   * Computed per page rather than once, because a block's scope decides where
+   * it is allowed, and the picker must not offer a home-only block on About.
+   */
+  const blocks: Record<string, BlockDef[]> = Object.fromEntries(
+    rows.map((row) => [row.slug, blocksForPage(row.slug)]),
+  );
+
   return (
     <VisualEditorShell
       pages={editable}
@@ -92,6 +103,7 @@ export default async function VisualEditorPage({
       }}
       canManage={session.permissions.has("content.manage")}
       csrf={session.csrfToken}
+      blocks={blocks}
       media={library}
     />
   );

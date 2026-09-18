@@ -1,6 +1,6 @@
 "use server";
 
-import { and, asc, eq, gt, lt, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 
@@ -17,6 +17,17 @@ import {
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
+import {
+  addStructureSection,
+  discardLayoutDraft,
+  duplicateStructureSection,
+  getPageStructure,
+  removeStructureSection,
+  reorderStructure,
+  restoreStructureSection,
+  setStructureVisibility,
+  type StructureResult,
+} from "@/lib/cms/structure-service";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { emptyValues } from "@/lib/cms/values";
 import { parseBlockPayload } from "@/lib/cms/validate";
@@ -49,6 +60,18 @@ const CONFLICT = {
     "A section on this page was deleted while you were publishing. Nothing was published — reload the page.",
   gone: "That section no longer exists.",
   unreadable: "The form could not be read. Reload the page and try again.",
+  /**
+   * A pending section cannot be made live one section at a time.
+   *
+   * Public composition is `is_published AND NOT is_draft_only`, so a section
+   * the layout draft introduced is excluded from the live page by membership,
+   * not by a flag this button could flip. Publishing its content would move the
+   * columns and change nothing a visitor sees — and would say "live now" while
+   * doing it, which is the part that actually costs something.
+   */
+  draftOnly:
+    "This section is part of an unpublished layout. Save it as a draft; it will become live " +
+    "when the page layout is published.",
 } as const;
 
 /**
@@ -251,48 +274,6 @@ async function pageOf(sectionId: number) {
   return row ?? null;
 }
 
-export async function addSection(_prev: ActionState, form: FormData): Promise<ActionState> {
-  return runAction("section-add", async () => {
-    const session = await guardAction("content.manage", form);
-    const pageId = Number(form.get("pageId"));
-    const blockType = field(form, "blockType", 48);
-    const block = getBlock(blockType);
-    if (!block) return fail("Choose a section type.");
-
-    const [page] = await db.select().from(pages).where(eq(pages.id, pageId)).limit(1);
-    if (!page) return fail("That page no longer exists.");
-
-    const [last] = await db
-      .select({ position: pageSections.position })
-      .from(pageSections)
-      .where(eq(pageSections.pageId, pageId))
-      .orderBy(asc(sql`${pageSections.position} desc`))
-      .limit(1);
-
-    const [row] = await db
-      .insert(pageSections)
-      .values({
-        pageId,
-        blockType,
-        position: (last?.position ?? -1) + 1,
-        // New sections arrive hidden: an editor fills them in before the site
-        // shows an empty panel to a visitor.
-        isPublished: false,
-        published: emptyValues(block),
-      })
-      .returning({ id: pageSections.id });
-
-    await logActivity(session, {
-      action: "section.added",
-      entityType: "section",
-      entityId: row!.id,
-      summary: `Added a ${block.name} section to “${page.titleEn}”`,
-    });
-    refreshPage(page.slug);
-    return ok(`${block.name} added. It stays hidden until you publish it.`, row!.id);
-  });
-}
-
 /**
  * Writes what the section editor is holding — as a draft, or straight to the
  * site. One body, one guarded write, and the difference between them is the
@@ -320,6 +301,10 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
   if (!section) return fail(CONFLICT.gone);
   const block = getBlock(section.blockType);
   if (!block) return fail("That section type is no longer available.");
+  // Saving a draft on a pending section is ordinary work. Publishing it is not
+  // available, and refusing is the honest answer: the write would succeed and
+  // the visitor would see nothing, under a message saying the change was live.
+  if (publish && section.isDraftOnly) return fail(CONFLICT.draftOnly);
 
   // The same registry validator either way. Publishing is a destination, not a
   // shortcut: nothing reaches `published` that would not have been allowed into
@@ -403,6 +388,7 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
     // below still decides whether the write happens — this only decides which
     // sentence an editor reads.
     if (section.revision !== expected) return fail(CONFLICT.publish);
+    if (section.isDraftOnly) return fail(CONFLICT.draftOnly);
     if (!hasAnyDraft(section)) return fail("There is no draft to publish.");
 
     const result = await updateSectionGuarded(id, expected, {
@@ -468,12 +454,21 @@ export async function publishAllDrafts(_prev: ActionState, form: FormData): Prom
     const [page] = await db.select().from(pages).where(eq(pages.id, pageId)).limit(1);
     if (!page) return fail("That page no longer exists.");
 
+    /**
+     * Established sections only.
+     *
+     * A pending section always has a draft — it is created with one — so
+     * without this filter every Add would arm this button, and pressing it
+     * would report a section as published that a visitor cannot reach. Content
+     * and layout are published by different acts; this one is content's.
+     */
     const drafts = await db
       .select()
       .from(pageSections)
       .where(
         and(
           eq(pageSections.pageId, pageId),
+          eq(pageSections.isDraftOnly, false),
           sql`(${pageSections.draft} is not null or ${pageSections.draftStyles} is not null)`,
         ),
       );
@@ -511,195 +506,157 @@ export async function publishAllDrafts(_prev: ActionState, form: FormData): Prom
   });
 }
 
+/**
+ * The Pages screen's structural actions, on the same primitives as the canvas.
+ *
+ * Before this batch these six wrote straight to the live rows: reorder
+ * renumbered `position`, hide flipped `is_published`, delete issued a DELETE.
+ * They now edit the page's layout draft instead, through
+ * `cms/structure-service` — the same functions the Visual Editor's Layers panel
+ * calls, so the two screens cannot mean different things by "move this up", and
+ * `pages.revision` guards both.
+ *
+ * The consequence worth stating plainly: **none of them changes the live page
+ * any more.** A visitor keeps getting the composition they were getting until
+ * the layout draft is published, which is a later batch's button and not
+ * reachable from here.
+ */
+const structuralConflict = (result: StructureResult & { ok: false }) => fail(result.message);
+
+async function runStructural(
+  form: FormData,
+  operate: (context: { pageId: number; expectedRevision: number; userId: number }) => Promise<StructureResult>,
+): Promise<ActionState> {
+  const session = await guardAction("content.manage", form);
+  const pageId = Number(form.get("pageId"));
+  const expected = expectedRevisionOf(form);
+  if (expected === null) return fail(CONFLICT.unreadable);
+
+  const result = await operate({ pageId, expectedRevision: expected, userId: session.user.id });
+  if (!result.ok) return structuralConflict(result);
+
+  await logActivity(session, result.log);
+  const [page] = await db.select({ slug: pages.slug }).from(pages).where(eq(pages.id, pageId)).limit(1);
+  if (page) refreshPage(page.slug);
+  return ok(result.message, result.sectionId);
+}
+
+/**
+ * The page a section belongs to, so a row-level form need not carry the page id.
+ *
+ * The id is read from the row rather than trusted from the request, which is
+ * what stops one page's screen from restructuring another page's layout.
+ */
+async function structuralContext(form: FormData): Promise<number> {
+  const sectionId = Number(form.get("id"));
+  const owner = await pageOf(sectionId);
+  return owner?.pageId ?? -1;
+}
+
 export async function toggleSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-toggle", async () => {
-    const session = await guardAction("content.manage", form);
-    const id = Number(form.get("id"));
-    const [section] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
-    if (!section) return fail("That section no longer exists.");
-
-    await db
-      .update(pageSections)
-      .set({ isPublished: !section.isPublished, updatedAt: new Date() })
-      .where(eq(pageSections.id, id));
-
-    const page = await pageOf(id);
-    await logActivity(session, {
-      action: section.isPublished ? "section.hidden" : "section.shown",
-      entityType: "section",
-      entityId: id,
-      summary: `${section.isPublished ? "Hid" : "Showed"} the ${section.blockType} section`,
-    });
-    if (page) refreshPage(page.slug);
-    return ok(section.isPublished ? "Section hidden from the site." : "Section is live.");
+    const pageId = await structuralContext(form);
+    const visible = form.get("visible") === "true";
+    return runStructural(form, (context) =>
+      setStructureVisibility({ ...context, pageId }, Number(form.get("id")), visible),
+    );
   });
 }
 
 export async function moveSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-move", async () => {
-    await guardAction("content.manage", form);
+    const pageId = await structuralContext(form);
     const id = Number(form.get("id"));
-    const direction = field(form, "direction", 8) === "up" ? "up" : "down";
+    const up = field(form, "direction", 8) === "up";
 
-    const [section] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
-    if (!section) return fail("That section no longer exists.");
+    /**
+     * Move is a reorder of one step, not a second implementation of ordering.
+     *
+     * The alternative — swapping two entries in place — would be a separate
+     * piece of code that means the same thing as dragging, and the two would
+     * eventually disagree about an edge somebody had only fixed in one of them.
+     * The list is read, one element is moved, and the whole order goes through
+     * the same permutation check a drop does.
+     */
+    const page = await getPageStructure(pageId);
+    if (!page) return fail("That page no longer exists.");
+    const order = page.structure.sections.map((entry) => entry.sectionId);
+    const at = order.indexOf(id);
+    if (at < 0) return fail("That section is not in the layout. Reload the page.");
+    const to = up ? at - 1 : at + 1;
+    if (to < 0 || to >= order.length) return ok();
+    [order[at], order[to]] = [order[to]!, order[at]!];
 
-    // Swap with the adjacent section rather than renumbering the whole page:
-    // two writes, and concurrent edits elsewhere on the page are untouched.
-    const [neighbour] = await db
-      .select()
-      .from(pageSections)
-      .where(
-        and(
-          eq(pageSections.pageId, section.pageId),
-          direction === "up"
-            ? lt(pageSections.position, section.position)
-            : gt(pageSections.position, section.position),
-        ),
-      )
-      .orderBy(
-        direction === "up"
-          ? sql`${pageSections.position} desc`
-          : asc(pageSections.position),
-      )
-      .limit(1);
-
-    if (!neighbour) return ok();
-
-    await db.transaction(async (tx) => {
-      await tx.update(pageSections).set({ position: -1 }).where(eq(pageSections.id, section.id));
-      await tx
-        .update(pageSections)
-        .set({ position: section.position })
-        .where(eq(pageSections.id, neighbour.id));
-      await tx
-        .update(pageSections)
-        .set({ position: neighbour.position })
-        .where(eq(pageSections.id, section.id));
-    });
-
-    const page = await pageOf(id);
-    if (page) refreshPage(page.slug);
-    return ok();
+    return runStructural(form, (context) => reorderStructure({ ...context, pageId }, order));
   });
 }
 
 /**
  * Applies a whole new order at once — what a drag-and-drop rearrangement
- * produces. Positions are rewritten from the submitted sequence rather than
- * swapped pairwise, and ids that are not on this page are ignored, so a stale
- * screen can reorder what it can see without disturbing anything it cannot.
+ * produces. The submitted list has to be a permutation of the layout the screen
+ * was showing; anything else is a stale screen or a foreign id, and both are
+ * refused rather than filtered into something that looks like success.
  */
 export async function reorderSections(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-reorder", async () => {
-    const session = await guardAction("content.manage", form);
-    const pageId = Number(form.get("pageId"));
-
-    let submitted: number[];
+    let order: number[];
     try {
       const parsed = JSON.parse(String(form.get("order") ?? "[]")) as unknown;
       if (!Array.isArray(parsed)) throw new Error("not an array");
-      submitted = parsed.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+      order = parsed.map(Number);
     } catch {
       return fail("That order could not be read. Reload the page and try again.");
     }
-    if (!submitted.length) return ok();
-
-    const existing = await db
-      .select({ id: pageSections.id })
-      .from(pageSections)
-      .where(eq(pageSections.pageId, pageId));
-    const onThisPage = new Set(existing.map((row) => row.id));
-
-    const ordered = submitted.filter((id) => onThisPage.has(id));
-    // Anything the screen did not know about keeps its place at the end rather
-    // than being silently dropped to position zero.
-    const missing = existing.map((row) => row.id).filter((id) => !ordered.includes(id));
-    const finalOrder = [...ordered, ...missing];
-
-    await db.transaction(async (tx) => {
-      // Two passes: positions are unique-ish per page and a single pass would
-      // collide with the values it has not rewritten yet.
-      for (const [index, id] of finalOrder.entries()) {
-        await tx
-          .update(pageSections)
-          .set({ position: -(index + 1) })
-          .where(and(eq(pageSections.id, id), eq(pageSections.pageId, pageId)));
-      }
-      for (const [index, id] of finalOrder.entries()) {
-        await tx
-          .update(pageSections)
-          .set({ position: index })
-          .where(and(eq(pageSections.id, id), eq(pageSections.pageId, pageId)));
-      }
-    });
-
-    const [page] = await db.select({ slug: pages.slug }).from(pages).where(eq(pages.id, pageId)).limit(1);
-    await logActivity(session, {
-      action: "section.reordered",
-      entityType: "page",
-      entityId: pageId,
-      summary: `Reordered the sections on “${page?.slug ?? pageId}”`,
-    });
-    if (page) refreshPage(page.slug);
-    return ok("Order saved.");
+    return runStructural(form, (context) => reorderStructure(context, order));
   });
+}
+
+export async function addSection(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("section-add", async () =>
+    runStructural(form, (context) =>
+      addStructureSection(context, field(form, "blockType", 48), null),
+    ),
+  );
 }
 
 export async function duplicateSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-duplicate", async () => {
-    const session = await guardAction("content.manage", form);
-    const id = Number(form.get("id"));
-    const [section] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
-    if (!section) return fail("That section no longer exists.");
-
-    // Everything after the original shifts down one, so the copy sits directly
-    // beneath it rather than at the end of the page.
-    await db
-      .update(pageSections)
-      .set({ position: sql`${pageSections.position} + 1` })
-      .where(and(eq(pageSections.pageId, section.pageId), gt(pageSections.position, section.position)));
-
-    const [copy] = await db
-      .insert(pageSections)
-      .values({
-        pageId: section.pageId,
-        blockType: section.blockType,
-        position: section.position + 1,
-        isPublished: false,
-        published: section.draft ?? section.published,
-        animation: section.animation,
-      })
-      .returning({ id: pageSections.id });
-
-    const page = await pageOf(id);
-    await logActivity(session, {
-      action: "section.duplicated",
-      entityType: "section",
-      entityId: copy!.id,
-      summary: `Duplicated the ${section.blockType} section`,
-    });
-    if (page) refreshPage(page.slug);
-    return ok("Duplicated. The copy is hidden until you publish it.", copy!.id);
+    const pageId = await structuralContext(form);
+    return runStructural(form, (context) =>
+      duplicateStructureSection({ ...context, pageId }, Number(form.get("id"))),
+    );
   });
 }
 
+/**
+ * Takes a section out of the layout draft. The row stays where it is.
+ *
+ * Deleting it here would be the one irreversible structural operation, and it
+ * would delete work: an established section's content, or a pending section
+ * somebody had spent an afternoon filling in. Removal is an intention, the live
+ * page is unaffected until the layout is published, and the page's Removed
+ * sections list is one click from putting it back.
+ */
 export async function deleteSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-delete", async () => {
-    const session = await guardAction("content.manage", form);
-    const id = Number(form.get("id"));
-    const page = await pageOf(id);
-    const [section] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
-    if (!section) return fail("That section no longer exists.");
-
-    await db.delete(pageSections).where(eq(pageSections.id, id));
-    await logActivity(session, {
-      action: "section.deleted",
-      entityType: "section",
-      entityId: id,
-      summary: `Deleted the ${section.blockType} section`,
-    });
-    if (page) refreshPage(page.slug);
-    return ok("Section deleted.");
+    const pageId = await structuralContext(form);
+    return runStructural(form, (context) =>
+      removeStructureSection({ ...context, pageId }, Number(form.get("id"))),
+    );
   });
+}
+
+export async function restoreSection(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("section-restore", async () => {
+    const pageId = await structuralContext(form);
+    return runStructural(form, (context) =>
+      restoreStructureSection({ ...context, pageId }, Number(form.get("id"))),
+    );
+  });
+}
+
+export async function discardLayout(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("page-layout-discard", async () =>
+    runStructural(form, (context) => discardLayoutDraft(context)),
+  );
 }

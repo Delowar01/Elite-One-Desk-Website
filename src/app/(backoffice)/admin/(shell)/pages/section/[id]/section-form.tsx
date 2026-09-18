@@ -50,6 +50,16 @@ export function SectionForm({
     id: number;
     animation: string;
     draftKind: DraftKind;
+    /**
+     * Whether this section exists only in the page's layout draft.
+     *
+     * A pending section cannot be published on its own: the live page is
+     * composed from membership, and this row is not a member. Saving drafts is
+     * ordinary work, so the editor below is unchanged — what changes is that
+     * the two buttons which would have claimed the change was live are not
+     * offered, because offering them would be a promise the site cannot keep.
+     */
+    isDraftOnly: boolean;
     values: Record<string, unknown>;
     revision: number;
   };
@@ -66,7 +76,23 @@ export function SectionForm({
 
   return (
     <div className="space-y-5">
-      {hasDraft(section.draftKind) ? (
+      {section.isDraftOnly ? (
+        <div className="admin-card flex flex-wrap items-center gap-3 p-4">
+          <span className="admin-badge" style={{ color: "#5ad19a" }}>
+            New section
+          </span>
+          <p className="min-w-40 flex-1 text-[0.8rem] text-muted">
+            This section is part of an unpublished layout. Save it as a draft; it will become live
+            when the page layout is published.
+          </p>
+          <a href={previewHref} target="_blank" rel="noopener" className="admin-btn admin-btn-sm">
+            <Icon name="arrowUpRight" size={12} />
+            Preview
+          </a>
+        </div>
+      ) : null}
+
+      {hasDraft(section.draftKind) && !section.isDraftOnly ? (
         <div className="admin-card flex flex-wrap items-center gap-3 p-4">
           <span className="admin-badge" style={{ color: "#ffd166" }}>
             Unpublished draft
@@ -169,7 +195,9 @@ export function SectionForm({
 
         <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--admin-line)] pt-5">
           <SubmitButton variant="ghost">Save draft</SubmitButton>
-          <AlternateSubmit pendingLabel="Publishing…">Save and publish</AlternateSubmit>
+          {section.isDraftOnly ? null : (
+            <AlternateSubmit pendingLabel="Publishing…">Save and publish</AlternateSubmit>
+          )}
           <a href={previewHref} target="_blank" rel="noopener" className="admin-btn">
             <Icon name="arrowUpRight" size={13} />
             Preview page

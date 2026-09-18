@@ -92,3 +92,22 @@ export const updatePageGuarded = (
   expectedRevision: number,
   values: Record<string, unknown>,
 ): Promise<GuardedUpdate> => guarded(db, pages, id, expectedRevision, values);
+
+/**
+ * …and inside a transaction, for a structural change that is more than one
+ * statement.
+ *
+ * Adding a section writes a row *and* the document that says where it goes.
+ * Either both land or neither does: a page left holding a section nobody
+ * listed would be a block that exists, cannot be reached from the layout, and
+ * has to be found by hand. The guard is what makes the pair atomic against
+ * other editors as well as against a crash — it is checked last, inside the
+ * same transaction, so a page that moved underneath the insert rolls the
+ * insert back with it.
+ */
+export const updatePageGuardedIn = (
+  on: Executor,
+  id: number,
+  expectedRevision: number,
+  values: Record<string, unknown>,
+): Promise<GuardedUpdate> => guarded(on, pages, id, expectedRevision, values);

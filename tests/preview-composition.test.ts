@@ -171,3 +171,37 @@ describe("the preview composition", () => {
     assert.deepEqual(composePreview(LIVE, structure(98, 99)), []);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+
+describe("a pending row nothing lists is not part of anything", () => {
+  /**
+   * Adding a section writes the row and the document that names it in one
+   * transaction, and restoring a version writes both together too — so a
+   * pending row that no document mentions can only be wreckage. It must not
+   * reach a visitor, and it must not reach an editor either: preview would be
+   * showing a section the layout being edited does not contain, and the next
+   * reorder would send that layout back and quietly delete it.
+   */
+  const pending = row(9, "faq", { isPublished: false, isDraftOnly: true });
+
+  test("the published page has never shown one", () => {
+    assert.deepEqual(ids(composePublished([A, pending, C])), [1, 3]);
+    // …even if something had also marked it published.
+    const confused = row(9, "faq", { isPublished: true, isDraftOnly: true });
+    assert.deepEqual(ids(composePublished([A, confused, C])), [1, 3]);
+  });
+
+  test("and with no structural draft, neither does preview", () => {
+    assert.deepEqual(ids(composePreview([A, pending, C], null)), [1, 3]);
+  });
+
+  test("a document that names it puts it back — that is what makes it pending", () => {
+    assert.deepEqual(ids(composePreview([A, pending, C], structure(1, 9, 3))), [1, 9, 3]);
+  });
+
+  test("established sections are unaffected either way", () => {
+    const hidden = row(2, "process", { isPublished: false });
+    assert.deepEqual(ids(composePreview([A, hidden, C], null)), [1, 2, 3]);
+  });
+});

@@ -131,3 +131,57 @@ export function pendingRemovals(
   const listed = new Set(structure.sections.map((entry) => entry.sectionId));
   return pageSectionIds.filter((id) => !listed.has(id));
 }
+
+/* -------------------------------------------------------------------------- */
+/* What the structural editors read                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One section of a page, as a structural editor needs to know it.
+ *
+ * These two shapes live here rather than beside the service that builds them
+ * because both editors are client components: a panel that imported them from a
+ * `server-only` module would be one careless value import away from pulling the
+ * database into the browser bundle. The rules stay on the server; the vocabulary
+ * is shared.
+ */
+export type PageStructureSection = {
+  sectionId: number;
+  blockType: string;
+  blockName: string;
+  /** A line of its own words, so a removed section is recognisable. */
+  summary: string;
+  isDraftOnly: boolean;
+  /** What the live page currently does with it — never what the draft intends. */
+  publishedPosition: number;
+  publishedVisible: boolean;
+};
+
+/**
+ * Everything a structural editor needs about one page, and nothing else.
+ *
+ * Deliberately narrow: no SEO, no settings, no content. A panel that reorders
+ * sections should not be holding a page's metadata, and a reader that returned
+ * it would eventually be the reason something unrelated leaked into the editor.
+ */
+export type PageStructure = {
+  pageId: number;
+  slug: string;
+  title: string;
+  revision: number;
+  /** Whether the stored column holds a document this build can act on. */
+  hasDraftStructure: boolean;
+  /** The structure being edited — the draft, or the established page seeded. */
+  structure: DraftStructure;
+  sections: PageStructureSection[];
+};
+
+/** The sections a page owns that its structure leaves out — pending removals. */
+export const removedSections = (page: PageStructure): PageStructureSection[] => {
+  const listed = new Set(page.structure.sections.map((entry) => entry.sectionId));
+  return page.sections.filter((section) => !listed.has(section.sectionId));
+};
+
+/** What the structure intends for one section, or `null` when it omits it. */
+export const entryFor = (page: PageStructure, sectionId: number): DraftStructureEntry | null =>
+  page.structure.sections.find((entry) => entry.sectionId === sectionId) ?? null;

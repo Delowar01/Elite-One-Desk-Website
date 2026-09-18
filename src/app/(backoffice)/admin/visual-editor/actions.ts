@@ -10,6 +10,18 @@ import { getBlock, type BlockDef } from "@/lib/cms/blocks";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { parseBlockPayload, validateBlockValues } from "@/lib/cms/validate";
 import { emptyValues } from "@/lib/cms/values";
+import {
+  addStructureSection,
+  discardLayoutDraft,
+  duplicateStructureSection,
+  getPageStructure,
+  removeStructureSection,
+  reorderStructure,
+  restoreStructureSection,
+  setStructureVisibility,
+  type PageStructure,
+  type StructureResult,
+} from "@/lib/cms/structure-service";
 import { db } from "@/lib/db";
 import { updateSectionGuarded } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
@@ -17,6 +29,7 @@ import type {
   VisualContentSaveResult,
   VisualSectionData,
   VisualSectionLoad,
+  VisualStructureResult,
   VisualStyleSaveResult,
 } from "@/lib/visual-editor/content";
 
@@ -319,4 +332,151 @@ export async function saveVisualSectionStyles(form: FormData): Promise<VisualSty
     console.error("[visual-editor:styles]", error);
     return { ok: false, reason: "invalid", message: "Something went wrong. The change was not saved." };
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Structure                                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The layout half of the editor: one thin adapter per operation.
+ *
+ * Every one of these is the same three steps — check the permission and the
+ * token, read the page revision the *screen* was built from, hand both to
+ * `cms/structure-service` — and the interesting part is what they deliberately
+ * do not do. They do not decide what reordering means, they do not write a row,
+ * and they do not infer a revision when the form did not carry one. The Pages
+ * screen's own structural actions are the same three steps around the same
+ * primitives, so the two surfaces cannot drift into disagreeing about what a
+ * page's layout is, and one counter guards both.
+ *
+ * Nothing here publishes a layout. The service has no operation that could.
+ */
+
+const structureFailure = (result: StructureResult & { ok: false }): VisualStructureResult => ({
+  ok: false,
+  reason: result.reason === "conflict" ? "conflict" : "invalid",
+  message: result.message,
+});
+
+/** The page revision the screen that submitted this carried. */
+const expectedPageRevision = (form: FormData): number => {
+  const value = Number(form.get("expectedRevision"));
+  return Number.isInteger(value) && value >= 0 ? value : -1;
+};
+
+async function runStructure(
+  form: FormData,
+  operate: (context: { pageId: number; expectedRevision: number; userId: number }) => Promise<StructureResult>,
+  label: string,
+): Promise<VisualStructureResult> {
+  try {
+    const session = await guardAction("content.manage", form);
+    const pageId = Number(form.get("pageId"));
+    const expectedRevision = expectedPageRevision(form);
+
+    const result = await operate({ pageId, expectedRevision, userId: session.user.id });
+    if (!result.ok) return structureFailure(result);
+
+    await logActivity(session, result.log);
+
+    const [page] = await db.select({ slug: pages.slug }).from(pages).where(eq(pages.id, pageId)).limit(1);
+    if (page) revalidatePath(`/admin/pages/${page.slug}`);
+    revalidatePath("/admin/pages");
+
+    const structure = await getPageStructure(pageId);
+    return {
+      ok: true,
+      revision: result.revision,
+      sectionId: result.sectionId ?? null,
+      message: result.message,
+      structure,
+    };
+  } catch (error) {
+    if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };
+    console.error(`[visual-editor:${label}]`, error);
+    return { ok: false, reason: "invalid", message: "Something went wrong. Nothing was changed." };
+  }
+}
+
+/**
+ * The page's layout, for the editor to draw Layers and the removed list from.
+ *
+ * `content.view`, like reading a section: this says what the preview beside it
+ * is already showing plus which sections it is leaving out, and a reader who
+ * can see the page can see that.
+ */
+export async function loadPageStructure(pageId: number): Promise<PageStructure | null> {
+  try {
+    const session = await getSession();
+    if (!session?.permissions.has("content.view")) return null;
+    return await getPageStructure(pageId);
+  } catch (error) {
+    console.error("[visual-editor:structure]", error);
+    return null;
+  }
+}
+
+export async function reorderPageStructure(form: FormData): Promise<VisualStructureResult> {
+  let order: number[] = [];
+  try {
+    const parsed = JSON.parse(String(form.get("order") ?? "[]")) as unknown;
+    // A list that cannot be read is not an empty list: `-1` is no page's
+    // section, so it fails the permutation check rather than reordering nothing.
+    order = Array.isArray(parsed) ? parsed.map(Number) : [-1];
+  } catch {
+    order = [-1];
+  }
+  return runStructure(form, (context) => reorderStructure(context, order), "reorder");
+}
+
+export async function setPageSectionVisibility(form: FormData): Promise<VisualStructureResult> {
+  return runStructure(
+    form,
+    (context) =>
+      setStructureVisibility(context, Number(form.get("sectionId")), form.get("visible") === "true"),
+    "visibility",
+  );
+}
+
+export async function addPageSection(form: FormData): Promise<VisualStructureResult> {
+  const after = Number(form.get("afterSectionId"));
+  return runStructure(
+    form,
+    (context) =>
+      addStructureSection(
+        context,
+        String(form.get("blockType") ?? ""),
+        Number.isInteger(after) && after > 0 ? after : null,
+      ),
+    "add",
+  );
+}
+
+export async function duplicatePageSection(form: FormData): Promise<VisualStructureResult> {
+  return runStructure(
+    form,
+    (context) => duplicateStructureSection(context, Number(form.get("sectionId"))),
+    "duplicate",
+  );
+}
+
+export async function removePageSection(form: FormData): Promise<VisualStructureResult> {
+  return runStructure(
+    form,
+    (context) => removeStructureSection(context, Number(form.get("sectionId"))),
+    "remove",
+  );
+}
+
+export async function restorePageSection(form: FormData): Promise<VisualStructureResult> {
+  return runStructure(
+    form,
+    (context) => restoreStructureSection(context, Number(form.get("sectionId"))),
+    "restore",
+  );
+}
+
+export async function discardPageLayout(form: FormData): Promise<VisualStructureResult> {
+  return runStructure(form, (context) => discardLayoutDraft(context), "discard");
 }

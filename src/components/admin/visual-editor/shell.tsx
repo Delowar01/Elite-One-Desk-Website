@@ -4,22 +4,32 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  addPageSection,
+  discardPageLayout,
+  duplicatePageSection,
+  loadPageStructure,
   loadVisualSection,
+  removePageSection,
+  reorderPageStructure,
+  restorePageSection,
   saveVisualSectionDraft,
   saveVisualSectionStyles,
+  setPageSectionVisibility,
 } from "@/app/(backoffice)/admin/visual-editor/actions";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { Icon } from "@/components/ui/icon";
+import type { BlockDef } from "@/lib/cms/blocks";
 import type { StyleDocument } from "@/lib/cms/styles";
+import { removedSections, type PageStructure } from "@/lib/cms/structure";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
 import { previewPagePath } from "@/lib/page-path";
-import { blockNameOf } from "@/lib/visual-editor/labels";
-import type { VisualSectionData } from "@/lib/visual-editor/content";
+import type { VisualSectionData, VisualStructureResult } from "@/lib/visual-editor/content";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
 import { DEVICE_BREAKPOINT, EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
 
 import { VisualCanvas, type CanvasState, type SelectRequest } from "./canvas";
 import { InspectorPanel, isDirty, type EditDomain, type SectionBuffer } from "./inspector";
+import { LayersPanel, type StructuralOps } from "./layers";
 
 export type EditablePage = {
   id: number;
@@ -91,6 +101,7 @@ export function VisualEditorShell({
   canManage,
   csrf,
   media,
+  blocks,
 }: {
   pages: EditablePage[];
   initial: { slug: string; locale: Locale; device: DeviceKey };
@@ -98,6 +109,8 @@ export function VisualEditorShell({
   /** The session's synchroniser token — every save carries it, like any admin form. */
   csrf: string;
   media: MediaOption[];
+  /** What may be added, per page, from the registry the admin form uses. */
+  blocks: Record<string, BlockDef[]>;
 }) {
   const [slug, setSlug] = useState(initial.slug);
   const [locale, setLocale] = useState<Locale>(initial.locale);
@@ -136,6 +149,19 @@ export function VisualEditorShell({
   const [restoreToken, setRestoreToken] = useState(0);
   /** `selected` readable from a timer without making it a dependency. */
   const selectedRef = useRef<EditorNodeMeta | null>(null);
+
+  /**
+   * The page's layout, as the server holds it.
+   *
+   * Two things the canvas cannot tell the panel: which sections the layout
+   * draft is leaving out — they are not rendered, so they are not in
+   * `canvas.structure` — and which revision of the layout this is, which every
+   * structural write has to name. Kept beside the canvas rather than derived
+   * from it, and replaced by whatever the server answers after each change.
+   */
+  const [structure, setStructure] = useState<PageStructure | null>(null);
+  const [structureBusy, setStructureBusy] = useState(false);
+  const [structureError, setStructureError] = useState<string | null>(null);
 
   const page = useMemo(() => pages.find((row) => row.slug === slug) ?? pages[0], [pages, slug]);
   const activeId = selected?.sectionId ?? null;
@@ -181,6 +207,27 @@ export function VisualEditorShell({
     setSelectRequest(null);
     setCanvasKey((n) => n + 1);
   };
+
+  /**
+   * The layout, re-read whenever the page changes.
+   *
+   * Structural state is per page and must switch with it: leaving Home's
+   * revision in place while About is on screen would mean the next structural
+   * write named a revision belonging to a different page, and the guard would
+   * be protecting nothing.
+   */
+  useEffect(() => {
+    if (!page) return;
+    let cancelled = false;
+    setStructure(null);
+    setStructureError(null);
+    loadPageStructure(page.id).then((next) => {
+      if (!cancelled) setStructure(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [page]);
 
   const ask = useCallback(
     (address: string | null) =>
@@ -499,6 +546,150 @@ export function VisualEditorShell({
     [activeId, buffers, canManage, csrf],
   );
 
+  /* ------------------------------------------------------------------ */
+  /* Structure                                                           */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * One structural request, the same shape every time.
+   *
+   * The form carries what every admin mutation carries — the session's token,
+   * the page, and the revision *this screen* was built from — and the server
+   * answers with the page's whole layout rather than a delta, so the panel
+   * redraws from what is now true instead of from what it hoped would happen.
+   *
+   * Then the canvas reloads. It has to: the frame is a rendering of the layout,
+   * and a reorder that patched the iframe's DOM would be the editor inventing a
+   * page rather than showing one. `select` says where the selection should land
+   * once the new document is ready, which is the only thing the caller has an
+   * opinion about.
+   *
+   * Edit buffers are untouched throughout. A section keeps its id through a
+   * move, a hide and a removal, so the sentence somebody was typing is still
+   * theirs when it comes back.
+   */
+  const runStructural = useCallback(
+    async (
+      operate: (form: FormData) => Promise<VisualStructureResult>,
+      fill: (form: FormData) => void,
+      select: "new" | "keep" | "clear",
+    ) => {
+      if (!canManage || !page || !structure || structureBusy) return;
+      setStructureBusy(true);
+      setStructureError(null);
+
+      const form = new FormData();
+      form.set("_csrf", csrf);
+      form.set("pageId", String(page.id));
+      form.set("expectedRevision", String(structure.revision));
+      fill(form);
+
+      const previous = selectedRef.current?.address ?? null;
+      const result = await operate(form);
+      setStructureBusy(false);
+
+      if (!result.ok) {
+        setStructureError(result.message);
+        return;
+      }
+      if (result.structure) setStructure(result.structure);
+
+      // Where the selection goes, by section id — the one thing that survives a
+      // document being rebuilt.
+      const wanted =
+        select === "clear"
+          ? null
+          : select === "new" && result.sectionId
+            ? `section:${result.sectionId}`
+            : previous;
+      restoreTo.current = wanted
+        ? { address: wanted, fallback: wanted.split("/")[0]! }
+        : null;
+      freshCanvas();
+      if (wanted) setRestoreToken((n) => n + 1);
+    },
+    [canManage, csrf, page, structure, structureBusy],
+  );
+
+  const ops: StructuralOps = useMemo(
+    () => ({
+      onAdd: (blockType, afterSectionId) =>
+        void runStructural(
+          addPageSection,
+          (form) => {
+            form.set("blockType", blockType);
+            if (afterSectionId) form.set("afterSectionId", String(afterSectionId));
+          },
+          "new",
+        ),
+      onDuplicate: (sectionId) =>
+        void runStructural(
+          duplicatePageSection,
+          (form) => form.set("sectionId", String(sectionId)),
+          "new",
+        ),
+      onMove: (sectionId, direction) => {
+        const order = sections.map((row) => row.sectionId);
+        const at = order.indexOf(sectionId);
+        const to = direction === "up" ? at - 1 : at + 1;
+        if (at < 0 || to < 0 || to >= order.length) return;
+        [order[at], order[to]] = [order[to]!, order[at]!];
+        void runStructural(
+          reorderPageStructure,
+          (form) => form.set("order", JSON.stringify(order)),
+          "keep",
+        );
+      },
+      onReorder: (order) =>
+        void runStructural(
+          reorderPageStructure,
+          (form) => form.set("order", JSON.stringify(order)),
+          "keep",
+        ),
+      onVisibility: (sectionId, visible) =>
+        void runStructural(
+          setPageSectionVisibility,
+          (form) => {
+            form.set("sectionId", String(sectionId));
+            form.set("visible", visible ? "true" : "false");
+          },
+          "keep",
+        ),
+      onRemove: (sectionId) =>
+        void runStructural(
+          removePageSection,
+          (form) => form.set("sectionId", String(sectionId)),
+          // A section that is no longer rendered cannot stay selected, and the
+          // inspector describing something the canvas is not showing is worse
+          // than an empty inspector.
+          selectedRef.current?.sectionId === sectionId ? "clear" : "keep",
+        ),
+      onRestore: (sectionId) =>
+        void runStructural(
+          restorePageSection,
+          (form) => form.set("sectionId", String(sectionId)),
+          "new",
+        ),
+      onDiscard: () => {
+        // A pending section's unsaved text would go with the row. Saying so and
+        // stopping is the only honest answer: there is nowhere to put it back.
+        const pendingIds = new Set(
+          (structure?.sections ?? []).filter((row) => row.isDraftOnly).map((row) => row.sectionId),
+        );
+        const unsaved = [...dirtyIds].some((id) => pendingIds.has(id));
+        if (unsaved) {
+          setStructureError(
+            "Save or revert unsaved edits in new sections before discarding the layout.",
+          );
+          return;
+        }
+        if (!window.confirm("Discard the layout changes? Sections added here are deleted.")) return;
+        void runStructural(discardPageLayout, () => undefined, "clear");
+      },
+    }),
+    [dirtyIds, runStructural, sections, structure],
+  );
+
   /**
    * Puts the selection back after the canvas has reloaded.
    *
@@ -696,9 +887,16 @@ export function VisualEditorShell({
       <div className="flex min-h-0 flex-1">
         <LayersPanel
           sections={sections}
-          selectedSectionId={selected?.sectionId ?? null}
+          structure={structure}
+          removed={structure ? removedSections(structure) : []}
+          selectedSectionId={activeId}
           dirtyIds={dirtyIds}
           ready={ready}
+          canManage={canManage}
+          busy={structureBusy}
+          error={structureError}
+          blocks={blocks[page.slug] ?? []}
+          ops={ops}
           onSelect={ask}
         />
 
@@ -760,97 +958,3 @@ export function VisualEditorShell({
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/* Layers                                                                     */
-/* -------------------------------------------------------------------------- */
-
-/**
- * The page's sections, as the canvas actually rendered them.
- *
- * The list comes over the bridge rather than from a second database query, and
- * that is the point: the canvas has already been through the structural draft,
- * the draft-only rows and the preview membership, so anything else could only
- * produce a list that disagrees with what is on screen.
- *
- * Section-level only. A tree with every heading and paragraph in it would be
- * accurate and unusable; the canvas is where you point at a sentence.
- */
-function LayersPanel({
-  sections,
-  selectedSectionId,
-  dirtyIds,
-  ready,
-  onSelect,
-}: {
-  sections: EditorSectionMeta[];
-  selectedSectionId: number | null;
-  /** Sections with edits in the panel that have not been saved yet. */
-  dirtyIds: Set<number>;
-  ready: boolean;
-  onSelect: (address: string) => void;
-}) {
-  return (
-    <aside
-      className="hidden w-60 shrink-0 flex-col border-e border-[var(--admin-line)] bg-[var(--admin-shell)] xl:flex"
-      aria-label="Page structure"
-    >
-      <h2 className="shrink-0 px-3.5 pb-2 pt-3.5 text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">
-        Page structure
-      </h2>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-        {!sections.length ? (
-          <p className="px-1.5 text-[0.76rem] leading-relaxed text-muted">
-            {ready ? "This page has no sections yet." : "Waiting for the canvas…"}
-          </p>
-        ) : (
-          <ol className="flex flex-col gap-0.5">
-            {sections.map((section) => {
-              const active = section.sectionId === selectedSectionId;
-              return (
-                <li key={section.sectionId}>
-                  <button
-                    type="button"
-                    onClick={() => onSelect(section.address)}
-                    aria-current={active ? "true" : undefined}
-                    className="flex w-full flex-col gap-0.5 rounded-[var(--radius-xs)] border px-2.5 py-1.5 text-start transition-colors"
-                    style={{
-                      borderColor: active ? "var(--color-orange)" : "transparent",
-                      background: active ? "color-mix(in oklab, var(--color-orange) 12%, transparent)" : "transparent",
-                    }}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <span className="truncate text-[0.8rem] font-medium text-strong">
-                        {blockNameOf(section.blockType)}
-                      </span>
-                      {/* Badges, not colours: the state has to survive a screenshot
-                          in greyscale and a screen reader reading the row. */}
-                      {dirtyIds.has(section.sectionId) ? <Badge tone="draft">Unsaved</Badge> : null}
-                      {section.isDraftOnly ? <Badge tone="new">New</Badge> : null}
-                      {section.isDraft && !section.isDraftOnly ? <Badge tone="draft">Draft</Badge> : null}
-                      {!section.visible ? <Badge tone="muted">Hidden</Badge> : null}
-                    </span>
-                    <span className="truncate text-[0.68rem] text-muted">{section.blockType}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ol>
-        )}
-      </div>
-    </aside>
-  );
-}
-
-function Badge({ tone, children }: { tone: "draft" | "new" | "muted"; children: React.ReactNode }) {
-  const colour =
-    tone === "new" ? "#5ad19a" : tone === "draft" ? "var(--color-peach)" : "var(--color-muted)";
-  return (
-    <span
-      className="shrink-0 rounded-full border px-1.5 text-[0.6rem] font-semibold uppercase tracking-wide"
-      style={{ borderColor: `color-mix(in oklab, ${colour} 45%, transparent)`, color: colour }}
-    >
-      {children}
-    </span>
-  );
-}

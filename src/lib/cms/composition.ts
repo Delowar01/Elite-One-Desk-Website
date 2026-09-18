@@ -154,7 +154,20 @@ export function composePreview(
   rows: readonly CompositionRow[],
   structure: DraftStructure | null,
 ): ComposedSection[] {
-  if (!structure) return rows.map((row) => editing(row));
+  /**
+   * No structure, so the established page — and *only* the established page.
+   *
+   * A pending row exists because some document listed it: adding one writes the
+   * row and the entry in one transaction, and restoring a version writes both
+   * together too. So a pending row that no document mentions is an orphan, and
+   * showing it here would put a section on an editor's screen that the layout
+   * they are editing does not contain — reordering would then quietly delete
+   * it, because reordering sends the layout back. Excluding it makes preview
+   * agree with the structure the editors seed from, and it is the same filter
+   * the live composition already applies, so the two cannot disagree about what
+   * a page without a layout draft is.
+   */
+  if (!structure) return rows.filter((row) => !row.isDraftOnly).map((row) => editing(row));
 
   const owned = new Map(rows.map((row) => [row.id, row]));
   const seen = new Set<number>();

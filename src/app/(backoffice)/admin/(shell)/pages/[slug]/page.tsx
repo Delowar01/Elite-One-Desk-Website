@@ -8,6 +8,8 @@ import { requirePermission } from "@/lib/auth/guard";
 import { blocksForPage, getBlock } from "@/lib/cms/blocks";
 import { text } from "@/lib/cms/values";
 import { draftKindOf, hasDraft } from "@/lib/cms/drafts";
+import { getPageStructure } from "@/lib/cms/structure-service";
+import { removedSections } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
 import { DeletePageForm, PageSettingsForm, PublishAllButton } from "../page-forms";
@@ -35,7 +37,22 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
     .where(eq(pageSections.pageId, page.id))
     .orderBy(asc(pageSections.position), asc(pageSections.id));
 
-  const sections: SectionRow[] = rows.map((row) => {
+  /**
+   * The list is the layout draft, not the live page.
+   *
+   * Order, membership and intended visibility all come from
+   * `getPageStructure` — the same reader the Visual Editor draws Layers from —
+   * so the two screens describe one page. The rows are still read here for the
+   * things structure does not know: whether a section has unpublished content,
+   * and the words to summarise it by.
+   */
+  const layout = await getPageStructure(page.id);
+  if (!layout) notFound();
+  const byId = new Map(rows.map((row) => [row.id, row]));
+
+  const toRow = (sectionId: number, layoutVisible: boolean | null): SectionRow | null => {
+    const row = byId.get(sectionId);
+    if (!row) return null;
     const block = getBlock(row.blockType);
     const values = (row.draft ?? row.published) as Record<string, unknown>;
     // A one-line summary so the list is scannable without opening each section.
@@ -50,20 +67,32 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
       blockName: block?.name ?? row.blockType,
       blockDescription: block?.description ?? "",
       summary,
-      isPublished: row.isPublished,
+      publishedVisible: row.isPublished,
+      layoutVisible,
+      isDraftOnly: row.isDraftOnly,
       draftKind: draftKindOf(row),
-      position: row.position,
     };
-  });
+  };
 
-  const draftCount = sections.filter((section) => hasDraft(section.draftKind)).length;
+  const sections = layout.structure.sections
+    .map((entry) => toRow(entry.sectionId, entry.visible))
+    .filter((row): row is SectionRow => row !== null);
+  const removed = removedSections(layout)
+    .map((section) => toRow(section.sectionId, null))
+    .filter((row): row is SectionRow => row !== null);
+
+  // Only established sections can have their content published on its own, so
+  // only they arm Publish all — see `publishAllDrafts`.
+  const draftCount = sections.filter(
+    (section) => !section.isDraftOnly && hasDraft(section.draftKind),
+  ).length;
   const livePath = page.slug === "home" ? "/" : `/${page.slug}`;
 
   return (
     <>
       <AdminPageHeader
         title={page.titleEn}
-        description={`The sections below are the page, in order. ${page.isPublished ? "" : "This page is currently unpublished."}`}
+        description={`The sections below are the page layout as it is being edited. ${page.isPublished ? "" : "This page is currently unpublished."}`}
         crumbs={[{ label: "Pages & sections", href: "/admin/pages" }, { label: page.titleEn }]}
         actions={
           <>
@@ -86,7 +115,10 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
         <SectionList
           csrf={session.csrfToken}
           pageId={page.id}
+          pageRevision={layout.revision}
+          hasLayoutDraft={layout.hasDraftStructure}
           sections={sections}
+          removed={removed}
           blocks={blocksForPage(page.slug)}
           canManage={canManage}
         />

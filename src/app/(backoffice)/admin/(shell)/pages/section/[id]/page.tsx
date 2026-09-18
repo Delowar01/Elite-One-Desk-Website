@@ -77,6 +77,7 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
             id: row.section.id,
             animation: row.section.animation,
             draftKind: draftKindOf(row.section),
+            isDraftOnly: row.section.isDraftOnly,
             values,
             revision: row.section.revision,
           }}
