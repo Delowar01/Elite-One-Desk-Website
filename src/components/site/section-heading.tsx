@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 
-import { editorNode, type EditorRender } from "@/lib/visual-editor/render";
+import { blockNode } from "@/lib/cms/node";
+import type { StyleDocument } from "@/lib/cms/styles";
+import type { EditorRender } from "@/lib/visual-editor/render";
 
 import { Reveal } from "./reveal";
 
@@ -14,15 +16,22 @@ type Props = {
   /** Renders as h1 on a page's opening section. */
   level?: 1 | 2;
   /**
-   * Editor annotation, passed straight through from the block.
+   * The block's node context, passed straight through.
    *
-   * Eleven blocks open with this heading, so marking the three parts here
-   * marks them everywhere at once — and the field *names* differ between
-   * blocks (`intro` here, `body` there), which is why the caller supplies them
-   * rather than this component assuming. Off by default: with no `editor` the
+   * Eleven blocks open with this heading, so naming the three parts here names
+   * them everywhere at once — and the field *names* differ between blocks
+   * (`intro` here, `body` there), which is why the caller supplies them rather
+   * than this component assuming.
+   *
+   * Both halves travel together for the reason the whole node model exists: the
+   * element an editor selects and the element their style lands on have to be
+   * the same one. Taking `editor` without `styles` made these three nodes
+   * selectable and unstyleable — a saved override that the panel showed and the
+   * page ignored. Off by default in both directions: with neither prop the
    * markup is byte-for-byte what it was.
    */
   editor?: EditorRender;
+  styles?: StyleDocument;
   fields?: { eyebrow?: string; title?: string; intro?: string };
 };
 
@@ -35,11 +44,12 @@ export function SectionHeading({
   children,
   level = 2,
   editor,
+  styles,
   fields,
 }: Props) {
   if (!eyebrow && !title && !intro && !children) return null;
   const Tag = level === 1 ? "h1" : "h2";
-  const node = editorNode(editor);
+  const node = blockNode({ editor, styles });
   const at = (name: string | undefined) => (name ? node(`field:${name}`) : {});
 
   return (

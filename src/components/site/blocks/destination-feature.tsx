@@ -6,7 +6,7 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { blockNode, withNodeStyle } from "@/lib/cms/node";
+import { blockNode, mediaNode, withNodeStyle } from "@/lib/cms/node";
 import { itemFieldPath, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
@@ -29,6 +29,7 @@ export function DestinationFeatureBlock({ values, ctx, editor, styles }: BlockPr
   const secondaryHref = str(values, "secondaryCtaHref", "/contact");
   const secondaryLabel = text(values, "secondaryCtaLabel", locale);
   const node = blockNode({ editor, styles });
+  const imageNode = mediaNode({ editor, styles })("field:image");
   const eyebrowNode = node("field:eyebrow");
 
   return (
@@ -118,13 +119,14 @@ export function DestinationFeatureBlock({ values, ctx, editor, styles }: BlockPr
 
         {image ? (
           <Reveal variant="scale-in">
-            <div className="relative overflow-hidden rounded-[var(--radius-xl)]" {...node("field:image")}>
+            <div className="relative overflow-hidden rounded-[var(--radius-xl)]" {...imageNode.box}>
               <MediaImage
                 media={image}
                 locale={locale}
                 sizes="(max-width: 1024px) 92vw, 42vw"
                 ratio="4 / 5"
                 className="w-full"
+                style={imageNode.image}
               />
               <span
                 aria-hidden

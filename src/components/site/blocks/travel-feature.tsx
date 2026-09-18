@@ -7,7 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { blockNode } from "@/lib/cms/node";
+import { blockNode, mediaNode } from "@/lib/cms/node";
 import { itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
@@ -25,6 +25,7 @@ export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) 
   const ctaHref = str(values, "ctaHref", "/services/travel-tourism");
   const ctaLabel = text(values, "ctaLabel", locale);
   const node = blockNode({ editor, styles });
+  const imageNode = mediaNode({ editor, styles })("field:image");
 
   return (
     <section className="section relative">
@@ -37,7 +38,7 @@ export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) 
           <Reveal variant="slide-in" className="relative">
             <div
               className="relative overflow-hidden rounded-[var(--radius-xl)] border border-line"
-              {...node("field:image")}
+              {...imageNode.box}
             >
               <MediaImage
                 media={image}
@@ -45,6 +46,7 @@ export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) 
                 sizes="(max-width: 1024px) 92vw, 44vw"
                 ratio="5 / 6"
                 className="w-full"
+                style={imageNode.image}
               />
               <div
                 aria-hidden
@@ -61,6 +63,7 @@ export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) 
         <div>
           <SectionHeading
             editor={editor}
+            styles={styles}
             fields={{ eyebrow: "eyebrow", title: "title", intro: "body" }}
             eyebrow={text(values, "eyebrow", locale)}
             title={text(values, "title", locale)}

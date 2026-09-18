@@ -7,10 +7,12 @@
  * batch cannot show.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, test } from "node:test";
 
 import { formatNodePath, parseNodePath } from "@/lib/cms/address";
-import { nodeStyle, tokensToStyle } from "@/lib/cms/style-css";
+import { mediaNodeStyle, nodeStyle, tokensToStyle } from "@/lib/cms/style-css";
 import {
   BACKGROUNDS,
   BORDERS,
@@ -24,6 +26,7 @@ import {
   validateStyleDocument,
   type StyleDocument,
 } from "@/lib/cms/styles";
+import { FINAL_OPACITY, revealStyle } from "@/components/site/reveal";
 import { relativePath, withToken, withoutBase } from "@/lib/visual-editor/style-edit";
 import { styleTargetFor } from "@/lib/visual-editor/style-targets";
 
@@ -171,6 +174,25 @@ describe("a node is only offered the controls that mean something on it", () => 
     );
   });
 
+  test("a gap is only offered where a gap can do something", () => {
+    // Every annotated row and list in this codebase is a box whose children are
+    // laid out by something inside it, so a gap on the row itself is inert. A
+    // control that quietly does nothing is worse than a missing one.
+    for (const path of [
+      undefined,
+      "field:title",
+      "field:links",
+      "field:links/item:i_aaaaaaaaaa",
+      "field:links/item:i_aaaaaaaaaa/field:label",
+      "field:backgroundImage",
+    ]) {
+      assert.ok(!styleTargetFor("quick-links", path).tokens.includes("gap"), `gap offered on ${path ?? "root"}`);
+    }
+    // A slot is a control the block laid out on purpose — the one that exists
+    // is a button with a label and an arrow in a flex row.
+    assert.ok(styleTargetFor("one-desk", "slot:cta").tokens.includes("gap"));
+  });
+
   test("`hidden` is never offered — it belongs to the responsive batch", () => {
     for (const path of [
       undefined,
@@ -182,6 +204,49 @@ describe("a node is only offered the controls that mean something on it", () => 
       const target = styleTargetFor("quick-links", path);
       assert.ok(!target.tokens.includes("hidden"), `hidden offered on ${path ?? "root"}`);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a picture's crop goes on the picture, not on the frame around it", () => {
+  const document = doc({
+    "field:image": {
+      base: { radius: "lg", border: "line", shadow: "soft", opacity: 0.8, objectX: 20, objectY: 80 },
+    },
+  });
+
+  test("the frame keeps the shape and the picture keeps the crop", () => {
+    const { box, image } = mediaNodeStyle(document, "field:image");
+    assert.ok(box, "the frame lost its shape");
+    assert.ok(image, "the picture lost its crop");
+    assert.equal(image.objectPosition, "20% 80%");
+    // `object-position` on a `div` or a `span` does nothing at all, so it must
+    // not be there: a token that renders somewhere inert is a control that
+    // silently fails.
+    assert.equal(box.objectPosition, undefined, "the crop was left on the frame");
+    assert.equal(box.borderRadius, "var(--radius-lg)");
+    assert.equal(box.opacity, 0.8);
+    assert.equal(image.borderRadius, undefined, "the shape was duplicated onto the picture");
+  });
+
+  test("a node with no focal point gives the picture nothing", () => {
+    const { box, image } = mediaNodeStyle(doc({ "field:image": { base: { radius: "sm" } } }), "field:image");
+    assert.ok(box);
+    assert.equal(image, undefined, "an empty style object was put on the picture");
+  });
+
+  test("one field is still one path — the split is in the renderer, not the document", () => {
+    assert.deepEqual(Object.keys(document.nodes), ["field:image"]);
+    const { image } = mediaNodeStyle(document, "field:image/box");
+    assert.equal(image, undefined);
+  });
+
+  test("a repeatable row's picture resolves the same way", () => {
+    const path = "field:links/item:i_aaaaaaaaaa/field:image";
+    const { box, image } = mediaNodeStyle(doc({ [path]: { base: { objectX: 10, radius: "md" } } }), path);
+    assert.equal(image!.objectPosition, "10% 50%");
+    assert.equal(box!.borderRadius, "var(--radius-md)");
   });
 });
 
@@ -245,5 +310,99 @@ describe("an edit leaves the document sparse, and leaves the invisible parts alo
       relativePath("field:links/item:i_aaaaaaaaaa/field:label"),
       formatNodePath(parseNodePath("field:links/item:i_aaaaaaaaaa/field:label")!),
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a revealed element's opacity is its finished state, not its current one", () => {
+  const style = (revealClass: string, node?: Record<string, unknown>) =>
+    revealStyle({ delay: 70, revealClass, node: node as never }) as Record<string, unknown>;
+
+  test("on a reveal the value becomes the property the stylesheet reads", () => {
+    const out = style("reveal", { opacity: 0.45, borderRadius: "var(--radius-lg)" });
+    assert.equal(out[FINAL_OPACITY], "0.45");
+    // The element must not be dimmed before it has been revealed: an inline
+    // opacity outranks the class that holds it at 0 until then.
+    assert.ok(!("opacity" in out), "the finished opacity was applied inline");
+    assert.equal(out.borderRadius, "var(--radius-lg)", "the rest of the node's style was dropped");
+    assert.equal(out["--reveal-delay"], "70ms", "the reveal's own delay was overwritten");
+  });
+
+  test("the other reveal variants are the same element with another transform", () => {
+    for (const cls of ["reveal", "reveal reveal-left", "reveal reveal-scale"]) {
+      const out = style(cls, { opacity: 0.2 });
+      assert.equal(out[FINAL_OPACITY], "0.2", cls);
+      assert.ok(!("opacity" in out), cls);
+    }
+  });
+
+  test("with no reveal at all there is no lifecycle to protect, so it is the opacity", () => {
+    const out = style("", { opacity: 0.45 });
+    assert.equal(out.opacity, 0.45);
+    assert.ok(!(FINAL_OPACITY in out), "a property nothing reads was written instead of the opacity");
+  });
+
+  test("a node with no opacity leaves both alone", () => {
+    const out = style("reveal", { textAlign: "center" });
+    assert.ok(!("opacity" in out) && !(FINAL_OPACITY in out));
+    assert.equal(out.textAlign, "center");
+  });
+
+  test("zero is a chosen opacity, not an absent one", () => {
+    assert.equal(style("reveal", { opacity: 0 })[FINAL_OPACITY], "0");
+    assert.equal(style("", { opacity: 0 }).opacity, 0);
+  });
+
+  test("a stagger is carried, and an override still wins over what the reveal set", () => {
+    const staggered = revealStyle({
+      delay: 0,
+      stagger: 60,
+      revealClass: "reveal",
+      node: { marginBlock: "2rem" },
+    }) as Record<string, unknown>;
+    assert.equal(staggered["--reveal-stagger"], "60ms");
+    assert.equal(staggered.marginBlock, "2rem");
+  });
+});
+
+describe("the stylesheet reads that property in every state a reveal can be in", () => {
+  const css = readFileSync(
+    path.join(import.meta.dirname ?? __dirname, "..", "src", "styles", "globals.css"),
+    "utf8",
+  );
+  // Every `.reveal` rule that names an opacity at all, in source order.
+  const rules = css
+    .split("}")
+    .filter((rule) => /(^|[\s,])\.reveal\b[^{]*\{[^{]*opacity\s*:/.test(rule))
+    .map((rule) => rule.slice(rule.indexOf("{")));
+
+  test("the hidden state is the only one that is not the editor's number", () => {
+    assert.ok(rules.length >= 5, `only ${rules.length} reveal opacity rules were found`);
+    const hidden = rules.filter((rule) => /opacity:\s*0\s*;/.test(rule));
+    const finished = rules.filter((rule) => rule.includes(`var(${FINAL_OPACITY}, 1)`));
+    // Exactly one rule hides a reveal — the scripted one — and every other
+    // rule that touches its opacity lands on whatever the editor chose.
+    assert.equal(hidden.length, 1, "more than one rule hides a reveal");
+    assert.equal(
+      finished.length,
+      rules.length - 1,
+      `a reveal rule sets an opacity the editor cannot reach:\n${rules
+        .filter((rule) => !hidden.includes(rule) && !finished.includes(rule))
+        .join("\n")}`,
+    );
+  });
+
+  test("reduced motion and print both land on the chosen value", () => {
+    for (const section of ["prefers-reduced-motion", "@media print"]) {
+      const at = css.indexOf(section);
+      assert.ok(at > 0, `${section} is missing`);
+      const block = css.slice(at, css.indexOf("\n}", at));
+      assert.match(
+        block,
+        new RegExp(`\\.reveal\\s*\\{[^}]*opacity:\\s*var\\(${FINAL_OPACITY}, 1\\)`),
+        `${section} forces a revealed element back to full strength`,
+      );
+    }
   });
 });

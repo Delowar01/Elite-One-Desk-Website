@@ -8,7 +8,7 @@ import { getBlock } from "@/lib/cms/blocks";
 import { itemMediaId, items, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
 import { imageForHref } from "@/lib/link-image";
-import { blockNode } from "@/lib/cms/node";
+import { blockNode, mediaNode } from "@/lib/cms/node";
 import { itemFieldPath, itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
@@ -34,6 +34,7 @@ export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
   const links = items(values, "links", locale, fields);
   if (!links.length) return null;
   const node = blockNode({ editor, styles });
+  const picture = mediaNode({ editor, styles });
 
   const catalogue = { ...catalog, packages, destinations };
 
@@ -42,6 +43,7 @@ export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
       <div className="shell shell-wide">
         <SectionHeading
           editor={editor}
+          styles={styles}
           fields={{ eyebrow: "title", intro: "intro" }}
           eyebrow={text(values, "title", locale) || ctx.dict.sections.quickAccess}
           intro={text(values, "intro", locale)}
@@ -52,6 +54,7 @@ export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
             {links.map((link, index) => {
               const chosen = itemMediaId(link, "image") ?? imageForHref(link.href, catalogue);
               const image = chosen ? media.get(chosen) ?? null : null;
+              const shot = picture(itemFieldPath("links", link, "image"));
               return (
                 <li
                   key={`${link.href}-${index}`}
@@ -64,7 +67,12 @@ export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
                     data-tint={index % 4}
                   >
                     {/* Decorative: the card names its own destination. */}
-                    <span className="ql-shot" aria-hidden {...node(itemFieldPath("links", link, "image"))}>
+                    {/*
+                      One node, two elements: the frame carries the address and
+                      the shape, the picture inside it carries the crop. An
+                      `object-position` on this span would do nothing at all.
+                    */}
+                    <span className="ql-shot" aria-hidden {...shot.box}>
                       {image ? (
                         <MediaImage
                           media={image}
@@ -72,6 +80,7 @@ export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
                           alt=""
                           sizes="(max-width: 640px) 46vw, (max-width: 1280px) 31vw, 23vw"
                           className="ql-img"
+                          style={shot.image}
                         />
                       ) : null}
                     </span>

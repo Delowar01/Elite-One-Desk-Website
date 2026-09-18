@@ -1,6 +1,6 @@
 import { MediaImage } from "@/components/site/media-image";
 import { mediaId, text } from "@/lib/cms/values";
-import { blockNode } from "@/lib/cms/node";
+import { blockNode, mediaNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
 export function PageHeroBlock({ values, ctx, index, editor, styles }: BlockProps) {
@@ -11,6 +11,7 @@ export function PageHeroBlock({ values, ctx, index, editor, styles }: BlockProps
   const background = ctx.media.get(mediaId(values, "backgroundImage") ?? -1) ?? null;
   const Heading = index === 0 ? "h1" : "h2";
   const node = blockNode({ editor, styles });
+  const backgroundNode = mediaNode({ editor, styles })("field:backgroundImage");
 
   return (
     <section
@@ -18,7 +19,7 @@ export function PageHeroBlock({ values, ctx, index, editor, styles }: BlockProps
       className="relative overflow-clip pb-[clamp(2.5rem,4vw,4rem)] pt-[clamp(6.5rem,9vw,9rem)]"
     >
       {background ? (
-        <div className="pointer-events-none absolute inset-0 -z-20" {...node("field:backgroundImage")}>
+        <div className="pointer-events-none absolute inset-0 -z-20" {...backgroundNode.box}>
           <MediaImage
             media={background}
             locale={locale}
@@ -26,6 +27,7 @@ export function PageHeroBlock({ values, ctx, index, editor, styles }: BlockProps
             sizes="100vw"
             priority
             className="size-full object-cover opacity-30"
+            style={backgroundNode.image}
           />
           <div
             className="absolute inset-0"

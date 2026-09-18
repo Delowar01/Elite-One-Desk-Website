@@ -40,6 +40,61 @@ const VARIANT_CLASS: Record<string, string> = {
 };
 
 /**
+ * The custom property the stylesheet reads a revealed element's finished
+ * opacity from. Written here and in `globals.css`, and nowhere else: it is a
+ * name in source, never a value from the database.
+ */
+export const FINAL_OPACITY = "--eod-node-opacity";
+
+/**
+ * One element's style: the reveal's own properties, then a node's overrides.
+ *
+ * Separated from the markup because what it decides is a rule rather than a
+ * tag — and a rule with a failure mode nobody would see in a screenshot, since
+ * getting it wrong leaves the page looking right until somebody scrolls.
+ *
+ * Opacity is the one token that cannot be applied inline here. An inline
+ * `opacity` outranks a class, so `opacity: 0.5` on a `.reveal` would show the
+ * element at half strength *before* it was revealed and leave the fade nothing
+ * to travel: the lifecycle would be visibly broken by a style that was only
+ * ever meant to describe the finished state. The stylesheet reads the finished
+ * value from `FINAL_OPACITY` instead, so the hidden state stays 0 and the
+ * revealed state lands on the editor's number rather than on 1 — in the
+ * reduced-motion and print rules as well, where there is no animation but the
+ * chosen value still has to hold.
+ *
+ * With `variant="none"` there is no reveal class and therefore no lifecycle to
+ * protect, so the value is simply the element's opacity.
+ *
+ * Everything else the node carries is merged over the reveal's own properties,
+ * which is what an override is — and `--reveal-delay` survives it, because a
+ * delay is not one of the things a style token can name.
+ */
+export function revealStyle({
+  delay,
+  stagger,
+  revealClass,
+  node,
+}: {
+  delay: number;
+  stagger?: number;
+  revealClass: string;
+  node?: CSSProperties;
+}): CSSProperties {
+  const { opacity, ...rest } = node ?? {};
+  const style: CSSProperties & Record<string, string | number> = {
+    ["--reveal-delay"]: `${delay}ms`,
+  };
+  if (stagger) style["--reveal-stagger"] = `${stagger}ms`;
+  Object.assign(style, rest);
+  if (opacity !== undefined) {
+    if (revealClass) style[FINAL_OPACITY] = String(opacity);
+    else style.opacity = opacity;
+  }
+  return style;
+}
+
+/**
  * Scroll reveal built on IntersectionObserver and two CSS classes rather than a
  * motion library: a few hundred bytes, running off the compositor, firing once.
  *
@@ -81,15 +136,10 @@ export function Reveal({
     return () => observer.disconnect();
   }, [variant]);
 
-  const classes = [VARIANT_CLASS[variant] ?? "reveal", className].filter(Boolean).join(" ");
+  const revealClass = VARIANT_CLASS[variant] ?? "reveal";
+  const classes = [revealClass, className].filter(Boolean).join(" ");
   const { style: nodeStyle, ...marks } = nodeAttrs ?? {};
-  const style: CSSProperties & Record<string, string | number> = {
-    ["--reveal-delay"]: `${delay}ms`,
-  };
-  if (stagger) style[["--reveal-stagger"] as unknown as string] = `${stagger}ms`;
-  // The override wins over the reveal's own properties, which is what an
-  // override is — and the reveal delay survives because it is not one of them.
-  Object.assign(style, nodeStyle);
+  const style = revealStyle({ delay, stagger, revealClass, node: nodeStyle });
 
   return (
     <Tag

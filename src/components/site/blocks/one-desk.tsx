@@ -24,6 +24,7 @@ export function OneDeskBlock({ values, ctx, editor, styles }: BlockProps) {
         <div>
           <SectionHeading
             editor={editor}
+            styles={styles}
             fields={{ eyebrow: "eyebrow", title: "title", intro: "body" }}
             eyebrow={text(values, "eyebrow", locale)}
             title={text(values, "title", locale)}

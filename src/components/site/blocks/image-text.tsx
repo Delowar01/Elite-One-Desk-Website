@@ -5,7 +5,7 @@ import { Reveal } from "@/components/site/reveal";
 import { Icon } from "@/components/ui/icon";
 import { mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { blockNode } from "@/lib/cms/node";
+import { blockNode, mediaNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
 export function ImageTextBlock({ values, ctx, editor, styles }: BlockProps) {
@@ -16,6 +16,7 @@ export function ImageTextBlock({ values, ctx, editor, styles }: BlockProps) {
   const ctaLabel = text(values, "ctaLabel", locale);
   const body = text(values, "body", locale);
   const node = blockNode({ editor, styles });
+  const imageNode = mediaNode({ editor, styles })("field:image");
 
   return (
     <section className="section-tight">
@@ -31,7 +32,7 @@ export function ImageTextBlock({ values, ctx, editor, styles }: BlockProps) {
           >
             <div
               className="overflow-hidden rounded-[var(--radius-lg)] border border-line"
-              {...node("field:image")}
+              {...imageNode.box}
             >
               <MediaImage
                 media={image}
@@ -39,6 +40,7 @@ export function ImageTextBlock({ values, ctx, editor, styles }: BlockProps) {
                 sizes="(max-width: 1024px) 92vw, 45vw"
                 ratio="4 / 3"
                 className="w-full"
+                style={imageNode.image}
               />
             </div>
           </Reveal>

@@ -11,7 +11,7 @@ import type { BlockProps } from "./context";
  * an address typed into one section and again into the footer is an address
  * that will eventually disagree with itself.
  */
-export function ContactDetailsBlock({ values, ctx, editor }: BlockProps) {
+export function ContactDetailsBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale, dict, settings, catalog, whatsappHref } = ctx;
   const { contact } = settings;
   const showMap = bool(values, "showMap", true) && Boolean(contact.mapEmbedUrl);
@@ -52,7 +52,13 @@ export function ContactDetailsBlock({ values, ctx, editor }: BlockProps) {
     <section data-atmosphere="form" className="section-tight">
       <div className="shell shell-wide grid gap-12 lg:grid-cols-[0.85fr_1.15fr] lg:gap-16">
         <div>
-          <SectionHeading editor={editor} fields={{ title: "title", intro: "intro" }} title={text(values, "title", locale)} intro={text(values, "intro", locale)} />
+          <SectionHeading
+            editor={editor}
+            styles={styles}
+            fields={{ title: "title", intro: "intro" }}
+            title={text(values, "title", locale)}
+            intro={text(values, "intro", locale)}
+          />
 
           {rows.length ? (
             <ul className="mt-8 space-y-5">

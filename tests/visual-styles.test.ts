@@ -23,6 +23,7 @@ import { signIn, type TestSession } from "./helpers/session";
 
 import { ITEM_ID_KEY } from "@/lib/cms/item-id";
 import { STYLE_DOCUMENT_VERSION, type StyleDocument } from "@/lib/cms/styles";
+import { STYLE_TOKEN_LABELS, styleTargetFor } from "@/lib/visual-editor/style-targets";
 import type { VisualSectionLoad, VisualStyleSaveResult } from "@/lib/visual-editor/content";
 
 const PORT = 3444;
@@ -150,6 +151,50 @@ function tagWith(html: string, attribute: string): string | null {
 }
 
 const styleOf = (tag: string | null): string => /style="([^"]*)"/.exec(tag ?? "")?.[1] ?? "";
+const classOf = (tag: string | null): string => /class="([^"]*)"/.exec(tag ?? "")?.[1] ?? "";
+
+/** The text inside the element this opening tag begins. */
+function textInside(html: string, tag: string): string {
+  const at = html.indexOf(tag);
+  if (at < 0) return "";
+  const rest = html.slice(at + tag.length);
+  const end = rest.indexOf("<");
+  return end < 0 ? "" : rest.slice(0, end);
+}
+
+/**
+ * The opening tag of the element that says exactly this.
+ *
+ * A public page carries no node addresses — that is what makes them
+ * editor-only — so a test that has to check the *same element* a visitor gets
+ * finds it the way a reader would: by what it says.
+ */
+function tagAround(html: string, text: string): string | null {
+  const at = html.indexOf(`>${text}<`);
+  if (at < 0) return null;
+  const open = html.lastIndexOf("<", at);
+  return open < 0 ? null : html.slice(open, at + 1);
+}
+
+/** The first tag of this name inside the element that opening tag begins. */
+function tagInside(html: string, outer: string, name: string): string | null {
+  const at = html.indexOf(outer);
+  if (at < 0) return null;
+  return new RegExp(`<${name}\\b[^<>]*>`).exec(html.slice(at + outer.length))?.[0] ?? null;
+}
+
+/** Publish a section's draft through the screen an admin actually uses. */
+async function publishDraft(sectionId: number): Promise<void> {
+  const url = `/admin/pages/section/${sectionId}`;
+  const screen = await get(server.origin, url, { cookie: owner.cookie });
+  const published = await submitForm(
+    server.origin,
+    url,
+    formWith(screen.html, 'name="expectedRevision"', ">Publish draft<"),
+    owner.cookie,
+  );
+  assert.ok(!/Reload the page/i.test(published.html), "publishing was refused");
+}
 
 /**
  * The canvas URL for a page.
@@ -761,6 +806,511 @@ describe("a style belongs to a node, not to a position", () => {
       assert.match(root, /margin-inline:/, path);
       assert.ok(!/padding-left|padding-right|margin-left|margin-right/.test(root), `physical spacing in ${path}`);
       assert.match(page.html, /text-align:\s*start/, path);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+type NodeCheck = {
+  /** The section-relative path an editor's selection produces. */
+  path: string;
+  tokens: Record<string, unknown>;
+  /** What that element is, so a style cannot quietly land on a wrapper. */
+  element: RegExp;
+  /** Declarations the element's own style attribute must carry. */
+  expect: readonly RegExp[];
+};
+
+/**
+ * The whole cycle for one block: draft, preview, public, publish, public again.
+ *
+ * Every assertion is against the exact element the editor selected — found by
+ * its address on the canvas and by its own words on the public page, because a
+ * visitor's page carries no addresses. Storing the document is not the claim
+ * being tested here; rendering it is.
+ */
+async function provesOnThePage(section: SectionRow, page: string, nodes: readonly NodeCheck[]) {
+  const before = (await canvas(page)).html;
+  const words = new Map<string, string>();
+  for (const node of nodes) {
+    const tag = tagWith(before, `data-eod-address="section:${section.id}/${node.path}"`);
+    assert.ok(tag, `${node.path} is not addressable on ${page}`);
+    assert.match(tag, node.element, `${node.path} is not the element this test means`);
+    assert.equal(styleOf(tag), "", `${node.path} was already carrying a style`);
+    const text = textInside(before, tag);
+    assert.ok(text.trim(), `${node.path} renders no text to find it by`);
+    words.set(node.path, text);
+  }
+
+  const clean = (await get(server.origin, page)).html;
+  const untouched = new Map(nodes.map((node) => [node.path, tagAround(clean, words.get(node.path)!)]));
+  for (const node of nodes) {
+    assert.ok(untouched.get(node.path), `${node.path} is not on the public page`);
+  }
+
+  answered(
+    await saveStyles(section, doc(Object.fromEntries(nodes.map((n) => [n.path, { base: n.tokens }])))),
+  );
+
+  // The editor sees the draft, on the element they pointed at.
+  const drafted = (await canvas(page)).html;
+  for (const node of nodes) {
+    const tag = tagWith(drafted, `data-eod-address="section:${section.id}/${node.path}"`);
+    assert.ok(tag, `${node.path} lost its address`);
+    assert.match(tag, node.element, `${node.path} moved to another element`);
+    for (const rule of node.expect) {
+      assert.match(styleOf(tag), rule, `${node.path} in preview: ${styleOf(tag)}`);
+    }
+  }
+
+  // …and nobody else does.
+  const still = (await get(server.origin, page)).html;
+  for (const node of nodes) {
+    assert.equal(
+      tagAround(still, words.get(node.path)!),
+      untouched.get(node.path),
+      `a style draft reached a visitor on ${page}`,
+    );
+  }
+
+  await publishDraft(section.id);
+
+  const live = (await get(server.origin, page)).html;
+  for (const node of nodes) {
+    const tag = tagAround(live, words.get(node.path)!);
+    assert.ok(tag, `${node.path} vanished from the public page`);
+    assert.match(tag, node.element, `${node.path} published onto another element`);
+    for (const rule of node.expect) {
+      assert.match(styleOf(tag), rule, `${node.path} published: ${styleOf(tag)}`);
+    }
+    assert.ok(!tag.includes("data-eod-"), "editor markup reached a visitor");
+  }
+}
+
+describe("the heading eleven blocks share is styled like anything else", () => {
+  /**
+   * `SectionHeading` renders the opening eyebrow, title and lede of eleven
+   * blocks. It was given the editor's marks and not the style document, so
+   * those nodes could be selected, could be styled in the panel, and then did
+   * nothing at all on the page. The four tests below are four different blocks,
+   * because the defect was in the shared component rather than in any one of
+   * them — and each one goes all the way to the public page.
+   */
+  test("Quick Access: the heading takes a colour and a weight", async () => {
+    const links = await find("home", "quick-links");
+    await provesOnThePage(links, "/", [
+      {
+        // The block calls its own field `title` and shows it as the eyebrow.
+        path: "field:title",
+        element: /^<p\b[^>]*\bclass="eyebrow/,
+        tokens: { textColor: "orange", fontWeight: 800 },
+        expect: [/color:\s*var\(--color-orange\)/, /font-weight:\s*800/],
+      },
+    ]);
+  });
+
+  test("Travel: a title and a lede, two nodes of one heading", async () => {
+    const travel = await find("home", "travel-feature");
+    await provesOnThePage(travel, "/", [
+      {
+        path: "field:title",
+        element: /^<h2\b/,
+        tokens: { align: "center", fontSize: "h3", maxWidth: "prose" },
+        expect: [/text-align:\s*center/, /font-size:\s*var\(--text-h3\)/, /max-width:\s*65ch/],
+      },
+      {
+        // A different field name for the same slot of the same component.
+        path: "field:body",
+        element: /^<p\b[^>]*\bclass="lede/,
+        tokens: { textColor: "peach", marginBlock: 6 },
+        expect: [/color:\s*var\(--color-peach\)/, /margin-block:\s*2rem/],
+      },
+    ]);
+  });
+
+  test("How it works: the eyebrow of a third block", async () => {
+    const process = await find("home", "process");
+    await provesOnThePage(process, "/", [
+      {
+        path: "field:eyebrow",
+        element: /^<p\b[^>]*\bclass="eyebrow/,
+        tokens: { textColor: "warm", align: "center" },
+        expect: [/color:\s*var\(--color-warm\)/, /text-align:\s*center/],
+      },
+      {
+        path: "field:title",
+        element: /^<h2\b/,
+        tokens: { fontSize: "h1" },
+        expect: [/font-size:\s*var\(--text-h1\)/],
+      },
+    ]);
+  });
+
+  test("Common questions: and on a second page", async () => {
+    const faq = await find("contact", "faq");
+    await provesOnThePage(faq, "/contact", [
+      {
+        path: "field:title",
+        element: /^<h2\b/,
+        tokens: { textColor: "orange", opacity: 0.8 },
+        expect: [/color:\s*var\(--color-orange\)/, /opacity:\s*0\.8/],
+      },
+    ]);
+  });
+
+  test("a heading with no override renders exactly the markup it always did", async () => {
+    const why = await find("about", "why-us");
+    const html = (await canvas("/about")).html;
+    const tag = tagWith(html, `data-eod-address="section:${why.id}/field:title"`);
+    assert.ok(tag, "the heading is not addressable");
+    assert.equal(styleOf(tag), "", "an unstyled heading carried a style attribute");
+    assert.ok(!tag.includes("style="), "an unstyled heading carried a style attribute");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a picture's crop lands on the picture, not on the frame", () => {
+  /**
+   * A media field is two elements here: a frame that clips and shapes, and an
+   * `<img>` inside it that is the thing the browser actually crops.
+   * `object-position` on the frame is inert — it is not a replaced element — so
+   * the focal-point controls were offered, saved, and did nothing. One stored
+   * path and one selectable node still, because the DOM's shape is not a fact
+   * the database should learn.
+   */
+  test("Quick Links: the frame keeps the shape and the photograph takes the crop", async () => {
+    const links = await find("home", "quick-links");
+    const loaded = answered(await loadSection(links.id, links.page_id));
+    assert.ok(loaded.ok);
+    const rows = loaded.section.values.links as Record<string, unknown>[];
+    const chosen = String(rows[0]![ITEM_ID_KEY]);
+    const neighbour = String(rows[1]![ITEM_ID_KEY]);
+    const before = await row(links.id);
+
+    const path = `field:links/item:${chosen}/field:image`;
+    answered(
+      await saveStyles(links, doc({ [path]: { base: { objectX: 20, objectY: 80, radius: "md" } } })),
+    );
+
+    const html = (await canvas("/")).html;
+    const frame = tagWith(html, `data-eod-address="section:${links.id}/${path}"`);
+    assert.ok(frame, "the picture is not addressable");
+    assert.equal(classOf(frame), "ql-shot", "the address moved off the frame");
+    assert.match(styleOf(frame), /border-radius:\s*var\(--radius-md\)/, "the frame lost its shape");
+    assert.ok(
+      !/object-position/.test(styleOf(frame)),
+      "the crop was written on the frame, where it does nothing",
+    );
+
+    const picture = tagInside(html, frame, "img");
+    assert.ok(picture, "the frame holds no picture");
+    assert.equal(classOf(picture), "ql-img", "the crop landed on something that is not the picture");
+    // Inline, so it beats the crop `.ql-img` sets for itself in the stylesheet
+    // — which is the only way an editor's focal point could win here.
+    assert.match(styleOf(picture), /object-position:\s*20%\s*80%/);
+    assert.ok(!/border-radius/.test(styleOf(picture)), "the frame's shape was copied onto the picture");
+    // One node, one address: the picture is not separately selectable.
+    assert.ok(!picture.includes("data-eod-"), "the picture took an address of its own");
+
+    // The card beside it is untouched.
+    const other = tagWith(
+      html,
+      `data-eod-address="section:${links.id}/field:links/item:${neighbour}/field:image"`,
+    );
+    assert.ok(other, "the neighbour is not addressable");
+    assert.equal(styleOf(other), "", "a neighbour's frame was styled");
+    const otherPicture = tagInside(html, other, "img");
+    assert.ok(otherPicture, "the neighbour holds no picture");
+    assert.ok(!/object-position/.test(styleOf(otherPicture)), "a neighbour was cropped");
+
+    // …and nothing about the content moved: same picture, same row, same id.
+    const after = await row(links.id);
+    assert.deepEqual(after.published, before.published, "styling a picture changed the content");
+    assert.equal(after.draft, before.draft, "styling a picture wrote a content draft");
+    assert.equal(
+      /src="([^"]*)"/.exec(picture)?.[1],
+      /src="([^"]*)"/.exec(tagInside((await canvas("/")).html, frame, "img") ?? "")?.[1],
+      "the picture itself changed",
+    );
+  });
+
+  test("Quick Links: the crop follows its row when the list is reordered", async () => {
+    const links = await find("home", "quick-links");
+    const loaded = answered(await loadSection(links.id, links.page_id));
+    assert.ok(loaded.ok);
+    const rows = loaded.section.values.links as Record<string, unknown>[];
+    const chosen = String(rows[0]![ITEM_ID_KEY]);
+    const path = `field:links/item:${chosen}/field:image`;
+
+    const styled = answered(
+      await saveStyles(links, doc({ [path]: { base: { objectX: 15, objectY: 85 } } })),
+    );
+    assert.ok(styled.ok);
+
+    // The same row, now at the end of the list.
+    const reordered = [...rows.slice(1), rows[0]];
+    const content = answered(
+      await saveContent(
+        { ...links, revision: styled.revision },
+        { ...loaded.section.values, links: reordered },
+      ),
+    );
+    assert.equal(content.ok, true, JSON.stringify(content));
+
+    const html = (await canvas("/")).html;
+    const frame = tagWith(html, `data-eod-address="section:${links.id}/${path}"`);
+    assert.ok(frame, "the row lost its address in the move");
+    assert.match(
+      styleOf(tagInside(html, frame, "img")),
+      /object-position:\s*15%\s*85%/,
+      "the crop stayed behind at the old position",
+    );
+
+    // The card that moved into first place did not inherit it.
+    const first = String(rows[1]![ITEM_ID_KEY]);
+    const moved = tagWith(
+      html,
+      `data-eod-address="section:${links.id}/field:links/item:${first}/field:image"`,
+    );
+    assert.ok(moved, "the new first card is not addressable");
+    assert.ok(
+      !/object-position/.test(styleOf(tagInside(html, moved, "img"))),
+      "a crop was inherited by position",
+    );
+
+    // The row still carries the id it was styled under.
+    const reloaded = answered(await loadSection(links.id, links.page_id));
+    assert.ok(reloaded.ok);
+    const now = reloaded.section.values.links as Record<string, unknown>[];
+    assert.equal(String(now[now.length - 1]![ITEM_ID_KEY]), chosen, "the row's id moved with its position");
+  });
+
+  test("a picture that is not in a list is cropped the same way", async () => {
+    const section = await find("about", "image-text");
+    const [picture] = await sql<{ id: number }[]>`select id from media order by id limit 1`;
+    assert.ok(picture, "the fixture has no artwork to crop");
+
+    const loaded = answered(await loadSection(section.id, section.page_id));
+    assert.ok(loaded.ok);
+    const content = answered(
+      await saveContent(section, { ...loaded.section.values, image: picture.id }),
+    );
+    assert.equal(content.ok, true, JSON.stringify(content));
+
+    const withImage = await row(section.id);
+    answered(
+      await saveStyles(
+        withImage,
+        doc({ "field:image": { base: { objectX: 10, objectY: 90, border: "accent" } } }),
+      ),
+    );
+
+    const html = (await canvas("/about")).html;
+    const frame = tagWith(html, `data-eod-address="section:${section.id}/field:image"`);
+    assert.ok(frame, "the picture is not addressable");
+    assert.match(styleOf(frame), /border:\s*1px solid var\(--color-orange\)/);
+    assert.ok(!/object-position/.test(styleOf(frame)), "the crop was written on the frame");
+
+    const img = tagInside(html, frame, "img");
+    assert.ok(img, "the frame holds no picture");
+    assert.match(styleOf(img), /object-position:\s*10%\s*90%/);
+    assert.match(styleOf(img), /aspect-ratio:\s*4\s*\/\s*3/, "the block's own ratio was replaced");
+    assert.ok(!img.includes("data-eod-"), "the picture took an address of its own");
+  });
+
+  test("every block that renders a library picture splits the two halves", async () => {
+    // A grep, deliberately: the defect this closes was one call site being
+    // rewired and the rest being left, and the next media block added is the
+    // one that would be left.
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const dir = new URL("../src/components/site/blocks/", import.meta.url);
+    const offenders: string[] = [];
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith(".tsx")) continue;
+      const source = readFileSync(new URL(name, dir), "utf8");
+      if (!source.includes("<MediaImage")) continue;
+      // Every picture is placed by `mediaNode`, and its two halves are used:
+      // the frame gets the attributes, the picture gets the style.
+      if (!source.includes("mediaNode(")) offenders.push(`${name}: renders a picture without mediaNode`);
+      for (const call of source.split("<MediaImage").slice(1)) {
+        const tag = call.slice(0, call.indexOf("/>"));
+        if (!/style=\{[a-zA-Z]+\.image\}/.test(tag)) offenders.push(`${name}: a picture takes no crop`);
+      }
+    }
+    assert.deepEqual(offenders, []);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("an opacity is a revealed element's finished state", () => {
+  test("it travels as the property the stylesheet reads, and the reveal still works", async () => {
+    const travel = await find("home", "travel-feature");
+    const loaded = answered(await loadSection(travel.id, travel.page_id));
+    assert.ok(loaded.ok);
+    const caps = loaded.section.values.capabilities as Record<string, unknown>[];
+    const id = String(caps[0]![ITEM_ID_KEY]);
+    const path = `field:capabilities/item:${id}`;
+
+    answered(await saveStyles(travel, doc({ [path]: { base: { opacity: 0.45, radius: "lg" } } })));
+
+    const html = (await canvas("/")).html;
+    const tag = tagWith(html, `data-eod-address="section:${travel.id}/${path}"`);
+    assert.ok(tag, "the row is not addressable");
+    assert.match(classOf(tag), /\breveal\b/, "this row is not revealed, so the test proves nothing");
+    const style = styleOf(tag);
+
+    assert.match(style, /--eod-node-opacity:\s*0\.45/, "the finished opacity was not handed to the stylesheet");
+    // An inline opacity outranks the class that holds the element at 0, so the
+    // row would sit at 45% before it was ever revealed and the fade would have
+    // nothing to travel.
+    assert.ok(
+      !/(^|;)\s*opacity:/.test(style),
+      `the reveal's lifecycle was overridden by an inline opacity: ${style}`,
+    );
+    assert.match(tag, /data-shown="false"/, "the row started out already shown");
+    assert.match(style, /--reveal-delay:/, "the reveal's own delay was lost");
+    assert.match(style, /border-radius:\s*var\(--radius-lg\)/, "the rest of the node's style was dropped");
+  });
+
+  test("a section root is not revealed, so its opacity is simply its opacity", async () => {
+    const hero = await find("terms", "page-hero");
+    answered(await saveStyles(hero, doc({ root: { base: { opacity: 0.6 } } })));
+    const preview = await get(server.origin, "/terms?preview=1", { cookie: owner.cookie });
+    const tag = tagWith(preview.html, 'data-section="page-hero"');
+    assert.ok(!/\breveal\b/.test(classOf(tag)), "the section wrapper became a reveal");
+    assert.match(styleOf(tag), /opacity:\s*0\.6/);
+    assert.ok(!/--eod-node-opacity/.test(styleOf(tag)), "a property nothing reads replaced the opacity");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A non-default value for every token in the vocabulary, and the declaration it
+ * has to produce on the page. The table is written out rather than derived,
+ * because deriving it from the same map the renderer uses would prove only that
+ * the map equals itself.
+ */
+const EXECUTES: Record<string, { value: unknown; on: "box" | "image"; css: (tag: string) => RegExp }> = {
+  align: { value: "center", on: "box", css: () => /text-align:\s*center/ },
+  fontSize: { value: "h3", on: "box", css: () => /font-size:\s*var\(--text-h3\)/ },
+  fontWeight: { value: 800, on: "box", css: () => /font-weight:\s*800/ },
+  textColor: { value: "orange", on: "box", css: () => /color:\s*var\(--color-orange\)/ },
+  background: { value: "ink-700", on: "box", css: () => /background:\s*var\(--color-ink-700\)/ },
+  padBlock: { value: 6, on: "box", css: () => /padding-block:\s*2rem/ },
+  padInline: { value: 5, on: "box", css: () => /padding-inline:\s*1\.5rem/ },
+  marginBlock: { value: 4, on: "box", css: () => /margin-block:\s*1rem/ },
+  marginInline: { value: 3, on: "box", css: () => /margin-inline:\s*0\.75rem/ },
+  gap: { value: 7, on: "box", css: () => /gap:\s*2\.5rem/ },
+  radius: { value: "lg", on: "box", css: () => /border-radius:\s*var\(--radius-lg\)/ },
+  border: { value: "accent", on: "box", css: () => /border:\s*1px solid var\(--color-orange\)/ },
+  shadow: { value: "lift", on: "box", css: () => /box-shadow:\s*var\(--shadow-lift\)/ },
+  maxWidth: { value: "prose", on: "box", css: () => /max-width:\s*65ch/ },
+  objectX: { value: 20, on: "image", css: () => /object-position:\s*20%/ },
+  objectY: { value: 80, on: "image", css: () => /object-position:[^;"]*80%/ },
+  // The one token whose rendering depends on the element it lands on.
+  opacity: {
+    value: 0.55,
+    on: "box",
+    css: (tag) => (/\breveal\b/.test(classOf(tag)) ? /--eod-node-opacity:\s*0\.55/ : /(^|;)opacity:\s*0\.55/),
+  },
+};
+
+describe("every control the panel offers does something on the page", () => {
+  /**
+   * The rule the capability resolver exists for is that a control which does
+   * nothing is worse than a missing one — and until this ran, nothing checked
+   * the resolver's answer against the renderer. Each node below takes *every*
+   * token its own target claims, at once, and every one of them has to appear.
+   */
+  const CASES: { name: string; slug: string; page: string; block: string; path: string; image?: boolean }[] = [
+    { name: "a section root", slug: "privacy", page: "/privacy", block: "page-hero", path: "root" },
+    { name: "a text field", slug: "privacy", page: "/privacy", block: "page-hero", path: "field:title" },
+    { name: "a shared heading's field", slug: "contact", page: "/contact", block: "faq", path: "field:eyebrow" },
+  ];
+
+  for (const item of CASES) {
+    test(item.name, async () => {
+      const section = await find(item.slug, item.block);
+      const target = styleTargetFor(item.block, item.path);
+      const tokens = Object.fromEntries(
+        target.tokens.map((token) => [token, EXECUTES[token]!.value]),
+      );
+      assert.ok(target.tokens.length >= 4, `${item.path} offers almost nothing`);
+
+      answered(await saveStyles(section, doc({ [item.path]: { base: tokens } })));
+
+      const html = (await canvas(item.page)).html;
+      const address =
+        item.path === "root" ? `section:${section.id}` : `section:${section.id}/${item.path}`;
+      const tag = tagWith(html, `data-eod-address="${address}"`);
+      assert.ok(tag, `${item.path} is not addressable`);
+      const style = styleOf(tag);
+      for (const token of target.tokens) {
+        assert.match(style, EXECUTES[token]!.css(tag), `${item.name}: ${token} did nothing (${style})`);
+      }
+    });
+  }
+
+  test("a repeatable row", async () => {
+    const travel = await find("home", "travel-feature");
+    const loaded = answered(await loadSection(travel.id, travel.page_id));
+    assert.ok(loaded.ok);
+    const caps = loaded.section.values.capabilities as Record<string, unknown>[];
+    const path = `field:capabilities/item:${String(caps[0]![ITEM_ID_KEY])}`;
+    const target = styleTargetFor("travel-feature", path);
+
+    answered(
+      await saveStyles(
+        travel,
+        doc({ [path]: { base: Object.fromEntries(target.tokens.map((t) => [t, EXECUTES[t]!.value])) } }),
+      ),
+    );
+
+    const html = (await canvas("/")).html;
+    const tag = tagWith(html, `data-eod-address="section:${travel.id}/${path}"`);
+    assert.ok(tag, "the row is not addressable");
+    for (const token of target.tokens) {
+      assert.match(styleOf(tag), EXECUTES[token]!.css(tag), `a row's ${token} did nothing`);
+    }
+  });
+
+  test("a media field, whose controls are split across two elements", async () => {
+    const links = await find("home", "quick-links");
+    const loaded = answered(await loadSection(links.id, links.page_id));
+    assert.ok(loaded.ok);
+    const rows = loaded.section.values.links as Record<string, unknown>[];
+    const path = `field:links/item:${String(rows[0]![ITEM_ID_KEY])}/field:image`;
+    const target = styleTargetFor("quick-links", path);
+
+    answered(
+      await saveStyles(
+        links,
+        doc({ [path]: { base: Object.fromEntries(target.tokens.map((t) => [t, EXECUTES[t]!.value])) } }),
+      ),
+    );
+
+    const html = (await canvas("/")).html;
+    const frame = tagWith(html, `data-eod-address="section:${links.id}/${path}"`);
+    assert.ok(frame, "the picture is not addressable");
+    const img = tagInside(html, frame, "img");
+    assert.ok(img, "the frame holds no picture");
+    for (const token of target.tokens) {
+      const rule = EXECUTES[token]!;
+      const tag = rule.on === "image" ? img : frame;
+      assert.match(styleOf(tag), rule.css(tag), `a picture's ${token} did nothing on the ${rule.on}`);
+    }
+  });
+
+  test("and the vocabulary has no token this could not have checked", () => {
+    // If a token is added without a line in the table above, these tests would
+    // quietly stop covering it rather than fail.
+    for (const token of Object.keys(STYLE_TOKEN_LABELS)) {
+      if (token === "hidden") continue;
+      assert.ok(EXECUTES[token], `${token} is offered by the panel and unchecked here`);
     }
   });
 });

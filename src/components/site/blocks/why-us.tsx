@@ -22,6 +22,7 @@ export function WhyUsBlock({ values, ctx, editor, styles }: BlockProps) {
       <div className="shell shell-wide">
         <SectionHeading
           editor={editor}
+          styles={styles}
           fields={{ eyebrow: "eyebrow", title: "title", intro: "intro" }}
           eyebrow={text(values, "eyebrow", locale)}
           title={text(values, "title", locale)}

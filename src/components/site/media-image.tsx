@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 import type { MediaRef } from "@/lib/media/url";
 import { mediaSrc, mediaSrcSet } from "@/lib/media/url";
 import type { Locale } from "@/lib/i18n/config";
@@ -13,6 +15,16 @@ type Props = {
   priority?: boolean;
   /** CSS aspect-ratio; without it the intrinsic size reserves the space. */
   ratio?: string;
+  /**
+   * A media node's own overrides, already mapped from validated tokens.
+   *
+   * Only ever what `mediaNodeStyle` decided belongs on the picture rather than
+   * on the frame — today that is the focal point. It is merged *after* the
+   * ratio so an editor's crop wins, and merged rather than replacing so the
+   * ratio and the object-fit that make the crop mean anything survive it. No
+   * database string reaches here: the mapping happened before the call.
+   */
+  style?: CSSProperties;
 };
 
 /**
@@ -28,9 +40,14 @@ export function MediaImage({
   className,
   priority = false,
   ratio,
+  style,
 }: Props) {
   if (!media) return null;
   const altText = alt ?? pick(locale, media.altEn, media.altAr) ?? "";
+  const own: CSSProperties | undefined = ratio
+    ? { aspectRatio: ratio, objectFit: "cover" }
+    : undefined;
+  const applied = own || style ? { ...own, ...style } : undefined;
   return (
     <img
       src={mediaSrc(media, media.derivatives?.[1] ?? undefined)}
@@ -40,7 +57,7 @@ export function MediaImage({
       height={media.height || undefined}
       alt={altText}
       className={className}
-      style={ratio ? { aspectRatio: ratio, objectFit: "cover" } : undefined}
+      style={applied}
       loading={priority ? "eager" : "lazy"}
       fetchPriority={priority ? "high" : undefined}
       decoding="async"

@@ -6,7 +6,7 @@ import {
   type EditorNodeKind,
   type EditorRender,
 } from "@/lib/visual-editor/render";
-import { nodeStyle } from "./style-css";
+import { mediaNodeStyle, nodeStyle } from "./style-css";
 import type { StyleDocument } from "./styles";
 
 /**
@@ -44,6 +44,28 @@ export function blockNode(source: NodeSource) {
     const style = nodeStyle(source.styles, path);
     if (style) attrs.style = style;
     return attrs;
+  };
+}
+
+/**
+ * A media field's node: the frame's attributes, and the picture's style.
+ *
+ * One path, one address, one selectable node — and two elements, because that
+ * is how a picture is built here. The frame carries the shape and the editor's
+ * marks; the `<img>` inside it carries the crop, since `object-position` on a
+ * non-replaced element is inert. Returning a pair rather than one spreadable
+ * object is deliberate: a block has to decide where each half goes, and a
+ * `{...spread}` that silently put the image's style on the frame is exactly the
+ * bug this exists to close.
+ */
+export type MediaNode = { box: NodeAttrs; image?: CSSProperties };
+
+export function mediaNode(source: NodeSource) {
+  return (path: string | undefined): MediaNode => {
+    const { box, image } = mediaNodeStyle(source.styles, path);
+    const attrs: NodeAttrs = { ...editorNodeAttrs(source.editor ?? null, { path, kind: "field" }) };
+    if (box) attrs.style = box;
+    return { box: attrs, image };
   };
 }
 

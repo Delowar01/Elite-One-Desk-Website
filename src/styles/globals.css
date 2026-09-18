@@ -897,9 +897,16 @@
      class starts *visible*, so a visitor with JavaScript turned off — or a
      print, or a full-page screenshot that never scrolls — gets the finished
      page rather than a column of blank sections. Only where script can
-     actually run, and therefore actually reveal, does anything start hidden. */
+     actually run, and therefore actually reveal, does anything start hidden.
+
+     `--eod-node-opacity` is where a *finished* opacity goes — an editor's
+     style override on an element that happens to be revealed. It cannot be an
+     inline `opacity`, because inline beats a class: the element would sit at
+     half strength before it was revealed and the fade would have nothing left
+     to do. The name is written here and in `reveal.tsx` and nowhere else; no
+     stored value ever names a custom property. */
   .reveal {
-    opacity: 1;
+    opacity: var(--eod-node-opacity, 1);
     transform: none;
   }
 
@@ -912,7 +919,7 @@
         transform var(--duration-slow) var(--ease-out-expo);
       transition-delay: var(--reveal-delay, 0ms);
     }
-    .reveal[data-shown="true"] { opacity: 1; transform: none; }
+    .reveal[data-shown="true"] { opacity: var(--eod-node-opacity, 1); transform: none; }
     .reveal-left { transform: translate3d(-24px, 0, 0); }
     [dir="rtl"] .reveal-left { transform: translate3d(24px, 0, 0); }
     .reveal-scale { transform: scale(0.965); }
@@ -962,7 +969,7 @@
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
-  .reveal { opacity: 1 !important; transform: none !important; }
+  .reveal { opacity: var(--eod-node-opacity, 1) !important; transform: none !important; }
 
   /* A service card still answers a hover — the border lifts, the badge warms,
      the action turns peach. What it stops doing is moving: the card's lift,
@@ -994,7 +1001,7 @@
   body::before { display: none !important; }
   .no-print { display: none !important; }
   /* Whatever had not been scrolled past yet is still part of the document. */
-  .reveal { opacity: 1 !important; transform: none !important; }
+  .reveal { opacity: var(--eod-node-opacity, 1) !important; transform: none !important; }
 }
 
 /* Hero orbit: the lit section of the route draws itself once, then stops. */

@@ -187,22 +187,69 @@ export function tokensToStyle(tokens: StyleTokens): CSSProperties | undefined {
 }
 
 /**
- * The style for one node of a section, by its relative path.
+ * A node's tokens, or none, by its relative path.
  *
  * The path is normalised through the Batch 2 parser rather than compared as a
  * string, so `field:headline` and a stored key that means the same thing
  * resolve to one node — and a key that is not a node path at all resolves to
  * nothing.
  */
+export function nodeTokens(
+  document: StyleDocument | undefined,
+  path: string | undefined,
+  breakpoint: Breakpoint = "base",
+): StyleTokens {
+  if (!document) return {};
+  const parsed = parseNodePath(path === undefined ? "root" : path);
+  if (!parsed) return {};
+  const node = document.nodes[formatNodePath(parsed)];
+  return node ? resolveTokens(node, breakpoint) : {};
+}
+
+/** The style for one node of a section, by its relative path. */
 export function nodeStyle(
   document: StyleDocument | undefined,
   path: string | undefined,
   breakpoint: Breakpoint = "base",
 ): CSSProperties | undefined {
-  if (!document) return undefined;
-  const parsed = parseNodePath(path === undefined ? "root" : path);
-  if (!parsed) return undefined;
-  const node = document.nodes[formatNodePath(parsed)];
-  if (!node) return undefined;
-  return tokensToStyle(resolveTokens(node, breakpoint));
+  return tokensToStyle(nodeTokens(document, path, breakpoint));
+}
+
+/**
+ * Tokens that describe the picture rather than the frame around it.
+ *
+ * A media field in this codebase is two elements: a box that carries the shape
+ * — the radius, the border, the overflow clip — and an `<img>` inside it that
+ * carries the crop. `object-position` on the box does nothing at all, because
+ * the box is not a replaced element; it has to reach the image.
+ *
+ * That is a fact about how the markup is built, so it lives here beside the
+ * mapping rather than in the panel. One field is still one stored path and one
+ * selectable node — `field:image`, not `field:image/box` and
+ * `field:image/img`. Splitting the *address* to solve a rendering detail would
+ * put the DOM's shape into the database.
+ */
+const REPLACED: ReadonlySet<keyof StyleTokens> = new Set(["objectX", "objectY"]);
+
+export type MediaStyle = { box?: CSSProperties; image?: CSSProperties };
+
+/**
+ * One media node's style, split between the frame and the picture.
+ *
+ * Both halves come from the same path and the same validated tokens; only the
+ * element they land on differs.
+ */
+export function mediaNodeStyle(
+  document: StyleDocument | undefined,
+  path: string | undefined,
+  breakpoint: Breakpoint = "base",
+): MediaStyle {
+  const tokens = nodeTokens(document, path, breakpoint);
+  const box: StyleTokens = {};
+  const image: StyleTokens = {};
+  for (const [key, value] of Object.entries(tokens) as [keyof StyleTokens, unknown][]) {
+    const target = REPLACED.has(key) ? image : box;
+    (target as Record<string, unknown>)[key] = value;
+  }
+  return { box: tokensToStyle(box), image: tokensToStyle(image) };
 }

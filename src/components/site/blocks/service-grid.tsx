@@ -10,7 +10,7 @@ import { mediaSrc, mediaSrcSet } from "@/lib/media/url";
 import type { BlockProps } from "./context";
 
 /** The six core categories, read live from the catalogue rather than retyped. */
-export function ServiceGridBlock({ values, ctx, editor }: BlockProps) {
+export function ServiceGridBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale, dict, catalog, media } = ctx;
   const limit = num(values, "limit", 0);
   const showCounts = bool(values, "showCounts", true);
@@ -44,6 +44,7 @@ export function ServiceGridBlock({ values, ctx, editor }: BlockProps) {
       <div className="shell shell-wide">
         <SectionHeading
           editor={editor}
+          styles={styles}
           fields={{ eyebrow: "eyebrow", title: "title", intro: "intro" }}
           eyebrow={text(values, "eyebrow", locale) || dict.sections.servicesEyebrow}
           title={text(values, "title", locale)}

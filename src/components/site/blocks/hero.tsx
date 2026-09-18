@@ -7,7 +7,7 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { blockNode } from "@/lib/cms/node";
+import { blockNode, mediaNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
 /**
@@ -31,6 +31,7 @@ export function HeroBlock({ values, ctx, editor, styles }: BlockProps) {
   const primaryLabel = text(values, "primaryCtaLabel", locale) || dict.nav.primaryCta;
   const secondaryLabel = text(values, "secondaryCtaLabel", locale) || dict.nav.secondaryCta;
   const node = blockNode({ editor, styles });
+  const backgroundNode = mediaNode({ editor, styles })("field:backgroundImage");
 
   return (
     <section
@@ -41,7 +42,7 @@ export function HeroBlock({ values, ctx, editor, styles }: BlockProps) {
       className="relative overflow-clip pb-[clamp(2.5rem,3.9vw,3.7rem)] pt-[clamp(7rem,11vw,10.5rem)]"
     >
       {background ? (
-        <div className="pointer-events-none absolute inset-0 -z-20" {...node("field:backgroundImage")}>
+        <div className="pointer-events-none absolute inset-0 -z-20" {...backgroundNode.box}>
           <MediaImage
             media={background}
             locale={locale}
@@ -49,6 +50,7 @@ export function HeroBlock({ values, ctx, editor, styles }: BlockProps) {
             sizes="100vw"
             priority
             className="size-full object-cover opacity-25"
+            style={backgroundNode.image}
           />
           <div
             className="absolute inset-0"

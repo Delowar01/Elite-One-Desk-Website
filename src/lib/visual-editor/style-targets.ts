@@ -38,7 +38,13 @@ const SECTION_TOKENS = [
   "opacity",
 ] as const;
 
-const CONTAINER_TOKENS = [
+/**
+ * A slot is a place a block reserved for a control, and every slot in this
+ * codebase is a laid-out box — the one that exists today is a button whose
+ * label and arrow sit in a flex row. `gap` therefore does something here, and
+ * this is the only category where it does.
+ */
+const SLOT_TOKENS = [
   "align",
   "background",
   "padBlock",
@@ -46,6 +52,30 @@ const CONTAINER_TOKENS = [
   "marginBlock",
   "marginInline",
   "gap",
+  "radius",
+  "border",
+  "shadow",
+  "opacity",
+  "maxWidth",
+] as const;
+
+/**
+ * A container that is not known to lay its children out — a repeatable list,
+ * or a path this resolver does not otherwise recognise.
+ *
+ * No `gap`: `gap` does nothing except on a flex, grid or multi-column box, and
+ * a control that quietly does nothing teaches an editor that the panel is
+ * unreliable. It stays in the vocabulary and in the renderer, and comes back
+ * to a category the moment a block annotates a node that really is a layout
+ * box.
+ */
+const CONTAINER_TOKENS = [
+  "align",
+  "background",
+  "padBlock",
+  "padInline",
+  "marginBlock",
+  "marginInline",
   "radius",
   "border",
   "shadow",
@@ -64,6 +94,12 @@ const TEXT_TOKENS = [
   "opacity",
 ] as const;
 
+/**
+ * One row of a repeatable list. The same reasoning as a container, and the same
+ * omission: every annotated row in this codebase is an `<li>` or a `<span>`
+ * whose own children are laid out by something inside it, so a `gap` on the row
+ * itself would change nothing an editor could see.
+ */
 const ITEM_TOKENS = [
   "align",
   "background",
@@ -71,7 +107,6 @@ const ITEM_TOKENS = [
   "padInline",
   "marginBlock",
   "marginInline",
-  "gap",
   "radius",
   "border",
   "shadow",
@@ -91,6 +126,7 @@ const MEDIA_TOKENS = [
 
 const SECTION: StyleTarget = { category: "section", tokens: SECTION_TOKENS };
 const CONTAINER: StyleTarget = { category: "container", tokens: CONTAINER_TOKENS };
+const SLOT: StyleTarget = { category: "container", tokens: SLOT_TOKENS };
 const TEXT: StyleTarget = { category: "text", tokens: TEXT_TOKENS };
 const ITEM: StyleTarget = { category: "item", tokens: ITEM_TOKENS };
 const MEDIA: StyleTarget = { category: "media", tokens: MEDIA_TOKENS };
@@ -119,8 +155,8 @@ export function styleTargetFor(blockType: string, path: string | undefined): Sty
   const block = getBlock(blockType);
   const [first, second, third] = parsed;
 
-  // A slot is a place the block reserved for something; it is a container.
-  if (first!.kind === "slot") return CONTAINER;
+  // A slot is a place the block reserved for a control, and a laid-out one.
+  if (first!.kind === "slot") return SLOT;
   if (first!.kind !== "field") return CONTAINER;
 
   const field = block?.fields.find((entry) => entry.name === first!.name);
@@ -141,6 +177,7 @@ export function styleTargetFor(blockType: string, path: string | undefined): Sty
   }
 
   // `field:x/item:i_…/slot:y` and anything else well formed: a container.
+  if (parsed.some((segment) => segment.kind === "slot")) return SLOT;
   return CONTAINER;
 }
 

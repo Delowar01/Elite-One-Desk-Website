@@ -6,7 +6,7 @@ import { Icon } from "@/components/ui/icon";
 import { getBlock } from "@/lib/cms/blocks";
 import { items, mediaId, str, text } from "@/lib/cms/values";
 import { localeHref } from "@/lib/i18n/config";
-import { blockNode } from "@/lib/cms/node";
+import { blockNode, mediaNode } from "@/lib/cms/node";
 import { itemPath } from "@/lib/visual-editor/render";
 import type { BlockProps } from "./context";
 
@@ -24,6 +24,7 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles }: BlockProps
   const ctaHref = str(values, "ctaHref", "/contact");
   const ctaLabel = text(values, "ctaLabel", locale);
   const node = blockNode({ editor, styles });
+  const imageNode = mediaNode({ editor, styles })("field:image");
 
   return (
     <section className="section-tight">
@@ -100,7 +101,7 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles }: BlockProps
               {image ? (
                 <div
                   className="relative overflow-hidden rounded-[var(--radius-lg)] border border-line"
-                  {...node("field:image")}
+                  {...imageNode.box}
                 >
                   <MediaImage
                     media={image}
@@ -108,6 +109,7 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles }: BlockProps
                     sizes="(max-width: 1024px) 90vw, 38vw"
                     ratio="4 / 3"
                     className="w-full"
+                    style={imageNode.image}
                   />
                 </div>
               ) : null}

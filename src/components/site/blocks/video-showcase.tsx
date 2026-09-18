@@ -5,7 +5,7 @@ import { pick } from "@/lib/i18n/config";
 import { mediaSrc, mediaSrcSet } from "@/lib/media/url";
 import type { BlockProps } from "./context";
 
-export function VideoShowcaseBlock({ values, ctx, editor }: BlockProps) {
+export function VideoShowcaseBlock({ values, ctx, editor, styles }: BlockProps) {
   const { locale, dict, settings } = ctx;
   if (!settings.features.showVideos) return null;
 
@@ -40,6 +40,7 @@ export function VideoShowcaseBlock({ values, ctx, editor }: BlockProps) {
       <div className="shell shell-wide">
         <SectionHeading
           editor={editor}
+          styles={styles}
           fields={{ eyebrow: "eyebrow", title: "title", intro: "intro" }}
           eyebrow={text(values, "eyebrow", locale) || dict.sections.videosEyebrow}
           title={text(values, "title", locale)}

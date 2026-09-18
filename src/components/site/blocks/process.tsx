@@ -25,6 +25,7 @@ export function ProcessBlock({ values, ctx, editor, styles }: BlockProps) {
         <div className="lg:sticky lg:top-28 lg:self-start">
           <SectionHeading
             editor={editor}
+            styles={styles}
             fields={{ eyebrow: "eyebrow", title: "title" }}
             eyebrow={text(values, "eyebrow", locale) || dict.sections.processEyebrow}
             title={text(values, "title", locale)}
