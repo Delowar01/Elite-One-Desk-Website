@@ -28,6 +28,7 @@ import {
   setStructureVisibility,
   type StructureResult,
 } from "@/lib/cms/structure-service";
+import { readVisibility } from "@/lib/cms/structure";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { emptyValues } from "@/lib/cms/values";
 import { parseBlockPayload } from "@/lib/cms/validate";
@@ -50,6 +51,20 @@ const RESERVED = new Set([
  * writing anyway is last-write-wins, which is how an hour of somebody else's
  * work disappears without either of them noticing.
  */
+/**
+ * What to say when the section a change went into is not on the live page.
+ *
+ * "The change is live now" would be false: the content is published and the
+ * section is still hidden, so a visitor sees nothing. The sentence describes
+ * the section's **current** live visibility and says nothing about what the
+ * layout draft intends — that is a separate pending thing and conflating the
+ * two is how an editor comes to believe they have published a layout.
+ */
+const LIVE = {
+  hiddenPublish: "Content published. This section remains hidden on the live page.",
+  hiddenDraft: "Draft published. This section remains hidden on the live page.",
+} as const;
+
 const CONFLICT = {
   save: "This section changed while you were editing it. Reload the page before saving.",
   publish: "This section changed while you were looking at it. Reload the page before publishing.",
@@ -248,12 +263,27 @@ const hasAnyDraft = (row: { draft: unknown; draftStyles: unknown }): boolean =>
  * must not set `isPublished`. A hidden section stays hidden; its visibility is
  * a separate decision somebody made, not a side effect of tidying its layout.
  */
+/**
+ * What promoting a section's drafts writes — and, as of the layout draft, what
+ * it deliberately does not.
+ *
+ * Publishing used to set `is_published: true`, which made sense when the only
+ * way a section became visible was somebody publishing its content. It is now
+ * how a hidden section would quietly appear on the live site: an editor fixes a
+ * typo on a section the page is not showing, presses Publish, and the section
+ * goes live because the two decisions were the same write. They are not the
+ * same decision. Content publication says "these words are ready"; membership
+ * and visibility belong to the layout, and only publishing the layout may
+ * change them.
+ *
+ * So a row's current visibility is left exactly as it is, in every path that
+ * calls this.
+ */
 function promotion(row: typeof pageSections.$inferSelect): Record<string, unknown> {
   const values: Record<string, unknown> = {};
   if (row.draft !== null) {
     values.published = row.draft;
     values.draft = null;
-    values.isPublished = true;
   }
   if (row.draftStyles !== null) {
     // Validated on the way out as well: the column may predate a vocabulary
@@ -321,7 +351,9 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
   if (expected === null) return fail(CONFLICT.unreadable);
 
   const result = await updateSectionGuarded(id, expected, {
-    ...(publish ? { published: values, draft: null, isPublished: true } : { draft: values }),
+    // Publishing content writes content. `is_published` is the live layout's
+    // answer to a different question and is not this button's to change.
+    ...(publish ? { published: values, draft: null } : { draft: values }),
     animation,
     updatedBy: session.user.id,
   });
@@ -340,7 +372,9 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
   if (page) refreshSection(page.slug, id);
   return ok(
     publish
-      ? "Published. The change is live now."
+      ? section.isPublished
+        ? "Published. The change is live now."
+        : LIVE.hiddenPublish
       : "Draft saved. Use Preview to see it, then Publish when you are ready.",
   );
 }
@@ -405,7 +439,7 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
       summary: `Published the ${section.blockType} section`,
     });
     if (page) refreshSection(page.slug, id);
-    return ok("Published.");
+    return ok(section.isPublished ? "Published." : LIVE.hiddenDraft);
   });
 }
 
@@ -523,6 +557,23 @@ export async function publishAllDrafts(_prev: ActionState, form: FormData): Prom
  */
 const structuralConflict = (result: StructureResult & { ok: false }) => fail(result.message);
 
+/**
+ * One structural request, and the whole of its ownership chain.
+ *
+ * `pageId` comes from the screen that rendered the form and from nowhere else.
+ * An earlier version looked the page up from the section id instead, which
+ * sounds defensive and proves the wrong thing: it establishes that the section
+ * belongs to *some* page, not that it belongs to the page whose screen
+ * submitted this. Two pages sitting on the same revision — which is ordinary,
+ * since every page starts at one — would then let Home's screen restructure
+ * About by naming one of its sections. The service opens the page this names
+ * and searches only that page's rows, so a foreign id finds nothing and the
+ * operation is refused.
+ *
+ * It is also the id the refresh below uses. Deriving it inside the operation
+ * left this function holding `Number(null) === 0`, so the page that had just
+ * changed was not the page whose caches were dropped.
+ */
 async function runStructural(
   form: FormData,
   operate: (context: { pageId: number; expectedRevision: number; userId: number }) => Promise<StructureResult>,
@@ -531,6 +582,7 @@ async function runStructural(
   const pageId = Number(form.get("pageId"));
   const expected = expectedRevisionOf(form);
   if (expected === null) return fail(CONFLICT.unreadable);
+  if (!Number.isInteger(pageId) || pageId <= 0) return fail(CONFLICT.unreadable);
 
   const result = await operate({ pageId, expectedRevision: expected, userId: session.user.id });
   if (!result.ok) return structuralConflict(result);
@@ -541,31 +593,21 @@ async function runStructural(
   return ok(result.message, result.sectionId);
 }
 
-/**
- * The page a section belongs to, so a row-level form need not carry the page id.
- *
- * The id is read from the row rather than trusted from the request, which is
- * what stops one page's screen from restructuring another page's layout.
- */
-async function structuralContext(form: FormData): Promise<number> {
-  const sectionId = Number(form.get("id"));
-  const owner = await pageOf(sectionId);
-  return owner?.pageId ?? -1;
-}
-
 export async function toggleSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-toggle", async () => {
-    const pageId = await structuralContext(form);
-    const visible = form.get("visible") === "true";
+    // Refused rather than read as "hide": an unreadable field must not be able
+    // to take a section out of the published layout.
+    const visible = readVisibility(form.get("visible"));
+    if (visible === null) return fail(CONFLICT.unreadable);
     return runStructural(form, (context) =>
-      setStructureVisibility({ ...context, pageId }, Number(form.get("id")), visible),
+      setStructureVisibility(context, Number(form.get("id")), visible),
     );
   });
 }
 
 export async function moveSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-move", async () => {
-    const pageId = await structuralContext(form);
+    const pageId = Number(form.get("pageId"));
     const id = Number(form.get("id"));
     const up = field(form, "direction", 8) === "up";
 
@@ -587,7 +629,7 @@ export async function moveSection(_prev: ActionState, form: FormData): Promise<A
     if (to < 0 || to >= order.length) return ok();
     [order[at], order[to]] = [order[to]!, order[at]!];
 
-    return runStructural(form, (context) => reorderStructure({ ...context, pageId }, order));
+    return runStructural(form, (context) => reorderStructure(context, order));
   });
 }
 
@@ -621,9 +663,8 @@ export async function addSection(_prev: ActionState, form: FormData): Promise<Ac
 
 export async function duplicateSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-duplicate", async () => {
-    const pageId = await structuralContext(form);
     return runStructural(form, (context) =>
-      duplicateStructureSection({ ...context, pageId }, Number(form.get("id"))),
+      duplicateStructureSection(context, Number(form.get("id"))),
     );
   });
 }
@@ -639,18 +680,16 @@ export async function duplicateSection(_prev: ActionState, form: FormData): Prom
  */
 export async function deleteSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-delete", async () => {
-    const pageId = await structuralContext(form);
     return runStructural(form, (context) =>
-      removeStructureSection({ ...context, pageId }, Number(form.get("id"))),
+      removeStructureSection(context, Number(form.get("id"))),
     );
   });
 }
 
 export async function restoreSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-restore", async () => {
-    const pageId = await structuralContext(form);
     return runStructural(form, (context) =>
-      restoreStructureSection({ ...context, pageId }, Number(form.get("id"))),
+      restoreStructureSection(context, Number(form.get("id"))),
     );
   });
 }

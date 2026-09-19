@@ -49,7 +49,8 @@ export function LayersPanel({
   ready,
   canManage,
   busy,
-  error,
+  failure,
+  onReloadLayout,
   blocks,
   ops,
   onSelect,
@@ -64,7 +65,9 @@ export function LayersPanel({
   canManage: boolean;
   /** A structural request is in flight; the controls wait rather than queue. */
   busy: boolean;
-  error: string | null;
+  /** The last refusal, with its reason — a conflict is offered a way out. */
+  failure: { reason: "conflict" | "invalid" | "denied"; message: string } | null;
+  onReloadLayout: () => void;
   blocks: BlockDef[];
   ops: StructuralOps;
   onSelect: (address: string) => void;
@@ -136,14 +139,31 @@ export function LayersPanel({
         </div>
       ) : null}
 
-      {error ? (
-        <p
+      {failure ? (
+        <div
           role="alert"
-          className="mx-2 mb-2 shrink-0 rounded-[var(--radius-xs)] px-2.5 py-2 text-[0.7rem] leading-relaxed"
-          style={{ background: "#ef53501a", color: "#ffb4ad" }}
+          className="mx-2 mb-2 shrink-0 rounded-[var(--radius-xs)] px-2.5 py-2"
+          style={{ background: "#ef53501a" }}
         >
-          {error}
-        </p>
+          <p className="text-[0.7rem] leading-relaxed" style={{ color: "#ffb4ad" }}>
+            {failure.message}
+          </p>
+          {/*
+            A conflict is the one refusal with a next step, and the panel says
+            what it is rather than leaving an editor to work out that "reload"
+            means the browser's button and their unsaved text with it.
+          */}
+          {failure.reason === "conflict" ? (
+            <button
+              type="button"
+              onClick={onReloadLayout}
+              disabled={busy}
+              className="admin-btn admin-btn-sm mt-1.5 w-full justify-center"
+            >
+              Reload latest layout
+            </button>
+          ) : null}
+        </div>
       ) : null}
 
       {adding && canManage ? (

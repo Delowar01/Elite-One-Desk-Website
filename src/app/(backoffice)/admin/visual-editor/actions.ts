@@ -22,6 +22,7 @@ import {
   type PageStructure,
   type StructureResult,
 } from "@/lib/cms/structure-service";
+import { readVisibility } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
 import { updateSectionGuarded } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
@@ -431,10 +432,16 @@ export async function reorderPageStructure(form: FormData): Promise<VisualStruct
 }
 
 export async function setPageSectionVisibility(form: FormData): Promise<VisualStructureResult> {
+  // Two accepted strings and nothing else. Reading anything unrecognised as
+  // "hide" would let a malformed request take a section out of the published
+  // layout — the one direction an ambiguous value must never resolve in.
+  const visible = readVisibility(form.get("visible"));
+  if (visible === null) {
+    return { ok: false, reason: "invalid", message: "That request could not be read. Reload the layout." };
+  }
   return runStructure(
     form,
-    (context) =>
-      setStructureVisibility(context, Number(form.get("sectionId")), form.get("visible") === "true"),
+    (context) => setStructureVisibility(context, Number(form.get("sectionId")), visible),
     "visibility",
   );
 }

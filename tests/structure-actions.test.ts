@@ -888,12 +888,18 @@ describe("the Pages screen edits the same layout draft", () => {
     assert.ok(!/live/i.test(added.message ?? ""), added.message);
 
     const moved = answered(
-      await adminAction("moveSection", { id: rows[1]!.id, direction: "up", expectedRevision: await next() }),
+      await adminAction("moveSection", {
+        pageId: page.id,
+        id: rows[1]!.id,
+        direction: "up",
+        expectedRevision: await next(),
+      }),
     );
     assert.equal(moved.ok, true, JSON.stringify(moved));
 
     const hidden = answered(
       await adminAction("toggleSection", {
+        pageId: page.id,
         id: rows[0]!.id,
         visible: "false",
         expectedRevision: await next(),
@@ -902,12 +908,20 @@ describe("the Pages screen edits the same layout draft", () => {
     assert.equal(hidden.ok, true, JSON.stringify(hidden));
 
     const duplicated = answered(
-      await adminAction("duplicateSection", { id: rows[2]!.id, expectedRevision: await next() }),
+      await adminAction("duplicateSection", {
+        pageId: page.id,
+        id: rows[2]!.id,
+        expectedRevision: await next(),
+      }),
     );
     assert.equal(duplicated.ok, true, JSON.stringify(duplicated));
 
     const deleted = answered(
-      await adminAction("deleteSection", { id: rows[3]!.id, expectedRevision: await next() }),
+      await adminAction("deleteSection", {
+        pageId: page.id,
+        id: rows[3]!.id,
+        expectedRevision: await next(),
+      }),
     );
     assert.equal(deleted.ok, true, JSON.stringify(deleted));
 
@@ -935,9 +949,16 @@ describe("the Pages screen edits the same layout draft", () => {
   test("a stale Pages screen conflicts like any other", async () => {
     const page = await reset("about");
     const rows = (await sectionsOf(page.id)).map((row) => row.id);
-    answered(await adminAction("deleteSection", { id: rows[0]!, expectedRevision: page.revision }));
+    answered(
+      await adminAction("deleteSection", {
+        pageId: page.id,
+        id: rows[0]!,
+        expectedRevision: page.revision,
+      }),
+    );
     const refused = answered(
       await adminAction("toggleSection", {
+        pageId: page.id,
         id: rows[1]!,
         visible: "false",
         expectedRevision: page.revision,
@@ -954,9 +975,16 @@ describe("the Pages screen edits the same layout draft", () => {
   test("Restore is available from the Pages screen too", async () => {
     const page = await reset("about");
     const target = (await sectionsOf(page.id))[0]!.id;
-    answered(await adminAction("deleteSection", { id: target, expectedRevision: page.revision }));
+    answered(
+      await adminAction("deleteSection", {
+        pageId: page.id,
+        id: target,
+        expectedRevision: page.revision,
+      }),
+    );
     const back = answered(
       await adminAction("restoreSection", {
+        pageId: page.id,
         id: target,
         expectedRevision: (await pageBySlug("about")).revision,
       }),
@@ -1114,6 +1142,428 @@ describe("a pending section cannot be published on its own", () => {
     assert.equal(row.is_draft_only, true);
     assert.ok(row.draft, "Publish all consumed a pending section's draft");
     assert.ok(await structureOf(page.id), "Publish all published the layout");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a structural action belongs to the screen that submitted it", () => {
+  /**
+   * The page comes from the form, never from the section.
+   *
+   * Looking the page up from the section id sounds defensive and proves the
+   * wrong thing: it establishes that the section belongs to *some* page, not to
+   * the one whose screen submitted the request. Two pages on the same revision
+   * — ordinary, since every page starts at one — would then let Home's screen
+   * restructure About. So these tests deliberately put both pages on the same
+   * revision first: a test that passed because the revisions happened to differ
+   * would be proving nothing.
+   */
+  async function levelled(): Promise<{ home: PageRow; about: PageRow }> {
+    await reset("home");
+    await reset("about");
+    await sql`update pages set revision = 7 where slug in ('home', 'about')`;
+    return { home: await pageBySlug("home"), about: await pageBySlug("about") };
+  }
+
+  test("Home's screen cannot restructure About, even at the same revision", async () => {
+    const { home, about } = await levelled();
+    assert.equal(home.revision, about.revision, "the setup did not level the revisions");
+    const foreign = (await sectionsOf(about.id))[0]!.id;
+    const homeRows = await sectionsOf(home.id);
+    const aboutRows = await sectionsOf(about.id);
+
+    const loggedBefore = (
+      await sql<{ count: number }[]>`
+        select count(*)::int as count from activity_logs
+         where action like 'section.layout_%' or action like 'page.layout_%'`
+    )[0]!.count;
+
+    const attempts: Array<[string, Record<string, string | number>]> = [
+      ["moveSection", { id: foreign, direction: "up" }],
+      ["duplicateSection", { id: foreign }],
+      ["toggleSection", { id: foreign, visible: "false" }],
+      ["deleteSection", { id: foreign }],
+      ["restoreSection", { id: foreign }],
+    ];
+    for (const [action, fields] of attempts) {
+      const refused = answered(
+        await adminAction(action, { pageId: home.id, expectedRevision: home.revision, ...fields }),
+      );
+      assert.equal(refused.ok, false, `${action} was allowed`);
+    }
+
+    // Neither page's layout, rows or counter moved.
+    assert.equal(await structureOf(home.id), null, "Home's layout was written");
+    assert.equal(await structureOf(about.id), null, "About's layout was written");
+    assert.deepEqual((await sectionsOf(home.id)).map((r) => r.id), homeRows.map((r) => r.id));
+    assert.deepEqual((await sectionsOf(about.id)).map((r) => r.id), aboutRows.map((r) => r.id));
+    assert.equal((await pageBySlug("home")).revision, home.revision);
+    assert.equal((await pageBySlug("about")).revision, about.revision);
+
+    // …and not one of the five was logged as a success.
+    const loggedAfter = (
+      await sql<{ count: number }[]>`
+        select count(*)::int as count from activity_logs
+         where action like 'section.layout_%' or action like 'page.layout_%'`
+    )[0]!.count;
+    assert.equal(loggedAfter, loggedBefore, "a refused structural action was logged as done");
+  });
+
+  test("the Visual Editor refuses the same thing, at the same revision", async () => {
+    const { home, about } = await levelled();
+    const foreign = (await sectionsOf(about.id))[0]!.id;
+
+    for (const action of [
+      "duplicatePageSection",
+      "removePageSection",
+      "restorePageSection",
+      "setPageSectionVisibility",
+    ]) {
+      const refused = answered(
+        await structural(action, home, { sectionId: foreign, visible: "false" }),
+      );
+      assert.equal(refused.ok, false, action);
+    }
+    assert.equal(await structureOf(home.id), null);
+    assert.equal(await structureOf(about.id), null);
+    assert.equal((await pageBySlug("about")).revision, about.revision);
+  });
+
+  test("a row-level form with no page at all is refused rather than repaired", async () => {
+    const page = await reset("about");
+    const target = (await sectionsOf(page.id))[0]!.id;
+    for (const action of ["deleteSection", "duplicateSection", "restoreSection"]) {
+      const refused = answered(
+        await adminAction(action, { id: target, expectedRevision: page.revision }),
+      );
+      assert.equal(refused.ok, false, action);
+    }
+    assert.equal(await structureOf(page.id), null);
+    assert.equal((await pageBySlug("about")).revision, page.revision);
+  });
+
+  test("and with its own page it still does all five things", async () => {
+    const page = await reset("about");
+    const rows = (await sectionsOf(page.id)).map((row) => row.id);
+    const at = async () => (await pageBySlug("about")).revision;
+
+    const moved = answered(
+      await adminAction("moveSection", {
+        pageId: page.id,
+        id: rows[1]!,
+        direction: "up",
+        expectedRevision: await at(),
+      }),
+    );
+    assert.equal(moved.ok, true, JSON.stringify(moved));
+    assert.deepEqual(idsIn(await structureOf(page.id)).slice(0, 2), [rows[1]!, rows[0]!]);
+
+    const hidden = answered(
+      await adminAction("toggleSection", {
+        pageId: page.id,
+        id: rows[0]!,
+        visible: "false",
+        expectedRevision: await at(),
+      }),
+    );
+    assert.equal(hidden.ok, true, JSON.stringify(hidden));
+
+    const copied = answered(
+      await adminAction("duplicateSection", {
+        pageId: page.id,
+        id: rows[0]!,
+        expectedRevision: await at(),
+      }),
+    );
+    assert.equal(copied.ok, true, JSON.stringify(copied));
+
+    const removed = answered(
+      await adminAction("deleteSection", {
+        pageId: page.id,
+        id: rows[2]!,
+        expectedRevision: await at(),
+      }),
+    );
+    assert.equal(removed.ok, true, JSON.stringify(removed));
+
+    const restored = answered(
+      await adminAction("restoreSection", {
+        pageId: page.id,
+        id: rows[2]!,
+        expectedRevision: await at(),
+      }),
+    );
+    assert.equal(restored.ok, true, JSON.stringify(restored));
+
+    // …and the page's own screen is showing the layout that resulted, at the
+    // revision the next action will have to name.
+    const revision = await at();
+    const screen = await get(server.origin, "/admin/pages/about", { cookie: owner.cookie });
+    assert.match(screen.html, new RegExp(`name="expectedRevision"[^>]*value="${revision}"`));
+    assert.match(screen.html, /Layout draft/);
+    // Every structural form on this screen names the page it belongs to.
+    assert.match(screen.html, /name="pageId"/);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a visibility nobody sent is not a decision to hide", () => {
+  const BAD = ["", "0", "1", "TRUE", "True", "yes", "garbage", "null", "undefined"];
+
+  test("the Visual Editor refuses every value that is not exactly true or false", async () => {
+    const page = await reset("about");
+    const target = (await sectionsOf(page.id))[0]!;
+    const rowBefore = await sectionById(target.id);
+
+    for (const visible of BAD) {
+      const refused = answered(
+        await structural("setPageSectionVisibility", page, { sectionId: target.id, visible }),
+      );
+      assert.equal(refused.ok, false, `"${visible}" was accepted`);
+    }
+    // …and one with the field missing altogether.
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("pageId", String(page.id));
+    form.set("expectedRevision", String(page.revision));
+    form.set("sectionId", String(target.id));
+    const missing = answered(
+      await callAction<VisualStructureResult>({
+        origin: server.origin,
+        route: VE_ROUTE,
+        file: VE_ACTIONS,
+        action: "setPageSectionVisibility",
+        args: [form],
+        cookie: owner.cookie,
+      }),
+    );
+    assert.equal(missing.ok, false, "a missing field was read as hide");
+
+    assert.equal(await structureOf(page.id), null, "a malformed request wrote a layout");
+    assert.equal((await pageBySlug("about")).revision, page.revision);
+    assert.equal((await sectionById(target.id))!.is_published, rowBefore!.is_published);
+  });
+
+  test("the Pages screen refuses them too", async () => {
+    const page = await reset("about");
+    const target = (await sectionsOf(page.id))[0]!;
+
+    for (const visible of BAD) {
+      const refused = answered(
+        await adminAction("toggleSection", {
+          pageId: page.id,
+          id: target.id,
+          visible,
+          expectedRevision: page.revision,
+        }),
+      );
+      assert.equal(refused.ok, false, `"${visible}" was accepted`);
+    }
+    const missing = answered(
+      await adminAction("toggleSection", {
+        pageId: page.id,
+        id: target.id,
+        expectedRevision: page.revision,
+      }),
+    );
+    assert.equal(missing.ok, false, "a missing field was read as hide");
+    assert.equal(await structureOf(page.id), null);
+    assert.equal((await pageBySlug("about")).revision, page.revision);
+  });
+
+  test("and both still accept the two values that mean something", async () => {
+    const page = await reset("about");
+    const target = (await sectionsOf(page.id))[0]!;
+
+    const hidden = answered(
+      await structural("setPageSectionVisibility", page, {
+        sectionId: target.id,
+        visible: "false",
+      }),
+    );
+    assert.equal(hidden.ok, true, JSON.stringify(hidden));
+    assert.equal(
+      (await structureOf(page.id))!.sections.find((e) => e.sectionId === target.id)?.visible,
+      false,
+    );
+
+    const shown = answered(
+      await adminAction("toggleSection", {
+        pageId: page.id,
+        id: target.id,
+        visible: "true",
+        expectedRevision: (await pageBySlug("about")).revision,
+      }),
+    );
+    assert.equal(shown.ok, true, JSON.stringify(shown));
+    assert.equal(
+      (await structureOf(page.id))!.sections.find((e) => e.sectionId === target.id)?.visible,
+      true,
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("publishing content does not publish a section", () => {
+  /**
+   * Publishing used to set `is_published: true`, which made sense when that was
+   * the only way a section became visible. With a layout draft it is how a
+   * hidden section quietly appears on the live site: an editor fixes a typo on
+   * a section the page is not showing, presses Publish, and the section goes
+   * live because the two decisions shared one write. They are not one decision.
+   */
+  const hide = async (sectionId: number) => {
+    await sql`update page_sections set is_published = false where id = ${sectionId}`;
+    return (await sectionById(sectionId))!;
+  };
+
+  test("Save and publish writes the words and leaves the section hidden", async () => {
+    const page = await reset("terms");
+    const section = await hide((await sectionsOf(page.id))[1]!.id);
+    const live = orderOf((await get(server.origin, "/terms")).html);
+
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("id", String(section.id));
+    form.set("expectedRevision", String(section.revision));
+    form.set("values", JSON.stringify({ title: { en: "Published but hidden", ar: "" } }));
+    const published = answered(
+      await callAction<ActionState>({
+        origin: server.origin,
+        route: `/admin/pages/section/${section.id}`,
+        file: PAGE_ACTIONS,
+        action: "saveSectionAndPublish",
+        args: [{ ok: false }, form],
+        cookie: owner.cookie,
+      }),
+    );
+    assert.equal(published.ok, true, JSON.stringify(published));
+    // The words the editor reads describe what actually happened.
+    assert.match(published.message ?? "", /remains hidden on the live page/i);
+    assert.ok(!/live now/i.test(published.message ?? ""), published.message);
+
+    const after = (await sectionById(section.id))!;
+    assert.equal((after.published as { title: { en: string } }).title.en, "Published but hidden");
+    assert.equal(after.draft, null);
+    assert.equal(after.revision, section.revision + 1);
+    assert.equal(after.is_published, false, "publishing content made the section live");
+    assert.equal(after.is_draft_only, false);
+
+    // Nothing structural moved, and the visitor's page is identical.
+    assert.equal(await structureOf(page.id), null);
+    assert.equal((await pageBySlug("terms")).revision, page.revision);
+    assert.deepEqual(orderOf((await get(server.origin, "/terms")).html), live);
+  });
+
+  test("Publish draft promotes the draft and leaves the section hidden", async () => {
+    const page = await reset("terms");
+    const section = await hide((await sectionsOf(page.id))[1]!.id);
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "From a draft", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+    const current = (await sectionById(section.id))!;
+    const live = orderOf((await get(server.origin, "/terms")).html);
+
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("id", String(section.id));
+    form.set("expectedRevision", String(current.revision));
+    const published = answered(
+      await callAction<ActionState>({
+        origin: server.origin,
+        route: `/admin/pages/section/${section.id}`,
+        file: PAGE_ACTIONS,
+        action: "publishSection",
+        args: [{ ok: false }, form],
+        cookie: owner.cookie,
+      }),
+    );
+    assert.equal(published.ok, true, JSON.stringify(published));
+    assert.match(published.message ?? "", /remains hidden on the live page/i);
+
+    const after = (await sectionById(section.id))!;
+    assert.equal((after.published as { title: { en: string } }).title.en, "From a draft");
+    assert.equal(after.draft, null);
+    assert.equal(after.is_published, false, "Publish draft made the section live");
+    assert.equal(await structureOf(page.id), null);
+    assert.deepEqual(orderOf((await get(server.origin, "/terms")).html), live);
+  });
+
+  test("Publish all promotes both and changes neither section's visibility", async () => {
+    const page = await reset("disclaimer");
+    const rows = await sectionsOf(page.id);
+    const visible = rows[0]!;
+    const hidden = await hide(rows[1]!.id);
+    const live = orderOf((await get(server.origin, "/disclaimer")).html);
+
+    for (const id of [visible.id, hidden.id]) {
+      await sql`update page_sections set draft = ${sql.json({ title: { en: "Both ready", ar: "" } })}::jsonb
+                 where id = ${id}`;
+    }
+
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("pageId", String(page.id));
+    const published = answered(
+      await callAction<ActionState>({
+        origin: server.origin,
+        route: "/admin/pages/disclaimer",
+        file: PAGE_ACTIONS,
+        action: "publishAllDrafts",
+        args: [{ ok: false }, form],
+        cookie: owner.cookie,
+      }),
+    );
+    assert.equal(published.ok, true, JSON.stringify(published));
+    assert.match(published.message ?? "", /Published 2 sections/);
+
+    const afterVisible = (await sectionById(visible.id))!;
+    const afterHidden = (await sectionById(hidden.id))!;
+    assert.equal(afterVisible.draft, null);
+    assert.equal(afterHidden.draft, null);
+    assert.equal((afterVisible.published as { title: { en: string } }).title.en, "Both ready");
+    assert.equal((afterHidden.published as { title: { en: string } }).title.en, "Both ready");
+
+    // The one thing Publish all may never become is a structural publisher.
+    assert.equal(afterVisible.is_published, true, "a visible section stopped being visible");
+    assert.equal(afterHidden.is_published, false, "Publish all made a hidden section live");
+    assert.equal(await structureOf(page.id), null, "Publish all wrote a layout");
+    assert.equal((await pageBySlug("disclaimer")).revision, page.revision);
+    assert.deepEqual(orderOf((await get(server.origin, "/disclaimer")).html), live);
+  });
+
+  test("a visible section publishes exactly as it always did", async () => {
+    const page = await reset("privacy");
+    const section = (await sectionsOf(page.id))[1]!;
+    assert.equal(section.is_published, true, "the fixture's section is not visible");
+    const live = orderOf((await get(server.origin, "/privacy")).html);
+
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("id", String(section.id));
+    form.set("expectedRevision", String(section.revision));
+    form.set("values", JSON.stringify({ title: { en: "Still live", ar: "" } }));
+    const published = answered(
+      await callAction<ActionState>({
+        origin: server.origin,
+        route: `/admin/pages/section/${section.id}`,
+        file: PAGE_ACTIONS,
+        action: "saveSectionAndPublish",
+        args: [{ ok: false }, form],
+        cookie: owner.cookie,
+      }),
+    );
+    assert.equal(published.ok, true, JSON.stringify(published));
+    assert.match(published.message ?? "", /live now/i);
+
+    const after = (await sectionById(section.id))!;
+    assert.equal((after.published as { title: { en: string } }).title.en, "Still live");
+    assert.equal(after.is_published, true);
+    const now = await get(server.origin, "/privacy");
+    assert.deepEqual(orderOf(now.html), live);
+    assert.ok(now.html.includes("Still live"), "the published words did not reach the visitor");
   });
 });
 

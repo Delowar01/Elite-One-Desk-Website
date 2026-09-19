@@ -229,10 +229,10 @@ export function SectionList({
 
                 {canManage ? (
                   <div className="flex flex-wrap items-center gap-1">
-                    <Structural csrf={csrf} revision={pageRevision} id={section.id} direction="up">
+                    <Structural csrf={csrf} pageId={pageId} revision={pageRevision} id={section.id} direction="up">
                       <IconButton label="Move up" icon="chevronDown" rotate disabled={index === 0} />
                     </Structural>
-                    <Structural csrf={csrf} revision={pageRevision} id={section.id} direction="down">
+                    <Structural csrf={csrf} pageId={pageId} revision={pageRevision} id={section.id} direction="down">
                       <IconButton
                         label="Move down"
                         icon="chevronDown"
@@ -241,7 +241,7 @@ export function SectionList({
                     </Structural>
                     <InlineAction
                       action={duplicateSection}
-                      hidden={{ _csrf: csrf, id: section.id, expectedRevision: pageRevision }}
+                      hidden={{ _csrf: csrf, pageId, id: section.id, expectedRevision: pageRevision }}
                       className="contents"
                     >
                       <IconButton label="Duplicate" icon="layers" />
@@ -250,6 +250,7 @@ export function SectionList({
                       action={toggleSection}
                       hidden={{
                         _csrf: csrf,
+                        pageId,
                         id: section.id,
                         expectedRevision: pageRevision,
                         visible: section.layoutVisible ? "false" : "true",
@@ -267,7 +268,7 @@ export function SectionList({
                     </InlineAction>
                     <InlineAction
                       action={deleteSection}
-                      hidden={{ _csrf: csrf, id: section.id, expectedRevision: pageRevision }}
+                      hidden={{ _csrf: csrf, pageId, id: section.id, expectedRevision: pageRevision }}
                       className="contents"
                     >
                       <ConfirmSubmit
@@ -319,7 +320,7 @@ export function SectionList({
                 {canManage ? (
                   <InlineAction
                     action={restoreSection}
-                    hidden={{ _csrf: csrf, id: section.id, expectedRevision: pageRevision }}
+                    hidden={{ _csrf: csrf, pageId, id: section.id, expectedRevision: pageRevision }}
                   >
                     <SubmitButton pendingLabel="Restoring…">Restore</SubmitButton>
                   </InlineAction>
@@ -424,15 +425,24 @@ function Badges({ section, removed }: { section: SectionRow; removed?: boolean }
   );
 }
 
-/** A move form, which is a reorder of one step on the server. */
+/**
+ * A move form, which is a reorder of one step on the server.
+ *
+ * `pageId` travels with every structural control, including the row-level ones.
+ * The server will not look the page up from the section: that would establish
+ * only that the section belongs to some page, and two pages on the same
+ * revision would then let one screen restructure the other.
+ */
 function Structural({
   csrf,
+  pageId,
   revision,
   id,
   direction,
   children,
 }: {
   csrf: string;
+  pageId: number;
   revision: number;
   id: number;
   direction: "up" | "down";
@@ -441,7 +451,7 @@ function Structural({
   return (
     <InlineAction
       action={moveSection}
-      hidden={{ _csrf: csrf, id, direction, expectedRevision: revision }}
+      hidden={{ _csrf: csrf, pageId, id, direction, expectedRevision: revision }}
       className="contents"
     >
       {children}

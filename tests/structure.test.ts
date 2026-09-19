@@ -19,6 +19,7 @@ import {
   normalizeDraftStructureForPage,
   pendingRemovals,
   readDraftStructure,
+  readVisibility,
   removedSections,
   validateDraftStructure,
   type PageStructure,
@@ -239,6 +240,51 @@ describe("a duplicated section is a different thing, all the way down", () => {
     const { ids } = withFreshItemIds(values);
     for (const path of Object.keys(remapStyleItemIds(styles, ids).nodes)) {
       assert.equal(path, formatNodePath(parseNodePath(path)!), path);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a visibility is one of two strings, or it is not a visibility", () => {
+  /**
+   * `raw === "true"` reads well until you list what else it accepts. A missing
+   * field, `"TRUE"`, `"1"`, `"yes"`, `""` and every typo all fall through to
+   * the other branch and mean **hide** — a malformed request quietly becoming a
+   * destructive layout intention, in the one direction an ambiguous value must
+   * never resolve.
+   */
+  test("the two that mean something", () => {
+    assert.equal(readVisibility("true"), true);
+    assert.equal(readVisibility("false"), false);
+  });
+
+  test("and nothing else does, least of all by meaning hide", () => {
+    for (const raw of [
+      undefined,
+      null,
+      "",
+      " true",
+      "true ",
+      "TRUE",
+      "True",
+      "FALSE",
+      "0",
+      "1",
+      "yes",
+      "no",
+      "on",
+      "off",
+      "garbage",
+      0,
+      1,
+      true,
+      false,
+      {},
+      [],
+      ["true"],
+    ]) {
+      assert.equal(readVisibility(raw), null, JSON.stringify(raw) ?? String(raw));
     }
   });
 });

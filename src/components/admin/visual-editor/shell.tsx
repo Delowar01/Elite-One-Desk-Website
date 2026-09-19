@@ -161,7 +161,17 @@ export function VisualEditorShell({
    */
   const [structure, setStructure] = useState<PageStructure | null>(null);
   const [structureBusy, setStructureBusy] = useState(false);
-  const [structureError, setStructureError] = useState<string | null>(null);
+  /**
+   * The last structural refusal, whole.
+   *
+   * The reason is kept rather than flattened into a sentence, because the panel
+   * has to offer a way out of a *conflict* specifically and inferring that from
+   * the wording of a message would break the first time somebody edited the
+   * wording.
+   */
+  const [structureFailure, setStructureFailure] = useState<
+    { reason: "conflict" | "invalid" | "denied"; message: string } | null
+  >(null);
 
   const page = useMemo(() => pages.find((row) => row.slug === slug) ?? pages[0], [pages, slug]);
   const activeId = selected?.sectionId ?? null;
@@ -220,7 +230,7 @@ export function VisualEditorShell({
     if (!page) return;
     let cancelled = false;
     setStructure(null);
-    setStructureError(null);
+    setStructureFailure(null);
     loadPageStructure(page.id).then((next) => {
       if (!cancelled) setStructure(next);
     });
@@ -576,7 +586,7 @@ export function VisualEditorShell({
     ) => {
       if (!canManage || !page || !structure || structureBusy) return;
       setStructureBusy(true);
-      setStructureError(null);
+      setStructureFailure(null);
 
       const form = new FormData();
       form.set("_csrf", csrf);
@@ -589,7 +599,7 @@ export function VisualEditorShell({
       setStructureBusy(false);
 
       if (!result.ok) {
-        setStructureError(result.message);
+        setStructureFailure({ reason: result.reason, message: result.message });
         return;
       }
       if (result.structure) setStructure(result.structure);
@@ -610,6 +620,49 @@ export function VisualEditorShell({
     },
     [canManage, csrf, page, structure, structureBusy],
   );
+
+  /**
+   * The way out of a layout conflict: take the layout that won.
+   *
+   * It reads, it does not merge. Folding this screen's order into the newer one
+   * would be guessing at an intention nobody expressed — the other editor moved
+   * things for a reason, and a silent blend of two layouts is a third layout
+   * neither of them asked for. So the server's answer replaces this screen's
+   * copy whole, the revision comes with it, and the next structural action is
+   * guarded against that.
+   *
+   * What it does not touch is the section buffers. Somebody's half-written
+   * paragraph has nothing to do with the order of the page, and losing it
+   * because a colleague dragged a section would be the most expensive possible
+   * way to report a conflict. They are keyed by section id, so a section that
+   * survived the other editor's change comes back to its own unsaved work.
+   */
+  const reloadLayout = useCallback(async () => {
+    if (!page || structureBusy) return;
+    setStructureBusy(true);
+    const latest = await loadPageStructure(page.id);
+    setStructureBusy(false);
+    if (!latest) {
+      setStructureFailure({
+        reason: "invalid",
+        message: "That page could not be read. Reload the editor.",
+      });
+      return;
+    }
+
+    setStructure(latest);
+    setStructureFailure(null);
+
+    // Keep the selection only if the section is still in the layout that won.
+    const selected = selectedRef.current;
+    const survives =
+      selected && latest.structure.sections.some((entry) => entry.sectionId === selected.sectionId);
+    restoreTo.current = survives
+      ? { address: selected.address, fallback: `section:${selected.sectionId}` }
+      : null;
+    freshCanvas();
+    if (survives) setRestoreToken((n) => n + 1);
+  }, [page, structureBusy]);
 
   const ops: StructuralOps = useMemo(
     () => ({
@@ -678,9 +731,10 @@ export function VisualEditorShell({
         );
         const unsaved = [...dirtyIds].some((id) => pendingIds.has(id));
         if (unsaved) {
-          setStructureError(
-            "Save or revert unsaved edits in new sections before discarding the layout.",
-          );
+          setStructureFailure({
+            reason: "invalid",
+            message: "Save or revert unsaved edits in new sections before discarding the layout.",
+          });
           return;
         }
         if (!window.confirm("Discard the layout changes? Sections added here are deleted.")) return;
@@ -894,7 +948,8 @@ export function VisualEditorShell({
           ready={ready}
           canManage={canManage}
           busy={structureBusy}
-          error={structureError}
+          failure={structureFailure}
+          onReloadLayout={reloadLayout}
           blocks={blocks[page.slug] ?? []}
           ops={ops}
           onSelect={ask}

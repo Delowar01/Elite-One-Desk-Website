@@ -132,6 +132,29 @@ export function pendingRemovals(
   return pageSectionIds.filter((id) => !listed.has(id));
 }
 
+/**
+ * A submitted visibility, or `null` for anything that is not one.
+ *
+ * `raw === "true"` looks like a reasonable reading until you list what else it
+ * accepts: a missing field, `"TRUE"`, `"1"`, `"yes"`, `""` and any typo all
+ * fall through to the other branch and mean **hide**. That is a malformed
+ * request quietly becoming a destructive layout intention — the one direction
+ * an ambiguous value must never resolve in.
+ *
+ * So there are two accepted strings and everything else is an invalid request
+ * the caller refuses. Nothing is normalised, nothing is guessed, and the
+ * structure service only ever receives a boolean somebody actually sent.
+ *
+ * It lives here rather than in either adapter because both editors submit the
+ * same field, and two readers of one field is how they come to disagree about
+ * what an empty string means.
+ */
+export function readVisibility(raw: unknown): boolean | null {
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return null;
+}
+
 /* -------------------------------------------------------------------------- */
 /* What the structural editors read                                           */
 /* -------------------------------------------------------------------------- */
