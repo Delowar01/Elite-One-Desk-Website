@@ -18,7 +18,7 @@ import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
 import { hasDraft, draftKindOf } from "@/lib/cms/drafts";
-import { motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
+import { effectiveMotion, motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
 import {
   addStructureSection,
   discardLayoutDraft,
@@ -87,6 +87,23 @@ const CONFLICT = {
    * leave the section moving in a way nobody picked.
    */
   motion: "That entrance is not one of the available options. Reload the page and try again.",
+  /**
+   * A *stored* motion draft that cannot be read.
+   *
+   * Different from the message above, which is about something a form just
+   * submitted. This one is about a value already in the database, and the
+   * difference decides what publishing may do about it: nothing. Substituting
+   * the default would put an entrance on the live site that no editor ever
+   * chose, under a message saying the change was theirs — so the refusal names
+   * both ways out, because a draft nobody can publish has to be a draft
+   * somebody can still get rid of.
+   */
+  motionDraft:
+    "The saved motion draft is no longer valid. Choose a section entrance and save it again, " +
+    "or discard the draft.",
+  publishAllMotion:
+    "A section on this page has a motion draft that is no longer valid. Nothing was published — " +
+    "open that section, choose an entrance and save it again, or discard its draft.",
   /**
    * A pending section cannot be made live one section at a time.
    *
@@ -308,7 +325,20 @@ const hasAnyDraft = (row: {
  * So a row's current visibility is left exactly as it is, in every path that
  * calls this.
  */
-function promotion(row: typeof pageSections.$inferSelect): Record<string, unknown> {
+/**
+ * What publishing writes, or a refusal.
+ *
+ * It can refuse because one of the three domains can be stored in a state that
+ * must not be published, and the honest answer to that is to publish nothing
+ * rather than to publish something else. Returning a result rather than
+ * throwing keeps the decision where the caller can see it, and keeps the write
+ * itself a single guarded update.
+ */
+type Promotion =
+  | { ok: true; values: Record<string, unknown> }
+  | { ok: false; reason: "motion" };
+
+function promotion(row: typeof pageSections.$inferSelect): Promotion {
   const values: Record<string, unknown> = {};
   if (row.draft !== null) {
     values.published = row.draft;
@@ -321,14 +351,26 @@ function promotion(row: typeof pageSections.$inferSelect): Record<string, unknow
     values.draftStyles = null;
   }
   if (row.draftAnimation !== null) {
-    // The same rule, and the same reason: `animation` is what the live wrapper
-    // renders, so what goes into it is normalised rather than trusted. A
-    // column written before the vocabulary existed becomes the default here
-    // instead of reaching the renderer as a string it cannot use.
-    values.animation = motionOf(row.draftAnimation);
+    /**
+     * Strictly, and this is the one place in the file that may not be
+     * forgiving.
+     *
+     * `motionOf` is right for reading the *live* column: a legacy value there
+     * is already published, the page has to render, and the default is the
+     * honest reading of a row whose own column defaults to it. A pending draft
+     * is the opposite situation. It is unpublished editorial intent, and an
+     * unreadable one is intent nobody can recover — so normalising it here
+     * would take a value the editor never chose and make it the live site's,
+     * on a button press that says "Publish". Refuse instead: the draft stays
+     * exactly where it is, repairable by saving a preset and removable by
+     * discarding.
+     */
+    const motion = readMotion(row.draftAnimation);
+    if (!motion) return { ok: false, reason: "motion" };
+    values.animation = motion;
     values.draftAnimation = null;
   }
-  return values;
+  return { ok: true, values };
 }
 
 async function pageOf(sectionId: number) {
@@ -390,7 +432,13 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
    */
   const submitted = form.get("animation");
   const motion: MotionPreset =
-    submitted === null ? motionOf(section.draftAnimation ?? section.animation) : (readMotion(submitted) ?? NO_MOTION);
+    submitted === null
+      // No field at all is a screen that predates the control, so the section
+      // keeps what it has — read the same fail-closed way the screen itself
+      // reads it, so an unreadable draft is not quietly rewritten to the
+      // default by a save that never mentioned motion.
+      ? effectiveMotion(section.animation, section.draftAnimation)
+      : (readMotion(submitted) ?? NO_MOTION);
   if (motion === NO_MOTION) return fail(CONFLICT.motion);
 
   // The revision the form was built from. Required, not inferred: falling
@@ -497,8 +545,14 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
     if (section.isDraftOnly) return fail(CONFLICT.draftOnly);
     if (!hasAnyDraft(section)) return fail("There is no draft to publish.");
 
+    // Decided before anything is written, so a refusal costs nothing: no
+    // column moves, no revision moves, no draft is cleared and no activity is
+    // logged as a publish that did not happen.
+    const promoted = promotion(section);
+    if (!promoted.ok) return fail(CONFLICT.motionDraft);
+
     const result = await updateSectionGuarded(id, expected, {
-      ...promotion(section),
+      ...promoted.values,
       updatedBy: session.user.id,
     });
     if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.publish);
@@ -584,15 +638,29 @@ export async function publishAllDrafts(_prev: ActionState, form: FormData): Prom
       );
     if (!drafts.length) return fail("There are no drafts waiting on this page.");
 
+    /**
+     * Every section's promotion worked out before the transaction opens.
+     *
+     * One unreadable motion draft anywhere on the page stops the whole batch,
+     * and it stops it here rather than inside the transaction — a rollback
+     * would leave the same end state, but this way the database is never asked
+     * to do work that was always going to be undone, and there is no ordering
+     * in which some sections have already been written. Skipping the bad
+     * section instead would be the worst of the options: the button says it
+     * published the page, and one section would silently still be waiting.
+     */
+    const promotions = drafts.map((section) => ({ section, promoted: promotion(section) }));
+    if (promotions.some(({ promoted }) => !promoted.ok)) return fail(CONFLICT.publishAllMotion);
+
     // All or nothing. Each section is published only against the revision this
     // read saw, and one section moving underneath us rolls the whole batch back
     // — a half-published page is worse than an unpublished one, because nobody
     // can tell by looking which half went out.
     try {
       await db.transaction(async (tx) => {
-        for (const section of drafts) {
+        for (const { section, promoted } of promotions) {
           const result = await updateSectionGuardedIn(tx, section.id, section.revision, {
-            ...promotion(section),
+            ...(promoted.ok ? promoted.values : {}),
             updatedBy: session.user.id,
           });
           if (!result.ok) throw new PublishRace(result.reason);

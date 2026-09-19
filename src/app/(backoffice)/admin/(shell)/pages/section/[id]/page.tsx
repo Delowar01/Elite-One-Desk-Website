@@ -6,7 +6,7 @@ import { AdminPageHeader } from "@/components/admin/page-header";
 import { requirePermission } from "@/lib/auth/guard";
 import { getBlock } from "@/lib/cms/blocks";
 import { draftKindOf } from "@/lib/cms/drafts";
-import { motionOf } from "@/lib/cms/motion";
+import { effectiveMotion } from "@/lib/cms/motion";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
 import { media, pageSections, pages } from "@/lib/db/schema";
@@ -77,13 +77,19 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
           section={{
             id: row.section.id,
             /**
-             * What this screen is editing, which is the draft when there is
-             * one. Showing the published preset over the top of a motion draft
-             * would present a stale choice as the current one, and saving the
-             * form — which sends whatever the menu is showing — would then
-             * quietly discard the draft by matching it back to live.
+             * What this screen is editing, which is the draft when there is a
+             * readable one. Showing the published preset over the top of a
+             * motion draft would present a stale choice as the current one,
+             * and saving the form — which sends whatever the menu is showing —
+             * would then quietly discard the draft by matching it back to live.
+             *
+             * An *unreadable* draft shows the published entrance instead of
+             * the default, so the menu never claims the editor chose "Fade up"
+             * on a section that publishes something else. The draft badge
+             * beside it still says a motion draft is pending, because the
+             * column is not null and this read does not change that.
              */
-            animation: motionOf(row.section.draftAnimation ?? row.section.animation),
+            animation: effectiveMotion(row.section.animation, row.section.draftAnimation),
             draftKind: draftKindOf(row.section),
             isDraftOnly: row.section.isDraftOnly,
             values,

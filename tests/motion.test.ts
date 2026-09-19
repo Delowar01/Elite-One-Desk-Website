@@ -32,6 +32,7 @@ import {
 } from "@/lib/cms/drafts";
 import {
   DEFAULT_MOTION,
+  effectiveMotion,
   MOTION_CLASS,
   MOTION_LABEL,
   MOTION_PRESETS,
@@ -122,6 +123,21 @@ describe("there are five presets and one validator", () => {
     }
   });
 
+  test("no two presets render the same classes", () => {
+    // "Fade only" used to be a bare `.reveal`, which is what fade-up is — so
+    // two of the five were the same animation under different names, and the
+    // one labelled "no movement" moved.
+    const rendered = PRESETS.map((preset) => MOTION_CLASS[preset]);
+    assert.equal(new Set(rendered).size, rendered.length, JSON.stringify(rendered));
+  });
+
+  test("each moving preset says what it replaces the base transform with", () => {
+    assert.equal(MOTION_CLASS["fade-up"], "reveal");
+    assert.equal(MOTION_CLASS.fade, "reveal reveal-fade");
+    assert.equal(MOTION_CLASS["slide-in"], "reveal reveal-left");
+    assert.equal(MOTION_CLASS["scale-in"], "reveal reveal-scale");
+  });
+
   test("a section's entrance and a block's reveal read the same table", () => {
     // Two tables would eventually disagree about what "slide in" looks like —
     // inside a section and around it.
@@ -176,9 +192,11 @@ describe("null is no motion draft, and “none” is a real one", () => {
     assert.equal(composed[0]!.isDraft, true);
   });
 
-  test("an unreadable stored draft renders as the default rather than as itself", () => {
+  test("an unreadable stored draft renders as the live entrance, not as itself", () => {
+    // And not as the default either — see "fails closed" below. The published
+    // entrance is the only value here that anybody actually chose.
     const composed = composePreview([row({ animation: "fade", draftAnimation: "nonsense" })], null);
-    assert.equal(composed[0]!.animation, DEFAULT_MOTION);
+    assert.equal(composed[0]!.animation, "fade");
     // Still pending: the column is not null, so there is something to publish
     // or discard, and hiding that would leave a draft nobody can reach.
     assert.equal(composed[0]!.hasMotionDraft, true);
@@ -387,5 +405,173 @@ describe("each domain writes its own column, and only one writes at a time", () 
     const shell = read("src/components/admin/visual-editor/shell.tsx");
     const body = shell.slice(shell.indexOf("const reloadLayout"), shell.indexOf("const ops:"));
     assert.ok(!/setBuffers/.test(body), "reloading the layout writes a section buffer");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("fade only fades", () => {
+  const css = read("src/styles/globals.css");
+  // Anchored on the rule, not on the name: the comment above `.reveal` quotes
+  // the query in prose, and slicing from there would take the base rule too.
+  const scripted = css.slice(
+    css.indexOf("@media (scripting: enabled) {"),
+    css.indexOf(".marquee-track"),
+  );
+
+  /** The declarations of the first rule whose selector is exactly this. */
+  const ruleFor = (selector: string): string => {
+    const at = scripted.indexOf(`${selector} {`);
+    if (at < 0) return "";
+    return scripted.slice(at + selector.length, scripted.indexOf("}", at));
+  };
+
+  test("the base reveal carries the rise as well as the opacity", () => {
+    // Which is the whole cause: `.reveal` alone IS fade-up, so a preset that
+    // renders only `.reveal` renders fade-up whatever it is called.
+    const base = ruleFor(".reveal");
+    assert.match(base, /opacity:\s*0\s*;/);
+    assert.match(base, /transform:\s*translate3d\(0,\s*18px,\s*0\)/);
+  });
+
+  test("reveal-fade replaces that transform with none", () => {
+    assert.match(ruleFor(".reveal-fade"), /transform:\s*none/);
+  });
+
+  test("…and it is inside the scripting query, like every other hidden state", () => {
+    assert.ok(scripted.includes(".reveal-fade"), "reveal-fade is outside @media (scripting: enabled)");
+  });
+
+  test("…and it sets no opacity of its own, so the lifecycle is still the base one", () => {
+    // One opacity lifecycle, one transition, one delay. A second set of timing
+    // here is how "fade" would drift out of step with everything around it.
+    const rule = ruleFor(".reveal-fade");
+    assert.ok(!/opacity/.test(rule), `reveal-fade sets an opacity: ${rule}`);
+    assert.ok(!/transition/.test(rule), `reveal-fade sets its own transition: ${rule}`);
+  });
+
+  test("it needs no shown-state rule, because it is already where it is going", () => {
+    // `.reveal[data-shown="true"]` is (0,2,0) and already says `transform:
+    // none`, so it wins over `.reveal-fade` and agrees with it.
+    assert.match(ruleFor('.reveal[data-shown="true"]'), /transform:\s*none/);
+  });
+
+  test("the reduced-motion and print rules still cover it, because it is a .reveal", () => {
+    for (const query of ["@media (prefers-reduced-motion: reduce)", "@media print"]) {
+      const block = css.slice(css.indexOf(query));
+      assert.match(
+        block.slice(0, 900),
+        /\.reveal \{ opacity: var\(--eod-node-opacity, 1\) !important; transform: none !important; \}/,
+      );
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("an unreadable motion draft falls back to what is live, never to the default", () => {
+  test("a readable draft wins", () => {
+    assert.equal(effectiveMotion("slide-in", "scale-in"), "scale-in");
+    assert.equal(effectiveMotion("fade-up", "none"), "none");
+  });
+
+  test("no draft is the live entrance", () => {
+    assert.equal(effectiveMotion("slide-in", null), "slide-in");
+    assert.equal(effectiveMotion("slide-in", undefined), "slide-in");
+  });
+
+  test("an unreadable draft is the live entrance too — it fails closed", () => {
+    // `motionOf(draft)` would answer "fade-up" here, inventing a third
+    // behaviour that is neither what is live nor what anybody chose.
+    for (const bad of ["nonsense", "", "FADE", "fade-up ", "slide"]) {
+      assert.equal(effectiveMotion("slide-in", bad), "slide-in", JSON.stringify(bad));
+    }
+  });
+
+  test("an unreadable draft over an unreadable live value is the default", () => {
+    // Both columns are beyond saving, so the page still has to render.
+    assert.equal(effectiveMotion("legacy-value", "nonsense"), DEFAULT_MOTION);
+    assert.equal(effectiveMotion(null, "nonsense"), DEFAULT_MOTION);
+  });
+
+  test("the live column is still read forgivingly on its own", () => {
+    assert.equal(effectiveMotion("legacy-value", null), DEFAULT_MOTION);
+  });
+
+  test("preview reads it that way, and still says a draft is pending", () => {
+    const composed = composePreview([row({ animation: "slide-in", draftAnimation: "nonsense" })], null);
+    assert.equal(composed[0]!.animation, "slide-in");
+    assert.equal(composed[0]!.hasMotionDraft, true);
+    assert.equal(composed[0]!.isDraft, true);
+  });
+
+  test("and the live composition is untouched by any of it", () => {
+    const composed = composePublished([row({ animation: "slide-in", draftAnimation: "nonsense" })]);
+    assert.equal(composed[0]!.animation, "slide-in");
+    assert.equal(composed[0]!.hasMotionDraft, false);
+  });
+
+  test("a section with an unreadable draft still counts as a motion draft", () => {
+    assert.equal(
+      draftKindOf({ draft: null, draftStyles: null, draftAnimation: "nonsense" }),
+      "motion",
+    );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("publishing refuses a stored draft it cannot read", () => {
+  const actions = read("src/app/(backoffice)/admin/(shell)/pages/actions.ts");
+
+  test("promotion validates the stored preset strictly and can refuse", () => {
+    const body = actions.slice(actions.indexOf("function promotion("), actions.indexOf("async function pageOf"));
+    assert.match(body, /const motion = readMotion\(row\.draftAnimation\);/);
+    assert.match(body, /if \(!motion\) return \{ ok: false, reason: "motion" \};/);
+    // The forgiving reader must not be *called* in the promotion path. The
+    // comment beside it names it, which is prose rather than behaviour.
+    assert.ok(!/motionOf\(/.test(body), `promotion still normalises a stored draft:\n${body}`);
+  });
+
+  test("Publish draft decides before it writes", () => {
+    const body = actions.slice(actions.indexOf("export async function publishSection"));
+    const decide = body.indexOf("const promoted = promotion(section);");
+    const write = body.indexOf("await updateSectionGuarded(");
+    assert.ok(decide > 0 && write > decide, "the promotion is decided after the write");
+    assert.match(body.slice(decide, write), /if \(!promoted\.ok\) return fail\(CONFLICT\.motionDraft\);/);
+  });
+
+  test("Publish all decides for every section before the transaction opens", () => {
+    const body = actions.slice(actions.indexOf("export async function publishAllDrafts"));
+    const decide = body.indexOf("const promotions = drafts.map(");
+    const transaction = body.indexOf("await db.transaction(");
+    assert.ok(decide > 0 && transaction > decide, "the batch is validated inside the transaction");
+    assert.match(
+      body.slice(decide, transaction),
+      /if \(promotions\.some\(\(\{ promoted \}\) => !promoted\.ok\)\) return fail\(CONFLICT\.publishAllMotion\);/,
+    );
+  });
+
+  test("discarding never reads the value it is deleting", () => {
+    const body = actions.slice(
+      actions.indexOf("export async function discardDraft"),
+      actions.indexOf("export async function publishAllDrafts"),
+    );
+    assert.match(body, /draftAnimation: null/);
+    assert.ok(!/readMotion|motionOf|promotion\(/.test(body), "discard validates what it is throwing away");
+  });
+
+  test("every draft-aware read goes through the fail-closed helper", () => {
+    for (const [file, marker] of [
+      ["src/lib/cms/composition.ts", "effectiveMotion(row.animation, row.draftAnimation)"],
+      ["src/app/(backoffice)/admin/visual-editor/actions.ts", "effectiveMotion(row.animation, row.draftAnimation)"],
+      ["src/lib/cms/structure-service.ts", "effectiveMotion(source.animation, source.draftAnimation)"],
+      [
+        "src/app/(backoffice)/admin/(shell)/pages/section/[id]/page.tsx",
+        "effectiveMotion(row.section.animation, row.section.draftAnimation)",
+      ],
+    ] as const) {
+      assert.ok(read(file).includes(marker), `${file} does not read the draft fail-closed`);
+    }
   });
 });

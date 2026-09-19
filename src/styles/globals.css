@@ -920,6 +920,12 @@
       transition-delay: var(--reveal-delay, 0ms);
     }
     .reveal[data-shown="true"] { opacity: var(--eod-node-opacity, 1); transform: none; }
+    /* Fade only, and only fade. `.reveal` carries the 18px rise as well as the
+       opacity, so the one preset that must not move has to say so — and it
+       needs no `[data-shown]` rule of its own, because the state it is already
+       in is the state it is travelling to. Same transition, same delay, same
+       finished opacity; the transform simply never has anywhere to go. */
+    .reveal-fade { transform: none; }
     .reveal-left { transform: translate3d(-24px, 0, 0); }
     [dir="rtl"] .reveal-left { transform: translate3d(24px, 0, 0); }
     .reveal-scale { transform: scale(0.965); }

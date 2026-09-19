@@ -444,7 +444,7 @@ describe("a revealed element's opacity is its finished state, not its current on
   });
 
   test("the other reveal variants are the same element with another transform", () => {
-    for (const cls of ["reveal", "reveal reveal-left", "reveal reveal-scale"]) {
+    for (const cls of ["reveal", "reveal reveal-left", "reveal reveal-scale", "reveal reveal-fade"]) {
       const out = style(cls, { opacity: 0.2 });
       assert.equal(out[FINAL_OPACITY], "0.2", cls);
       assert.ok(!("opacity" in out), cls);

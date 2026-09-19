@@ -72,11 +72,52 @@ export function motionOf(stored: string | null | undefined): MotionPreset {
  * looks like. `none` is the empty string — no class, and therefore no reveal
  * lifecycle at all, rather than a lifecycle that happens to end where it
  * started.
+ *
+ * `.reveal` on its own *is* fade-up: the base class carries both the opacity
+ * lifecycle and the 18px rise, because that is the movement almost everything
+ * on this site uses. Each of the other three therefore adds a class that
+ * replaces the transform — `reveal-left`, `reveal-scale`, and `reveal-fade`,
+ * which replaces it with none at all.
+ *
+ * `reveal-fade` exists because "Fade only" did not fade only. Mapping it to a
+ * bare `.reveal` gave it the base transform, so it was fade-*up* under a
+ * different name and two of the five presets were the same animation. A preset
+ * whose label says "no movement" has to have no movement.
  */
 export const MOTION_CLASS: Record<MotionPreset, string> = {
   "fade-up": "reveal",
-  fade: "reveal",
+  fade: "reveal reveal-fade",
   "slide-in": "reveal reveal-left",
   "scale-in": "reveal reveal-scale",
   none: "",
 };
+
+/**
+ * The entrance a *draft-aware* render should use, from the two columns.
+ *
+ * Three cases, and the third is the one this exists for:
+ *
+ *   · a readable draft — that is the editor's pending intent, so it wins;
+ *   · no draft (`null`) — the published entrance, read forgivingly because a
+ *     live column may predate this vocabulary;
+ *   · a draft that is **not** readable — the published entrance again.
+ *
+ * That last case fails *closed*, onto the last thing known to be live, rather
+ * than onto `DEFAULT_MOTION`. `motionOf(draft)` would answer "fade-up", and a
+ * section publishing `slide-in` would then preview as fading up — inventing a
+ * third behaviour that is neither what is live nor what anybody chose, and
+ * doing it most visibly in the editor, where somebody is deciding what to
+ * publish.
+ *
+ * What it deliberately does not do is repair anything. The column is left
+ * exactly as it is, `hasMotionDraft` stays true, and the section keeps saying
+ * it has something pending — because it does, and the only ways out of it are
+ * an editor saving a valid preset or discarding the draft.
+ */
+export function effectiveMotion(
+  live: string | null | undefined,
+  draft: string | null | undefined,
+): MotionPreset {
+  if (draft === null || draft === undefined) return motionOf(live);
+  return readMotion(draft) ?? motionOf(live);
+}

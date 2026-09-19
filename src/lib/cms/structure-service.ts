@@ -8,7 +8,7 @@ import { pageSections, pages } from "@/lib/db/schema";
 
 import { blocksForPage, getBlock, type BlockDef } from "./blocks";
 import { withFreshItemIds, remapStyleItemIds } from "./duplicate";
-import { motionOf } from "./motion";
+import { effectiveMotion } from "./motion";
 import { validateStyleDocument } from "./styles";
 import {
   DRAFT_STRUCTURE_VERSION,
@@ -466,7 +466,10 @@ export async function duplicateStructureSection(
         styles: copiedStyles,
         draftStyles: copiedStyles,
         /**
-         * The entrance the original *previews* with, as this row's published
+         * The entrance the original *previews* with — read the same fail-closed
+         * way the preview reads it, so a source whose motion draft cannot be
+         * read gives the copy the original's live entrance rather than the
+         * default — as this row's published
          * preset — which is how every other domain is copied here: the copy's
          * published and draft columns both hold what the original was showing,
          * so the copy previews the way the original does and has nothing
@@ -476,7 +479,7 @@ export async function duplicateStructureSection(
          * motion draft is a pending *change*, and a brand-new section has not
          * changed from anything.
          */
-        animation: motionOf(source.draftAnimation ?? source.animation),
+        animation: effectiveMotion(source.animation, source.draftAnimation),
       })
       .returning({ id: pageSections.id });
     created = row!.id;

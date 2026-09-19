@@ -7,7 +7,7 @@ import { logActivity } from "@/lib/activity";
 import { AccessError, guardAction } from "@/lib/auth/guard";
 import { getSession } from "@/lib/auth/session";
 import { getBlock, type BlockDef } from "@/lib/cms/blocks";
-import { motionOf, readMotion } from "@/lib/cms/motion";
+import { effectiveMotion, readMotion } from "@/lib/cms/motion";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { parseBlockPayload, validateBlockValues } from "@/lib/cms/validate";
 import { emptyValues } from "@/lib/cms/values";
@@ -102,9 +102,18 @@ function toData(row: typeof pageSections.$inferSelect, block: BlockDef): VisualS
     // The draft document whole when there is one, empty included — an empty
     // style draft is a pending reset, not an absent one.
     styles: validateStyleDocument(hasStyleDraft ? row.draftStyles : row.styles),
-    // The same rule, one column over: the draft preset when there is one, the
-    // published one otherwise, and never the raw string either way.
-    motion: motionOf(hasMotionDraft ? row.draftAnimation : row.animation),
+    /**
+     * The same rule, one column over — and one refinement. The draft when it
+     * can be read, the published entrance when it cannot, never the raw
+     * string, and never `DEFAULT_MOTION` standing in for an unreadable draft:
+     * the chooser would then be showing "Fade up" as the pending choice on a
+     * section publishing something else, which is the one wrong answer that
+     * looks like a right one.
+     *
+     * `hasMotionDraft` is still true for an unreadable draft, so the panel
+     * says there is something pending. Reading never repairs and never writes.
+     */
+    motion: effectiveMotion(row.animation, row.draftAnimation),
   };
 }
 

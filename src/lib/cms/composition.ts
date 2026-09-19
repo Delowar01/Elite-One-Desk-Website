@@ -1,4 +1,4 @@
-import { motionOf, type MotionPreset } from "./motion";
+import { effectiveMotion, motionOf, type MotionPreset } from "./motion";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 import { type DraftStructure } from "./structure";
 
@@ -122,9 +122,19 @@ const editing = (row: CompositionRow, visible = row.isPublished): ComposedSectio
   return {
     id: row.id,
     blockType: row.blockType,
-    // `??`, not `||`: `"none"` is a truthy-looking choice in the vocabulary but
-    // an empty string is not a preset, and only `null` means "nothing pending".
-    animation: motionOf(hasMotionDraft ? row.draftAnimation : row.animation),
+    /**
+     * The draft when it can be read, the published entrance when it cannot.
+     *
+     * `hasMotionDraft` above is `!== null` — `"none"` is a real preset and
+     * only `null` means "nothing pending" — but a non-null value is not
+     * automatically a *readable* one. A stored draft outside the vocabulary
+     * falls back to what is live rather than to the default, so preview shows
+     * the section still behaving the way it behaves on the site instead of
+     * inventing a third entrance nobody chose. The flag stays true either way:
+     * there is something pending, and hiding it would leave a draft with no
+     * button.
+     */
+    animation: effectiveMotion(row.animation, row.draftAnimation),
     values: (row.draft ?? row.published) ?? {},
     // The draft document wins whole, including when it is empty — that is what
     // a reset looks like before it is published.

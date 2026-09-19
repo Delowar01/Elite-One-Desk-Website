@@ -981,3 +981,191 @@ describe("a section that only exists in a layout draft", () => {
     );
   });
 });
+
+/* -------------------------------------------------------------------------- */
+
+describe("a stored motion draft nobody can read", () => {
+  /**
+   * The only way to make one is to write it directly, which is the point: a
+   * value outside the vocabulary cannot arrive through either save path, so
+   * what is being tested is what the rest of the system does when it finds one
+   * anyway — a hand-edited row, a restore from before the vocabulary, a bug
+   * somewhere upstream.
+   */
+  async function corrupt(slug: string, blockType: string, live: MotionPreset): Promise<SectionRow> {
+    const section = await setLive(slug, blockType, live);
+    await sql`update page_sections set draft_animation = 'nonsense' where id = ${section.id}`;
+    return row(section.id);
+  }
+
+  const logCount = async (action: string): Promise<number> =>
+    (await sql<{ count: number }[]>`
+       select count(*)::int as count from activity_logs where action = ${action}`)[0]!.count;
+
+  test("a visitor gets the published entrance, untouched", async () => {
+    await corrupt("privacy", "page-hero", "slide-in");
+    const live = await get(server.origin, "/privacy");
+    assert.equal(classOf(sectionTag(live.html, "page-hero")), MOTION_CLASS["slide-in"]);
+  });
+
+  test("preview fails closed onto the same one, rather than inventing the default", async () => {
+    await corrupt("terms", "page-hero", "scale-in");
+    const draft = await preview("/terms");
+    assert.equal(
+      classOf(sectionTag(draft.html, "page-hero")),
+      MOTION_CLASS["scale-in"],
+      "preview invented an entrance nobody chose",
+    );
+  });
+
+  test("the Visual Editor shows the safe preset and still says a draft is pending", async () => {
+    const section = await corrupt("disclaimer", "page-hero", "slide-in");
+    const loaded = answered(await loadSection(section.id, section.page_id));
+    assert.equal(loaded.ok, true);
+    assert.equal(loaded.ok && loaded.section.motion, "slide-in");
+    assert.equal(loaded.ok && loaded.section.hasMotionDraft, true);
+    // Reading repairs nothing and writes nothing.
+    assert.deepEqual(await row(section.id), section);
+  });
+
+  test("the section editor's menu shows it too, with the draft badge beside it", async () => {
+    const section = await corrupt("privacy", "rich-text", "scale-in");
+    const screen = await sectionScreen(section.id);
+    assert.equal(screen.selected, "scale-in", "the menu claimed an entrance nobody chose");
+    assert.match(screen.html, /Motion draft/);
+    assert.deepEqual(await row(section.id), section);
+  });
+
+  test("Publish draft is refused, and nothing at all moves", async () => {
+    const section = await corrupt("terms", "rich-text", "slide-in");
+    const before = await logCount("section.published");
+
+    const refused = await submitSection(section.id, "Publish draft");
+    assert.match(refused.html, /motion draft is no longer valid/i);
+
+    const after = await row(section.id);
+    assert.equal(after.animation, "slide-in");
+    assert.equal(after.draft_animation, "nonsense");
+    assert.equal(after.revision, section.revision, "a refused publish moved the revision");
+    assert.deepEqual(after.published, section.published);
+    assert.deepEqual(after.styles, section.styles);
+    assert.equal(await logCount("section.published"), before, "a refused publish was logged as one");
+  });
+
+  test("Publish all is refused atomically — a valid draft elsewhere on the page is left alone", async () => {
+    const broken = await corrupt("disclaimer", "page-hero", "slide-in");
+    const healthy = await setLive("disclaimer", "rich-text", "fade-up");
+    answered(await saveMotion(healthy, "scale-in"));
+    const healthyBefore = await row(healthy.id);
+    const logged = await logCount("page.published");
+
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("pageId", String(broken.page_id));
+    const refused = answered(
+      await callAction<{ ok: boolean; message?: string }>({
+        origin: server.origin,
+        route: "/admin/pages/disclaimer",
+        file: "app/(backoffice)/admin/(shell)/pages/actions.ts",
+        action: "publishAllDrafts",
+        args: [{ ok: false }, form],
+        cookie: owner.cookie,
+      }),
+    );
+    assert.equal(refused.ok, false);
+    assert.match(String(refused.message), /motion draft that is no longer valid/i);
+
+    // Nothing published, nothing cleared, no revision moved, no success log.
+    assert.deepEqual(await row(broken.id), broken);
+    assert.deepEqual(await row(healthy.id), healthyBefore);
+    assert.equal((await row(healthy.id)).draft_animation, "scale-in", "a valid draft was published anyway");
+    assert.equal((await row(healthy.id)).animation, "fade-up");
+    assert.equal(await logCount("page.published"), logged, "a refused Publish all was logged as one");
+  });
+
+  test("Discard clears it without needing it to be readable", async () => {
+    // Discard deletes pending state; it does not publish it. An unreadable
+    // draft must always have a way out, or a section is stuck for good.
+    const section = await corrupt("privacy", "page-hero", "slide-in");
+    const discarded = await submitSection(section.id, "Discard");
+    assert.ok(!/Reload the page/i.test(discarded.html), "the discard was refused");
+
+    const after = await row(section.id);
+    assert.equal(after.draft_animation, null);
+    assert.equal(after.animation, "slide-in", "discarding changed the live entrance");
+    assert.equal(after.revision, section.revision + 1, "discard took more than one write");
+
+    const live = await get(server.origin, "/privacy");
+    assert.equal(classOf(sectionTag(live.html, "page-hero")), MOTION_CLASS["slide-in"]);
+  });
+
+  test("saving a valid preset in the Visual Editor repairs it", async () => {
+    const section = await corrupt("terms", "page-hero", "slide-in");
+    const saved = answered(await saveMotion(section, "fade"));
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    const after = await row(section.id);
+    assert.equal(after.draft_animation, "fade");
+    assert.equal(after.animation, "slide-in", "a repair published something");
+    assert.equal(after.revision, section.revision + 1);
+
+    const draft = await preview("/terms");
+    assert.equal(classOf(sectionTag(draft.html, "page-hero")), MOTION_CLASS.fade);
+  });
+
+  test("…and so does saving a valid preset on the ordinary section form", async () => {
+    const section = await corrupt("disclaimer", "rich-text", "scale-in");
+    const saved = await submitSection(section.id, "Save draft", "fade");
+    assert.ok(!/Reload the page/i.test(saved.html), "the save was refused");
+
+    const after = await row(section.id);
+    assert.equal(after.draft_animation, "fade");
+    assert.equal(after.animation, "scale-in");
+  });
+
+  test("…and the repaired draft then publishes normally", async () => {
+    const section = await corrupt("privacy", "rich-text", "slide-in");
+    answered(await saveMotion(await row(section.id), "scale-in"));
+
+    const published = await submitSection(section.id, "Publish draft");
+    assert.ok(!/no longer valid/i.test(published.html), "a repaired draft was still refused");
+
+    const after = await row(section.id);
+    assert.equal(after.animation, "scale-in");
+    assert.equal(after.draft_animation, null);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a legacy value in the live column is survivable, not publishable intent", () => {
+  test("a published entrance nobody recognises renders as the default, everywhere", async () => {
+    const section = await find("terms", "rich-text");
+    await sql`update page_sections set animation = 'legacy-value' where id = ${section.id}`;
+    const before = await row(section.id);
+
+    // Preview is uncached, so this is the value just written rather than a
+    // cached render of the previous one.
+    const draft = await preview("/terms");
+    assert.equal(classOf(sectionTag(draft.html, "rich-text")), MOTION_CLASS["fade-up"]);
+    assert.deepEqual(await row(section.id), before, "rendering wrote to the database");
+
+    const loaded = answered(await loadSection(section.id, section.page_id));
+    assert.equal(loaded.ok && loaded.section.motion, "fade-up");
+    assert.equal(loaded.ok && loaded.section.hasMotionDraft, false);
+    assert.deepEqual(await row(section.id), before);
+  });
+
+  test("and publishing a section on top of it is not refused — only a bad draft is", async () => {
+    const section = await find("disclaimer", "page-hero");
+    await sql`update page_sections set animation = 'legacy-value' where id = ${section.id}`;
+    answered(await saveContent(await row(section.id), section.published));
+
+    const published = await submitSection(section.id, "Publish draft");
+    assert.ok(!/no longer valid/i.test(published.html), "a legacy live value blocked a content publish");
+    const after = await row(section.id);
+    assert.equal(after.draft, null);
+    // Untouched: no motion draft, so publishing had no motion to promote.
+    assert.equal(after.animation, "legacy-value");
+  });
+});
