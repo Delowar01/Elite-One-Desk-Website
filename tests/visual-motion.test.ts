@@ -35,6 +35,7 @@ import type {
 
 const PORT = 3446;
 const VE_ACTIONS = "app/(backoffice)/admin/visual-editor/actions.ts";
+const PAGE_ACTIONS = "app/(backoffice)/admin/(shell)/pages/actions.ts";
 const VE_ROUTE = "/admin/visual-editor";
 
 let database = "";
@@ -263,7 +264,7 @@ async function saveAndPublish(section: SectionRow, animation: string) {
     await callAction<{ ok: boolean; message?: string }>({
       origin: server.origin,
       route: `/admin/pages/section/${section.id}`,
-      file: "app/(backoffice)/admin/(shell)/pages/actions.ts",
+      file: PAGE_ACTIONS,
       action: "saveSectionAndPublish",
       args: [{ ok: false }, form],
       cookie: owner.cookie,
@@ -880,7 +881,7 @@ describe("the page screen counts motion as a draft", () => {
       await callAction<{ ok: boolean; message?: string }>({
         origin: server.origin,
         route: "/admin/pages/terms",
-        file: "app/(backoffice)/admin/(shell)/pages/actions.ts",
+        file: PAGE_ACTIONS,
         action: "publishAllDrafts",
         args: [{ ok: false }, form],
         cookie: owner.cookie,
@@ -948,7 +949,7 @@ describe("a section that only exists in a layout draft", () => {
     await callAction<{ ok: boolean }>({
       origin: server.origin,
       route: "/admin/pages/terms",
-      file: "app/(backoffice)/admin/(shell)/pages/actions.ts",
+      file: PAGE_ACTIONS,
       action: "publishAllDrafts",
       args: [{ ok: false }, form],
       cookie: owner.cookie,
@@ -1066,7 +1067,7 @@ describe("a stored motion draft nobody can read", () => {
       await callAction<{ ok: boolean; message?: string }>({
         origin: server.origin,
         route: "/admin/pages/disclaimer",
-        file: "app/(backoffice)/admin/(shell)/pages/actions.ts",
+        file: PAGE_ACTIONS,
         action: "publishAllDrafts",
         args: [{ ok: false }, form],
         cookie: owner.cookie,
@@ -1167,5 +1168,170 @@ describe("a legacy value in the live column is survivable, not publishable inten
     assert.equal(after.draft, null);
     // Untouched: no motion draft, so publishing had no motion to promote.
     assert.equal(after.animation, "legacy-value");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a form that never mentions motion never writes motion", () => {
+  /**
+   * The ordinary section actions, called without an `animation` field.
+   *
+   * That is what a client predating the control submits, and it is the one
+   * shape the real screen cannot produce — its form always carries the menu —
+   * so the actions are called directly. The point of every test below is the
+   * same: a request with no motion intent must leave both motion columns
+   * byte-for-byte alone, including when what is in them is damaged, matches
+   * what is live, or is not there at all.
+   */
+  function legacy(section: SectionRow, values: Record<string, unknown>, publish: boolean) {
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("id", String(section.id));
+    form.set("expectedRevision", String(section.revision));
+    form.set("values", JSON.stringify(values));
+    // No `animation`, deliberately.
+    return callAction<{ ok: boolean; message?: string }>({
+      origin: server.origin,
+      route: `/admin/pages/section/${section.id}`,
+      file: PAGE_ACTIONS,
+      action: publish ? "saveSectionAndPublish" : "saveSectionDraft",
+      args: [{ ok: false }, form],
+      cookie: owner.cookie,
+    });
+  }
+
+  /** A row whose motion columns are put into an exact state. */
+  async function staged(
+    slug: string,
+    blockType: string,
+    live: MotionPreset,
+    draft: string | null,
+  ): Promise<SectionRow> {
+    const section = await setLive(slug, blockType, live);
+    if (draft !== null) {
+      await sql`update page_sections set draft_animation = ${draft} where id = ${section.id}`;
+    }
+    return row(section.id);
+  }
+
+  const motionOf_ = (r: SectionRow) => ({ animation: r.animation, draft_animation: r.draft_animation });
+
+  test("A — Save draft leaves a corrupt motion draft exactly where it is", async () => {
+    // The defect this correction fixes: the omitted field used to be filled in
+    // with the *derived* motion — `slide-in` here — which then matched live and
+    // was written back as NULL, silently discarding the corrupt draft on a
+    // request that never mentioned motion.
+    const section = await staged("privacy", "page-hero", "slide-in", "nonsense");
+    const saved = answered(await legacy(section, { title: { en: "Legacy save", ar: "" } }, false));
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+
+    const after = await row(section.id);
+    assert.deepEqual(motionOf_(after), { animation: "slide-in", draft_animation: "nonsense" });
+    assert.equal((after.draft as { title: { en: string } }).title.en, "Legacy save");
+    assert.equal(after.revision, section.revision + 1, "the content write took more than one revision");
+  });
+
+  test("B — …and a valid draft that happens to match what is live", async () => {
+    // A legitimate state: the Visual Editor stores an explicit choice even when
+    // it equals the published preset. Only an editor who saw the menu may
+    // withdraw it, and this request did not see the menu.
+    let section = await setLive("terms", "page-hero", "fade");
+    answered(await saveMotion(section, "fade"));
+    section = await row(section.id);
+    assert.equal(section.draft_animation, "fade");
+
+    answered(await legacy(section, { title: { en: "Legacy save B", ar: "" } }, false));
+    assert.deepEqual(motionOf_(await row(section.id)), { animation: "fade", draft_animation: "fade" });
+  });
+
+  test("C — …and a valid draft that differs from what is live", async () => {
+    const section = await staged("disclaimer", "page-hero", "fade-up", "scale-in");
+    answered(await legacy(section, { title: { en: "Legacy save C", ar: "" } }, false));
+    assert.deepEqual(motionOf_(await row(section.id)), {
+      animation: "fade-up",
+      draft_animation: "scale-in",
+    });
+  });
+
+  test("D — …and no motion draft at all, which it must not invent", async () => {
+    const section = await staged("privacy", "rich-text", "slide-in", null);
+    answered(await legacy(section, section.published, false));
+    assert.deepEqual(motionOf_(await row(section.id)), {
+      animation: "slide-in",
+      draft_animation: null,
+    });
+  });
+
+  test("E — Save and publish publishes the content and claims no motion", async () => {
+    const section = await staged("terms", "rich-text", "slide-in", "nonsense");
+    const published = answered(
+      await legacy(section, { body: { en: "Legacy publish E", ar: "" } }, true),
+    );
+    assert.equal(published.ok, true, JSON.stringify(published));
+
+    const after = await row(section.id);
+    assert.equal((after.published as { body: { en: string } }).body.en, "Legacy publish E");
+    assert.equal(after.draft, null);
+    assert.deepEqual(motionOf_(after), { animation: "slide-in", draft_animation: "nonsense" });
+    assert.equal(after.revision, section.revision + 1);
+    assert.equal(after.is_published, section.is_published, "publishing changed visibility");
+
+    // Still pending, and the screen still says so.
+    const screen = await sectionScreen(section.id);
+    assert.match(screen.html, /Motion draft/);
+
+    // And the strict gate is still in front of it: a content publication is
+    // not a motion publication, so the invalid draft is still refused.
+    const refused = await submitSection(section.id, "Publish draft");
+    assert.match(refused.html, /motion draft is no longer valid/i);
+    assert.equal((await row(section.id)).draft_animation, "nonsense");
+
+    // The escape hatch is unchanged too.
+    const discarded = await submitSection(section.id, "Discard");
+    assert.ok(!/Reload the page/i.test(discarded.html), "the discard was refused");
+    const cleared = await row(section.id);
+    assert.equal(cleared.draft_animation, null);
+    assert.equal(cleared.animation, "slide-in");
+  });
+
+  test("F — …and leaves a valid motion draft pending for an explicit publication", async () => {
+    const section = await staged("disclaimer", "rich-text", "fade-up", "scale-in");
+    const published = answered(
+      await legacy(section, { body: { en: "Legacy publish F", ar: "" } }, true),
+    );
+    assert.equal(published.ok, true, JSON.stringify(published));
+
+    const after = await row(section.id);
+    assert.equal((after.published as { body: { en: string } }).body.en, "Legacy publish F");
+    assert.deepEqual(motionOf_(after), { animation: "fade-up", draft_animation: "scale-in" });
+
+    // A visitor still gets the published entrance, because nothing published one.
+    const live = await get(server.origin, "/disclaimer");
+    assert.equal(classOf(sectionTag(live.html, "rich-text")), MOTION_CLASS["fade-up"]);
+
+    // …and the pending one publishes when somebody explicitly says so.
+    const explicit = await submitSection(after.id, "Publish draft");
+    assert.ok(!/Reload the page|no longer valid/i.test(explicit.html), "the explicit publish was refused");
+    assert.deepEqual(motionOf_(await row(section.id)), {
+      animation: "scale-in",
+      draft_animation: null,
+    });
+  });
+
+  test("the field being present is still what makes a motion write happen", async () => {
+    // The other half of the rule, so the fix cannot be read as "this screen no
+    // longer writes motion". A submitted preset behaves exactly as designed.
+    const section = await staged("privacy", "page-hero", "fade-up", null);
+
+    await submitSection(section.id, "Save draft", "scale-in");
+    assert.equal((await row(section.id)).draft_animation, "scale-in", "an explicit choice was ignored");
+
+    await submitSection(section.id, "Save draft", "fade-up");
+    assert.equal((await row(section.id)).draft_animation, null, "an explicit withdrawal was ignored");
+
+    const refused = await submitSection(section.id, "Save draft", "fade-sideways");
+    assert.match(refused.html, /not one of the available options/i);
+    assert.equal((await row(section.id)).draft_animation, null);
   });
 });

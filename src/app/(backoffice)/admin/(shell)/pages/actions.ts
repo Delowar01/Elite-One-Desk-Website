@@ -18,7 +18,7 @@ import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
 import { hasDraft, draftKindOf } from "@/lib/cms/drafts";
-import { effectiveMotion, motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
+import { motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
 import {
   addStructureSection,
   discardLayoutDraft,
@@ -284,15 +284,6 @@ export async function deletePage(_prev: ActionState, form: FormData): Promise<Ac
  * banner on this screen and this button all have to agree about whether a
  * section is pending, and they agree by asking the same function.
  */
-/**
- * The refusal value for a preset that could not be read.
- *
- * A sentinel rather than `null` so the "the form did not send one" branch and
- * the "the form sent nonsense" branch cannot be written as the same test —
- * they mean opposite things and only one of them is an error.
- */
-const NO_MOTION = "__unreadable__" as unknown as MotionPreset;
-
 const hasAnyDraft = (row: {
   draft: unknown;
   draftStyles: unknown;
@@ -422,24 +413,31 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
   if (!values) return fail(CONFLICT.unreadable);
 
   /**
-   * The entrance preset, read through the one validator.
+   * Does this request have an opinion about motion at all?
    *
-   * A form that omits the field entirely leaves the section's motion alone —
-   * that is a screen that predates the control, not an editor choosing
-   * nothing. A form that sends something outside the five presets is refused,
-   * because the alternative is guessing, and the value being guessed at is one
-   * that decides what a visitor sees move.
+   * Three states, not two, and conflating the first with the third is the bug
+   * this shape exists to make unwriteable:
+   *
+   *   · **absent** — the field is not in the submission. That is a screen that
+   *     predates the control, and a client that has expressed *no* motion
+   *     intent. It is not a request to keep the current value, to normalise
+   *     it, to repair it or to withdraw it. It is a content request.
+   *   · **present and readable** — an editor chose a preset, and the rules
+   *     below decide where it goes.
+   *   · **present and unreadable** — a stale or tampered submission, refused,
+   *     because the alternative is guessing at a value that decides what a
+   *     visitor sees move.
+   *
+   * `effectiveMotion` used to fill the absent case in, and that was wrong in a
+   * way that only showed up on a damaged row: deriving `slide-in` from a
+   * section holding an unreadable draft and then *writing it back* discarded
+   * that draft, on a request that never mentioned motion. Reading and writing
+   * are different acts; `effectiveMotion` answers "what should this render
+   * as", never "what should this save".
    */
   const submitted = form.get("animation");
-  const motion: MotionPreset =
-    submitted === null
-      // No field at all is a screen that predates the control, so the section
-      // keeps what it has — read the same fail-closed way the screen itself
-      // reads it, so an unreadable draft is not quietly rewritten to the
-      // default by a save that never mentioned motion.
-      ? effectiveMotion(section.animation, section.draftAnimation)
-      : (readMotion(submitted) ?? NO_MOTION);
-  if (motion === NO_MOTION) return fail(CONFLICT.motion);
+  const chosen: MotionPreset | null = submitted === null ? null : readMotion(submitted);
+  if (submitted !== null && chosen === null) return fail(CONFLICT.motion);
 
   // The revision the form was built from. Required, not inferred: falling
   // back to the row's current revision would make every save win, which is
@@ -448,8 +446,14 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
   if (expected === null) return fail(CONFLICT.unreadable);
 
   /**
-   * Where the preset goes — the one thing about this screen that motion
-   * changed.
+   * The motion half of the write — which is empty when nobody asked for one.
+   *
+   * Built as its own object precisely so that "no opinion" can be expressed as
+   * *no keys*. A value cannot say that: every `MotionPreset` this function
+   * could have derived would have been written, and a column written is a
+   * column changed, whatever it was changed to.
+   *
+   * With a choice submitted, the Batch 9 rules are unchanged:
    *
    * **Saving a draft writes `draft_animation`.** It used to write `animation`,
    * the published column, on the same guarded update as the draft — so the
@@ -463,18 +467,27 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
    * changed, arm Publish all, and give an editor a draft with nothing in it to
    * publish. Choosing the live value back is therefore how a motion draft is
    * withdrawn, which is the behaviour an editor expects from a five-option
-   * menu with no Undo.
+   * menu with no Undo. It is a *withdrawal*, though, and only an editor who
+   * saw the menu can make it — which is why it lives in this branch.
    *
    * **Publishing writes `animation` and clears the draft**, in the same write
    * as the content — one guarded update, no window in which half of it is out.
+   * Publishing content while omitting the field publishes content: the motion
+   * draft stays pending, for an explicit publication later, and the strict
+   * gate in `promotion()` still stands in front of it.
    */
-  const live = motionOf(section.animation);
+  const motion: Record<string, unknown> =
+    chosen === null
+      ? {}
+      : publish
+        ? { animation: chosen, draftAnimation: null }
+        : { draftAnimation: chosen === motionOf(section.animation) ? null : chosen };
+
   const result = await updateSectionGuarded(id, expected, {
     // Publishing content writes content. `is_published` is the live layout's
     // answer to a different question and is not this button's to change.
-    ...(publish
-      ? { published: values, draft: null, animation: motion, draftAnimation: null }
-      : { draft: values, draftAnimation: motion === live ? null : motion }),
+    ...(publish ? { published: values, draft: null } : { draft: values }),
+    ...motion,
     updatedBy: session.user.id,
   });
   if (!result.ok) {

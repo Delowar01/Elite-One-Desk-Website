@@ -937,17 +937,29 @@ describe("the entrance preset is connected, and the draft leak that blocked it i
 
   test("a draft save writes the draft column and never the live one", () => {
     const actions = read("src/app/(backoffice)/admin/(shell)/pages/actions.ts");
-    // The one write the section editor makes, read out of the source. The
-    // draft path may name `draftAnimation`; the published `animation` column
-    // belongs to the publish branch and to nothing else on this screen.
     const body = actions.slice(actions.indexOf("async function writeSectionValues"));
-    const write = body.slice(body.indexOf("updateSectionGuarded("), body.indexOf("if (!result.ok)"));
+    // The motion half of the write, decided before the call so that "nobody
+    // asked" can be expressed as no keys at all.
+    const decided = body.slice(
+      body.indexOf("const motion: Record<string, unknown> ="),
+      body.indexOf("const result = await updateSectionGuarded("),
+    );
+    assert.ok(decided.length > 0, "the motion half of the write is no longer decided separately");
+    // A draft save names the draft column; the published `animation` column
+    // belongs to the publish branch and to nothing else on this screen.
+    assert.match(decided, /draftAnimation: chosen === motionOf\(section\.animation\) \? null : chosen/);
+    assert.match(decided, /animation: chosen, draftAnimation: null/);
+    assert.equal((decided.match(/(?<!draft)[Aa]nimation: chosen\b/g) ?? []).length, 1);
+
+    const write = body.slice(body.indexOf("const result = await updateSectionGuarded("), body.indexOf("if (!result.ok)"));
     assert.ok(write.length > 0, "the section editor no longer makes one guarded write");
     assert.match(write, /draft: values/);
-    assert.match(write, /draftAnimation: motion === live \? null : motion/);
-    // `animation:` appears once, inside the publish branch, and the publish
-    // branch is the one that also clears the draft.
-    assert.match(write, /published: values, draft: null, animation: motion, draftAnimation: null/);
-    assert.equal((write.match(/(?<!draft)[Aa]nimation: motion\b/g) ?? []).length, 1);
+    // The guarded update names no motion column of its own — it spreads
+    // whatever the decision above produced, which for a request that did not
+    // mention motion is nothing.
+    assert.ok(
+      !/(^|[^a-zA-Z])(draftAnimation|animation):/.test(write),
+      `the write hard-codes a motion column:\n${write}`,
+    );
   });
 });
