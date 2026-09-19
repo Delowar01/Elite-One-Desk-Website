@@ -6,6 +6,7 @@ import { AdminPageHeader } from "@/components/admin/page-header";
 import { requirePermission } from "@/lib/auth/guard";
 import { getBlock } from "@/lib/cms/blocks";
 import { draftKindOf } from "@/lib/cms/drafts";
+import { motionOf } from "@/lib/cms/motion";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
 import { media, pageSections, pages } from "@/lib/db/schema";
@@ -75,7 +76,14 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
           previewHref={`/admin/pages/${row.page.slug}/preview`}
           section={{
             id: row.section.id,
-            animation: row.section.animation,
+            /**
+             * What this screen is editing, which is the draft when there is
+             * one. Showing the published preset over the top of a motion draft
+             * would present a stale choice as the current one, and saving the
+             * form — which sends whatever the menu is showing — would then
+             * quietly discard the draft by matching it back to live.
+             */
+            animation: motionOf(row.section.draftAnimation ?? row.section.animation),
             draftKind: draftKindOf(row.section),
             isDraftOnly: row.section.isDraftOnly,
             values,

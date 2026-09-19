@@ -27,6 +27,7 @@ const row = (
   id,
   blockType,
   animation: "fade-up",
+  draftAnimation: null,
   published: { title: { en: blockType, ar: "" } },
   draft: null,
   styles: null,

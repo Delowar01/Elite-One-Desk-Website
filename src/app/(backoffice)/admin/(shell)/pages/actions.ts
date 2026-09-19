@@ -17,6 +17,8 @@ import {
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
+import { hasDraft, draftKindOf } from "@/lib/cms/drafts";
+import { motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
 import {
   addStructureSection,
   discardLayoutDraft,
@@ -75,6 +77,16 @@ const CONFLICT = {
     "A section on this page was deleted while you were publishing. Nothing was published — reload the page.",
   gone: "That section no longer exists.",
   unreadable: "The form could not be read. Reload the page and try again.",
+  /**
+   * An entrance outside the five presets.
+   *
+   * Refused rather than replaced with the default, because the two are
+   * different mistakes and only the editor can tell them apart: a stale screen
+   * sending a preset that has since been retired deserves to be told, while
+   * silently storing "fade up" for it would look like the save worked and
+   * leave the section moving in a way nobody picked.
+   */
+  motion: "That entrance is not one of the available options. Reload the page and try again.",
   /**
    * A pending section cannot be made live one section at a time.
    *
@@ -243,15 +255,32 @@ export async function deletePage(_prev: ActionState, form: FormData): Promise<Ac
 /* -------------------------------------------------------------------------- */
 
 /**
- * Whether a section has anything unpublished, in either domain.
+ * Whether a section has anything unpublished, in any domain.
  *
- * A style draft is a draft. Testing `draft` alone was right while content was
- * the only thing that could be unpublished, and became wrong the moment the
- * Visual Editor could save a layout — a section whose only pending change is a
- * colour would have shown as published everywhere and been unpublishable.
+ * A style draft is a draft, and so is a motion draft. Testing `draft` alone was
+ * right while content was the only thing that could be unpublished, and became
+ * wrong the moment the Visual Editor could save a layout — a section whose only
+ * pending change is a colour would have shown as published everywhere and been
+ * unpublishable. The same is now true of an entrance.
+ *
+ * Read through `draftKindOf` rather than re-tested here: the Pages list, the
+ * banner on this screen and this button all have to agree about whether a
+ * section is pending, and they agree by asking the same function.
  */
-const hasAnyDraft = (row: { draft: unknown; draftStyles: unknown }): boolean =>
-  row.draft !== null || row.draftStyles !== null;
+/**
+ * The refusal value for a preset that could not be read.
+ *
+ * A sentinel rather than `null` so the "the form did not send one" branch and
+ * the "the form sent nonsense" branch cannot be written as the same test —
+ * they mean opposite things and only one of them is an error.
+ */
+const NO_MOTION = "__unreadable__" as unknown as MotionPreset;
+
+const hasAnyDraft = (row: {
+  draft: unknown;
+  draftStyles: unknown;
+  draftAnimation: unknown;
+}): boolean => hasDraft(draftKindOf(row));
 
 /**
  * What publishing a section's saved drafts writes.
@@ -290,6 +319,14 @@ function promotion(row: typeof pageSections.$inferSelect): Record<string, unknow
     // change, and `styles` is read by the public renderer.
     values.styles = validateStyleDocument(row.draftStyles);
     values.draftStyles = null;
+  }
+  if (row.draftAnimation !== null) {
+    // The same rule, and the same reason: `animation` is what the live wrapper
+    // renders, so what goes into it is normalised rather than trusted. A
+    // column written before the vocabulary existed becomes the default here
+    // instead of reaching the renderer as a string it cannot use.
+    values.animation = motionOf(row.draftAnimation);
+    values.draftAnimation = null;
   }
   return values;
 }
@@ -342,7 +379,19 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
   const values = parseBlockPayload(String(form.get("values") ?? ""), block);
   if (!values) return fail(CONFLICT.unreadable);
 
-  const animation = field(form, "animation", 32) || section.animation;
+  /**
+   * The entrance preset, read through the one validator.
+   *
+   * A form that omits the field entirely leaves the section's motion alone —
+   * that is a screen that predates the control, not an editor choosing
+   * nothing. A form that sends something outside the five presets is refused,
+   * because the alternative is guessing, and the value being guessed at is one
+   * that decides what a visitor sees move.
+   */
+  const submitted = form.get("animation");
+  const motion: MotionPreset =
+    submitted === null ? motionOf(section.draftAnimation ?? section.animation) : (readMotion(submitted) ?? NO_MOTION);
+  if (motion === NO_MOTION) return fail(CONFLICT.motion);
 
   // The revision the form was built from. Required, not inferred: falling
   // back to the row's current revision would make every save win, which is
@@ -350,11 +399,34 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
   const expected = expectedRevisionOf(form);
   if (expected === null) return fail(CONFLICT.unreadable);
 
+  /**
+   * Where the preset goes — the one thing about this screen that motion
+   * changed.
+   *
+   * **Saving a draft writes `draft_animation`.** It used to write `animation`,
+   * the published column, on the same guarded update as the draft — so the
+   * moment anything rendered the value, pressing "Save draft" would have
+   * changed the live page. Nothing rendered it, which is the only reason the
+   * leak was survivable; the renderer reads it now, so the leak is not.
+   *
+   * **`null` when the choice matches what is published.** A motion draft is a
+   * pending *change*, and storing "fade-up" against a section already
+   * publishing fade-up would put a Draft badge on a section nobody has
+   * changed, arm Publish all, and give an editor a draft with nothing in it to
+   * publish. Choosing the live value back is therefore how a motion draft is
+   * withdrawn, which is the behaviour an editor expects from a five-option
+   * menu with no Undo.
+   *
+   * **Publishing writes `animation` and clears the draft**, in the same write
+   * as the content — one guarded update, no window in which half of it is out.
+   */
+  const live = motionOf(section.animation);
   const result = await updateSectionGuarded(id, expected, {
     // Publishing content writes content. `is_published` is the live layout's
     // answer to a different question and is not this button's to change.
-    ...(publish ? { published: values, draft: null } : { draft: values }),
-    animation,
+    ...(publish
+      ? { published: values, draft: null, animation: motion, draftAnimation: null }
+      : { draft: values, draftAnimation: motion === live ? null : motion }),
     updatedBy: session.user.id,
   });
   if (!result.ok) {
@@ -462,9 +534,13 @@ export async function discardDraft(_prev: ActionState, form: FormData): Promise<
     if (!section) return fail(CONFLICT.gone);
     if (section.revision !== expected) return fail(CONFLICT.discard);
 
+    // All three domains. "Discard draft" is one button and it means the whole
+    // pending state of the section — leaving a motion draft behind would keep
+    // the section badged as pending with nothing an editor could point at.
     const result = await updateSectionGuarded(id, expected, {
       draft: null,
       draftStyles: null,
+      draftAnimation: null,
       updatedBy: session.user.id,
     });
     if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.discard);
@@ -503,7 +579,7 @@ export async function publishAllDrafts(_prev: ActionState, form: FormData): Prom
         and(
           eq(pageSections.pageId, pageId),
           eq(pageSections.isDraftOnly, false),
-          sql`(${pageSections.draft} is not null or ${pageSections.draftStyles} is not null)`,
+          sql`(${pageSections.draft} is not null or ${pageSections.draftStyles} is not null or ${pageSections.draftAnimation} is not null)`,
         ),
       );
     if (!drafts.length) return fail("There are no drafts waiting on this page.");

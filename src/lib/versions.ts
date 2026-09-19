@@ -207,6 +207,12 @@ export type RestoreActor = { userId?: number | null };
  * values, so it is invisible to the site and visible in preview — which is
  * exactly the state a pending restore should be in.
  *
+ * `draftAnimation` is why `animation` is in that list. A restored version
+ * carries the entrance it was published with, and putting it back has to be
+ * previewable like everything else in the restore — so it goes into the draft
+ * column and is rendered by `composePreview`, leaving the live page moving the
+ * way it moved until somebody publishes.
+ *
  * Two things it must always do, both added after review:
  *
  * **Refuse a plan that names a section it does not own, before writing

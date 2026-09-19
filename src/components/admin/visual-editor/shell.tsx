@@ -13,12 +13,14 @@ import {
   reorderPageStructure,
   restorePageSection,
   saveVisualSectionDraft,
+  saveVisualSectionMotion,
   saveVisualSectionStyles,
   setPageSectionVisibility,
 } from "@/app/(backoffice)/admin/visual-editor/actions";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { Icon } from "@/components/ui/icon";
 import type { BlockDef } from "@/lib/cms/blocks";
+import type { MotionPreset } from "@/lib/cms/motion";
 import type { StyleDocument } from "@/lib/cms/styles";
 import { removedSections, type PageStructure } from "@/lib/cms/structure";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
@@ -28,7 +30,7 @@ import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/prot
 import { DEVICE_BREAKPOINT, EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
 
 import { VisualCanvas, type CanvasState, type SelectRequest } from "./canvas";
-import { InspectorPanel, isDirty, type EditDomain, type SectionBuffer } from "./inspector";
+import { dirtyOf, InspectorPanel, isDirty, type EditDomain, type SectionBuffer } from "./inspector";
 import { LayersPanel, type StructuralOps } from "./layers";
 
 export type EditablePage = {
@@ -90,10 +92,12 @@ const sameValues = (a: unknown, b: unknown) => canonical(a) === canonical(b);
  * the real public route, rendered by the real `SectionRenderer` from the real
  * database, which is why what an editor sees here is what a visitor gets.
  *
- * The one thing it writes is content, and only ever as a draft: the inspector
- * edits a per-section buffer and saves it through a Server Action guarded on
- * the section's revision. Structure, style and motion are later batches, and
- * there is no disabled control here standing in for them.
+ * What it writes is drafts, and only ever drafts: the inspector edits a
+ * per-section buffer in one of three domains — content, style, motion — and
+ * saves it through a Server Action guarded on the section's revision. The
+ * layout is the fourth thing it writes and is guarded on the *page's* revision
+ * instead, because a layout draft belongs to the page rather than to any one
+ * section. Nothing here publishes anything.
  */
 export function VisualEditorShell({
   pages,
@@ -291,8 +295,10 @@ export function VisualEditorShell({
                   data: result.section,
                   values: result.section.values,
                   styles: result.section.styles,
+                  motion: result.section.motion,
                   contentDirty: false,
                   styleDirty: false,
+                  motionDirty: false,
                   saving: null,
                   status: "idle",
                   statusDomain: null,
@@ -359,7 +365,39 @@ export function VisualEditorShell({
     [activeId, canManage],
   );
 
-  /** Puts one domain back to what the server last said, leaving the other alone. */
+  /**
+   * The chosen entrance, held in the buffer until somebody saves it.
+   *
+   * Not sent on click. A five-button radio group is exactly the control an
+   * editor tries all of, and saving each press would write five drafts, bump
+   * the revision five times and reload the canvas five times — and there would
+   * be no way back to where they started that did not go through the server.
+   * So it is dirty state like any other, with the same Save and the same
+   * Discard changes beside it.
+   */
+  const onMotion = useCallback(
+    (motion: MotionPreset) => {
+      if (activeId === null || !canManage) return;
+      setBuffers((prev) => {
+        const entry = prev[activeId];
+        if (!entry) return prev;
+        return {
+          ...prev,
+          [activeId]: {
+            ...entry,
+            motion,
+            motionDirty: motion !== entry.data.motion,
+            status: entry.status === "conflict" ? "conflict" : "idle",
+            statusDomain: entry.status === "conflict" ? entry.statusDomain : null,
+            message: entry.status === "conflict" ? entry.message : undefined,
+          },
+        };
+      });
+    },
+    [activeId, canManage],
+  );
+
+  /** Puts one domain back to what the server last said, leaving the others alone. */
   const revert = useCallback(
     (domain: EditDomain) => {
       if (activeId === null) return;
@@ -369,7 +407,9 @@ export function VisualEditorShell({
         const reset =
           domain === "content"
             ? { values: entry.data.values, contentDirty: false }
-            : { styles: entry.data.styles, styleDirty: false };
+            : domain === "style"
+              ? { styles: entry.data.styles, styleDirty: false }
+              : { motion: entry.data.motion, motionDirty: false };
         return {
           ...prev,
           [activeId]: { ...entry, ...reset, status: "idle", statusDomain: null, message: undefined },
@@ -380,11 +420,12 @@ export function VisualEditorShell({
   );
 
   /**
-   * Take the version that won the race — both domains of it.
+   * Take the version that won the race — all three domains of it.
    *
-   * They share a revision, so adopting one and keeping the other would leave
-   * the kept half addressed to a revision that no longer exists: the next save
-   * of it would conflict too, and the editor would have no way out of the loop.
+   * They share a revision, so adopting one and keeping the others would leave
+   * the kept ones addressed to a revision that no longer exists: the next save
+   * of them would conflict too, and the editor would have no way out of the
+   * loop.
    */
   const takeLatest = useCallback(() => {
     if (activeId === null) return;
@@ -397,8 +438,10 @@ export function VisualEditorShell({
           data: entry.latest,
           values: entry.latest.values,
           styles: entry.latest.styles,
+          motion: entry.latest.motion,
           contentDirty: false,
           styleDirty: false,
+          motionDirty: false,
           saving: null,
           status: "idle",
           statusDomain: null,
@@ -412,11 +455,12 @@ export function VisualEditorShell({
    * Saves one domain of one section.
    *
    * Two things this deliberately does not do. It does not save the other
-   * domain — pressing "Save styles" with unsaved text must not publish that
-   * text into a draft nobody asked to save. And it does not start while the
-   * other domain is writing: they share one row and one revision, so two
-   * requests in flight would be a race this browser manufactured out of two
-   * intentions that were each correct when they left.
+   * domains — pressing "Save styles" with unsaved text must not put that text
+   * into a draft nobody asked to save, and pressing "Save motion" must not do
+   * it either. And it does not start while another domain is writing: they
+   * share one row and one revision, so two requests in flight would be a race
+   * this browser manufactured out of two intentions that were each correct
+   * when they left.
    *
    * What it does do is adopt the new revision for the *whole* buffer. The
    * counter belongs to the row, not to a column, so an editor who saves a
@@ -428,10 +472,13 @@ export function VisualEditorShell({
       if (activeId === null || !canManage) return;
       const entry = buffers[activeId];
       if (!entry || entry.saving !== null) return;
-      const dirty = domain === "content" ? entry.contentDirty : entry.styleDirty;
-      if (!dirty) return;
+      if (!dirtyOf(entry)[domain]) return;
 
-      const sent = canonical(domain === "content" ? entry.values : entry.styles);
+      // What this save is *about*, canonically, so that the answer can be
+      // compared with what the buffer holds when the answer arrives.
+      const sent = canonical(
+        domain === "content" ? entry.values : domain === "style" ? entry.styles : entry.motion,
+      );
       const address = selectedRef.current?.address ?? null;
 
       setBuffers((prev) => {
@@ -445,7 +492,11 @@ export function VisualEditorShell({
       form.set("sectionId", String(activeId));
       form.set("pageId", String(entry.data.pageId));
       form.set("expectedRevision", String(entry.data.revision));
-      form.set(domain === "content" ? "values" : "styles", sent);
+      // A preset is a bare string, not a document: sending it JSON-quoted would
+      // make `readMotion` — which accepts the five exactly and refuses the
+      // rest — reject every save.
+      if (domain === "motion") form.set("motion", entry.motion);
+      else form.set(domain === "content" ? "values" : "styles", sent);
 
       const fail = (message: string) =>
         setBuffers((prev) => {
@@ -481,7 +532,12 @@ export function VisualEditorShell({
        * was written. Narrowing here rather than later keeps each action's
        * result typed as what it actually is.
        */
-      let accepted: { revision: number; section?: VisualSectionData; styles?: StyleDocument };
+      let accepted: {
+        revision: number;
+        section?: VisualSectionData;
+        styles?: StyleDocument;
+        motion?: MotionPreset;
+      };
       try {
         if (domain === "content") {
           const answer = await saveVisualSectionDraft(form);
@@ -491,7 +547,7 @@ export function VisualEditorShell({
             return;
           }
           accepted = { revision: answer.section.revision, section: answer.section };
-        } else {
+        } else if (domain === "style") {
           const answer = await saveVisualSectionStyles(form);
           if (!answer.ok) {
             if (answer.reason === "conflict") refuse(answer.message, answer.section);
@@ -499,6 +555,14 @@ export function VisualEditorShell({
             return;
           }
           accepted = { revision: answer.revision, styles: answer.styles };
+        } else {
+          const answer = await saveVisualSectionMotion(form);
+          if (!answer.ok) {
+            if (answer.reason === "conflict") refuse(answer.message, answer.section);
+            else fail(answer.message);
+            return;
+          }
+          accepted = { revision: answer.revision, motion: answer.motion };
         }
       } catch {
         fail("The save could not be sent. Try again.");
@@ -514,24 +578,47 @@ export function VisualEditorShell({
          * they did. The revision moves either way, so the next save is guarded
          * against the one that just landed rather than the one before.
          */
-        const movedOn = canonical(domain === "content" ? live.values : live.styles) !== sent;
+        const movedOn =
+          canonical(
+            domain === "content" ? live.values : domain === "style" ? live.styles : live.motion,
+          ) !== sent;
 
-        // The revision belongs to the row, so both domains adopt it. The other
-        // domain's stored document and its unsaved edits are left alone.
-        const data: VisualSectionData =
-          accepted.section
-            ? { ...accepted.section, styles: live.data.styles, hasStyleDraft: live.data.hasStyleDraft }
+        /**
+         * The revision belongs to the row, so every domain adopts it. What each
+         * one does *not* adopt is another domain's document: a content save
+         * answers with a whole section — it is the only action that has to,
+         * since the registry may have completed fields — and the two columns it
+         * did not write are put back from the buffer, because the server's copy
+         * of them predates any unsaved work sitting here.
+         */
+        const data: VisualSectionData = accepted.section
+          ? {
+              ...accepted.section,
+              styles: live.data.styles,
+              hasStyleDraft: live.data.hasStyleDraft,
+              motion: live.data.motion,
+              hasMotionDraft: live.data.hasMotionDraft,
+            }
+          : accepted.styles
+            ? {
+                ...live.data,
+                revision: accepted.revision,
+                styles: accepted.styles,
+                hasStyleDraft: true,
+              }
             : {
                 ...live.data,
                 revision: accepted.revision,
-                styles: accepted.styles ?? live.data.styles,
-                hasStyleDraft: true,
+                motion: accepted.motion ?? live.data.motion,
+                hasMotionDraft: true,
               };
 
         const domainState =
           domain === "content"
             ? { values: movedOn ? live.values : data.values, contentDirty: movedOn }
-            : { styles: movedOn ? live.styles : data.styles, styleDirty: movedOn };
+            : domain === "style"
+              ? { styles: movedOn ? live.styles : data.styles, styleDirty: movedOn }
+              : { motion: movedOn ? live.motion : data.motion, motionDirty: movedOn };
 
         return {
           ...prev,
@@ -1003,6 +1090,7 @@ export function VisualEditorShell({
           loadError={loadError}
           onValues={onValues}
           onStyles={onStyles}
+          onMotion={onMotion}
           onSave={save}
           onRevert={revert}
           onTakeLatest={takeLatest}

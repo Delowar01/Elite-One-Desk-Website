@@ -23,6 +23,7 @@
  * restore in the admin.
  */
 import { getBlock } from "./blocks";
+import { motionOf } from "./motion";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 import { validateBlockValues } from "./validate";
 
@@ -100,7 +101,11 @@ export function validatePageSnapshot(input: unknown): PageSnapshot {
       visible: row.visible === false ? false : true,
       published: validateBlockValues(block, row.published),
       styles: validateStyleDocument(row.styles),
-      animation: asString(row.animation, 32) || "fade-up",
+      // Normalised, not merely length-capped. A snapshot is replayed into
+      // `draft_animation` by a restore, and `draft_animation` is rendered —
+      // so a version captured before the vocabulary existed must come back as
+      // a preset rather than as whatever string it happened to hold.
+      animation: motionOf(asString(row.animation, 32)),
     });
   }
 
@@ -126,7 +131,7 @@ export function snapshotFromSections(
       visible: row.isPublished,
       published: row.published ?? {},
       styles: validateStyleDocument(row.styles),
-      animation: row.animation || "fade-up",
+      animation: motionOf(row.animation),
     })),
   };
 }

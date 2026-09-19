@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties, type ElementType, type ReactNode } from "react";
 
+import { MOTION_CLASS, type MotionPreset } from "@/lib/cms/motion";
 import type { NodeAttrs, ResponsiveAttrs } from "@/lib/cms/node";
 import { REVEAL_OPACITY_PROPERTY, RESPONSIVE_ATTR } from "@/lib/cms/style-css";
 
@@ -10,7 +11,7 @@ type Props = {
   as?: ElementType;
   /** Milliseconds after the element enters the viewport. */
   delay?: number;
-  variant?: "fade-up" | "fade" | "slide-in" | "scale-in" | "none";
+  variant?: MotionPreset;
   className?: string;
   /** Staggers direct children instead of moving the wrapper itself. */
   stagger?: number;
@@ -32,13 +33,56 @@ type Props = {
   nodeAttrs?: NodeAttrs;
 };
 
-const VARIANT_CLASS: Record<string, string> = {
-  "fade-up": "reveal",
-  fade: "reveal",
-  "slide-in": "reveal reveal-left",
-  "scale-in": "reveal reveal-scale",
-  none: "",
-};
+/**
+ * The classes a variant renders as, from the shared motion vocabulary.
+ *
+ * A block's inner reveal and a section's entrance are the same four movements,
+ * so they read the same table. Keeping a private copy here is how "slide in"
+ * would eventually mean one thing inside a section and another around it.
+ */
+export const revealClassOf = (variant: MotionPreset): string => MOTION_CLASS[variant] ?? "reveal";
+
+/**
+ * The reveal lifecycle, on its own, so more than one element shape can have it.
+ *
+ * `Reveal` wraps its children in a tag of its choosing. A section's entrance
+ * cannot do that — the section wrapper is already the editor's `root` node and
+ * adding an element around it would move every address and every measured
+ * rectangle — so it needs the same observer on an element it renders itself.
+ * One hook, two callers, one definition of when something counts as revealed.
+ *
+ * `variant === "none"` attaches nothing: there is no lifecycle to run, and an
+ * observer that could only ever set a flag nobody reads is still an observer
+ * per section on every page.
+ */
+export function useRevealed(variant: MotionPreset) {
+  const ref = useRef<HTMLElement>(null);
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || variant === "none") return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setShown(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setShown(true);
+            observer.disconnect();
+          }
+        }
+      },
+      { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [variant]);
+
+  return { ref, shown };
+}
 
 /**
  * The custom property the stylesheet reads a revealed element's finished
@@ -147,32 +191,9 @@ export function Reveal({
   stagger,
   nodeAttrs,
 }: Props) {
-  const ref = useRef<HTMLElement>(null);
-  const [shown, setShown] = useState(false);
+  const { ref, shown } = useRevealed(variant);
 
-  useEffect(() => {
-    const node = ref.current;
-    if (!node || variant === "none") return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setShown(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            setShown(true);
-            observer.disconnect();
-          }
-        }
-      },
-      { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [variant]);
-
-  const revealClass = VARIANT_CLASS[variant] ?? "reveal";
+  const revealClass = revealClassOf(variant);
   const classes = [revealClass, className].filter(Boolean).join(" ");
   const { style: nodeStyle, ...rest } = nodeAttrs ?? {};
   const style = revealStyle({ delay, stagger, revealClass, node: nodeStyle });

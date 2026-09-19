@@ -100,16 +100,6 @@ const ctaFields = (prefix = "", label = "Call to action"): FieldDef[] => [
   },
 ];
 
-const ANIMATION_PRESETS = [
-  { value: "fade-up", label: "Fade up" },
-  { value: "fade", label: "Fade only" },
-  { value: "slide-in", label: "Slide in from the leading edge" },
-  { value: "scale-in", label: "Scale in" },
-  { value: "none", label: "No animation" },
-] as const;
-
-export const ANIMATIONS = ANIMATION_PRESETS;
-
 export const BLOCKS: BlockDef[] = [
   {
     type: "hero",

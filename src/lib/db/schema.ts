@@ -287,15 +287,19 @@ export const pageSections = pgTable(
     /** Pending edits. Never rendered publicly; visible in preview mode only. */
     draft: jsonb("draft").$type<Record<string, unknown>>(),
     /**
-     * The entrance animation an editor chose.
+     * The **published** entrance preset — one of the five in `lib/cms/motion`.
      *
-     * Known defect, deliberately left alone: this value is stored and read into
-     * `RenderedSection.animation`, but `SectionRenderer` never passes it to a
-     * block, and every block hard-codes its own `<Reveal variant>`. So the
-     * control has no effect on the public site. Wiring it up here would make a
-     * *draft* save change the live page, because `saveSectionDraft` writes
-     * `animation` on the draft path — which is why Batch 9 owns motion, and why
-     * `tests/data-foundation.test.ts` asserts the defect rather than fixing it.
+     * What `SectionRenderer` puts on the section's wrapper for a visitor, and
+     * therefore the column an edit must not reach until somebody publishes it.
+     * Only three writers touch it: publishing a section, publishing a page's
+     * drafts, and the ordinary section form's "Save and publish". A draft save
+     * used to write it too, which meant that the moment anything rendered the
+     * value a draft would have changed the live page; that is closed, and
+     * `tests/data-foundation.test.ts` asserts the closure rather than the leak.
+     *
+     * Read through `motionOf`, never raw: the column is `NOT NULL DEFAULT
+     * 'fade-up'` and predates the vocabulary being enforced, so a row may hold
+     * a string that is not a preset.
      */
     animation: varchar("animation", { length: 32 }).notNull().default("fade-up"),
     /**
@@ -310,11 +314,19 @@ export const pageSections = pgTable(
     /** The same document, unpublished. Promoted beside `draft` → `published`. */
     draftStyles: jsonb("draft_styles").$type<Record<string, unknown>>(),
     /**
-     * Where a restored or edited motion choice can sit without going live.
+     * The pending entrance preset — motion's draft column, beside `draft` and
+     * `draft_styles`.
      *
-     * `animation` is the published value and is already written by an ordinary
-     * draft save, so a restore that wrote it would change the live page —
-     * exactly what a restore must not do. Nothing reads this column yet.
+     * `NULL` and a value are different answers, and the difference is
+     * load-bearing in the same way it is for `draft_styles`: `NULL` means "no
+     * motion draft, show what is published", while `'none'` is a real preset
+     * meaning "publishing me removes this section's entrance". If emptiness
+     * were the test, turning an animation off would be indistinguishable from
+     * never having touched it, and publishing would leave it running.
+     *
+     * Read by `composePreview` — so the canvas and `?preview=1` show it and
+     * the live page does not — and promoted into `animation` by the same
+     * guarded write that promotes the other two domains.
      */
     draftAnimation: varchar("draft_animation", { length: 32 }),
     /** Optimistic-concurrency token — see `lib/db/revision.ts`. */

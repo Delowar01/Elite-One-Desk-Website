@@ -6,6 +6,7 @@ import { and, asc, eq } from "drizzle-orm";
 
 import { TAGS } from "@/lib/cache";
 import { composePreview, composePublished, type CompositionRow } from "@/lib/cms/composition";
+import type { MotionPreset } from "@/lib/cms/motion";
 import type { StyleDocument } from "@/lib/cms/styles";
 import { readDraftStructure } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
@@ -14,7 +15,8 @@ import { pageSections, pages, seoMetadata } from "@/lib/db/schema";
 export type RenderedSection = {
   id: number;
   blockType: string;
-  animation: string;
+  /** The entrance preset to render — published live, the draft in preview. */
+  animation: MotionPreset;
   values: Record<string, unknown>;
   /** Validated visual overrides — published ones, or the draft in preview. */
   styles: StyleDocument;
@@ -23,6 +25,7 @@ export type RenderedSection = {
   /** Which domain those edits are in. Preview only; false on the live page. */
   hasContentDraft: boolean;
   hasStyleDraft: boolean;
+  hasMotionDraft: boolean;
   /** True when the row exists only because of a pending structural draft. */
   isDraftOnly: boolean;
   /** The visibility this section would have once published. */
@@ -75,6 +78,7 @@ async function loadPage(slug: string, preview: boolean): Promise<RenderedPage | 
     id: row.id,
     blockType: row.blockType,
     animation: row.animation,
+    draftAnimation: row.draftAnimation,
     published: row.published,
     draft: row.draft,
     styles: row.styles,

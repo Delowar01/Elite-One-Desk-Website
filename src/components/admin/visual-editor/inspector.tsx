@@ -3,7 +3,8 @@
 import { Icon } from "@/components/ui/icon";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { getBlock } from "@/lib/cms/blocks";
-import { DRAFT_LABEL, type DraftKind } from "@/lib/cms/drafts";
+import { DRAFT_LABEL, draftKindOf, type DraftKind } from "@/lib/cms/drafts";
+import type { MotionPreset } from "@/lib/cms/motion";
 import type { Breakpoint, StyleDocument } from "@/lib/cms/styles";
 import type { Locale } from "@/lib/i18n/config";
 import type { VisualSectionData } from "@/lib/visual-editor/content";
@@ -11,27 +12,31 @@ import { describeAddress } from "@/lib/visual-editor/labels";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
 
 import { ContentBody } from "./content-inspector";
+import { MotionInspector } from "./motion-inspector";
 import { StyleInspector } from "./style-inspector";
 
-export type EditDomain = "content" | "style";
+export type EditDomain = "content" | "style" | "motion";
+
+/** Tab order, and the order the save bar and the dirty dots are built in. */
+export const EDIT_DOMAINS = ["content", "style", "motion"] as const;
 export type BufferStatus = "idle" | "saved" | "conflict" | "error";
 
 /**
- * One section's edit buffers — two domains sharing one row.
+ * One section's edit buffers — three domains sharing one row.
  *
- * `data` is the last thing the *server* said this section is; `values` and
- * `styles` are what the person has changed since. Keeping them apart is what
- * lets the panel answer the questions it would otherwise guess at: whether
- * there is anything to save, what revision to name when saving, and what to put
- * back if the edit is abandoned.
+ * `data` is the last thing the *server* said this section is; `values`,
+ * `styles` and `motion` are what the person has changed since. Keeping them
+ * apart is what lets the panel answer the questions it would otherwise guess
+ * at: whether there is anything to save, what revision to name when saving,
+ * and what to put back if the edit is abandoned.
  *
- * Content and layout are separate drafts in separate columns, but they share
- * one `revision`, because the row has one concurrency timeline. That is why
- * `data.revision` is updated by whichever domain saves — an editor who saves a
- * style and then saves text must not conflict with themselves — while the other
- * domain's unsaved work is left exactly where it was.
+ * Content, layout and motion are separate drafts in separate columns, but they
+ * share one `revision`, because the row has one concurrency timeline. That is
+ * why `data.revision` is updated by whichever domain saves — an editor who
+ * saves a style and then saves text must not conflict with themselves — while
+ * the other domains' unsaved work is left exactly where it was.
  *
- * `saving` names the domain currently writing. The other domain's save is
+ * `saving` names the domain currently writing. The other domains' saves are
  * disabled while it does, so one browser cannot manufacture a race against
  * itself out of two requests that were both correct when they left.
  *
@@ -42,36 +47,51 @@ export type SectionBuffer = {
   data: VisualSectionData;
   values: Record<string, unknown>;
   styles: StyleDocument;
+  motion: MotionPreset;
   contentDirty: boolean;
   styleDirty: boolean;
+  motionDirty: boolean;
   saving: EditDomain | null;
   status: BufferStatus;
   /** Which domain `status` and `message` are about. */
   statusDomain: EditDomain | null;
   message?: string;
-  /** Present after a lost race: the version that won it, both domains. */
+  /** Present after a lost race: the version that won it, all three domains. */
   latest?: VisualSectionData;
 };
 
 export const isDirty = (buffer: SectionBuffer | null | undefined): boolean =>
-  Boolean(buffer && (buffer.contentDirty || buffer.styleDirty));
+  Boolean(buffer && (buffer.contentDirty || buffer.styleDirty || buffer.motionDirty));
 
+/** Whether each domain has unsaved work in this browser. */
+export const dirtyOf = (buffer: SectionBuffer): Record<EditDomain, boolean> => ({
+  content: buffer.contentDirty,
+  style: buffer.styleDirty,
+  motion: buffer.motionDirty,
+});
+
+/**
+ * What the *server* is holding for this section, in the shared vocabulary.
+ *
+ * Reshaped into the row's own field names rather than re-deriving the seven
+ * combinations here: the Pages list and this panel have to call the same
+ * pending state by the same name, and they do it by asking one function.
+ */
 const draftKindOfData = (data: VisualSectionData): DraftKind =>
-  data.hasDraft && data.hasStyleDraft
-    ? "both"
-    : data.hasDraft
-      ? "content"
-      : data.hasStyleDraft
-        ? "style"
-        : "none";
+  draftKindOf({
+    draft: data.hasDraft ? {} : null,
+    draftStyles: data.hasStyleDraft ? {} : null,
+    draftAnimation: data.hasMotionDraft ? "" : null,
+  });
 
 /**
  * The inspector: what is selected, and the controls that change it.
  *
- * Two tabs, because text and layout are edited with different controls and
- * saved to different columns. There is deliberately no Motion tab and no
- * Responsive tab — a tab that cannot be opened is a promise the software has
- * not kept, and both are somebody else's batch.
+ * Three tabs, because text, layout and motion are edited with different
+ * controls and saved to different columns. There is deliberately no Responsive
+ * tab — a tab that cannot be opened is a promise the software has not kept,
+ * and responsiveness is not a tab here anyway: the device switch above the
+ * canvas decides which branch the Style tab writes into.
  */
 export function InspectorPanel({
   node,
@@ -87,6 +107,7 @@ export function InspectorPanel({
   loadError,
   onValues,
   onStyles,
+  onMotion,
   onSave,
   onRevert,
   onTakeLatest,
@@ -106,6 +127,7 @@ export function InspectorPanel({
   loadError: string | null;
   onValues: (values: Record<string, unknown>) => void;
   onStyles: (styles: StyleDocument) => void;
+  onMotion: (motion: MotionPreset) => void;
   onSave: (domain: EditDomain) => void;
   onRevert: (domain: EditDomain) => void;
   onTakeLatest: () => void;
@@ -188,7 +210,7 @@ export function InspectorPanel({
                       edited here.
                     </p>
                   )
-                ) : (
+                ) : tab === "style" ? (
                   <StyleInspector
                     node={node}
                     styles={buffer.styles}
@@ -197,6 +219,13 @@ export function InspectorPanel({
                     breakpoint={breakpoint}
                     canManage={canManage}
                     onChange={onStyles}
+                  />
+                ) : (
+                  <MotionInspector
+                    motion={buffer.motion}
+                    locale={locale}
+                    canManage={canManage}
+                    onChange={onMotion}
                   />
                 )}
 
@@ -237,6 +266,13 @@ export function InspectorPanel({
   );
 }
 
+/** Two syllables each, because the row is three buttons wide at 21rem. */
+const TAB_LABEL: Record<EditDomain, string> = {
+  content: "Content",
+  style: "Style",
+  motion: "Motion",
+};
+
 function Tabs({
   tab,
   onTab,
@@ -246,13 +282,10 @@ function Tabs({
   onTab: (next: EditDomain) => void;
   buffer: SectionBuffer;
 }) {
-  const dirty: Record<EditDomain, boolean> = {
-    content: buffer.contentDirty,
-    style: buffer.styleDirty,
-  };
+  const dirty = dirtyOf(buffer);
   return (
     <div className="flex gap-1" role="tablist" aria-label="What to edit">
-      {(["content", "style"] as const).map((key) => (
+      {EDIT_DOMAINS.map((key) => (
         <button
           key={key}
           type="button"
@@ -266,7 +299,7 @@ function Tabs({
               : undefined
           }
         >
-          {key === "content" ? "Content" : "Style"}
+          {TAB_LABEL[key]}
           {/* A dot rather than a word: the tab is narrow, and the label below
               says which domain is unsaved in full. */}
           {dirty[key] ? (
@@ -299,9 +332,9 @@ function ReadOnlyNote() {
  * overwrote the other version would be the last-write-wins behaviour the
  * revision guard exists to prevent, and the person who lost would find out at
  * publish time, if ever. So the choice offered is the honest one: take the
- * version that is actually stored — all of it, text and layout, because they
- * share a revision and taking half would leave the other half stale — and redo
- * the edit on top of it.
+ * version that is actually stored — all of it, text, layout and motion,
+ * because the three share a revision and taking part would leave the rest
+ * stale — and redo the edit on top of it.
  */
 function Conflict({ message, onTakeLatest }: { message?: string; onTakeLatest: () => void }) {
   return (
@@ -317,16 +350,17 @@ function Conflict({ message, onTakeLatest }: { message?: string; onTakeLatest: (
         Reload latest
       </button>
       <p className="mt-1.5 text-[0.7rem] text-muted">
-        This replaces both the content and the styles in the panel with the stored version, losing
-        anything unsaved in either. Copy what you want to keep first.
+        This replaces the content, the styles and the entrance in the panel with the stored
+        version, losing anything unsaved in any of them. Copy what you want to keep first.
       </p>
     </div>
   );
 }
 
-const SAVE_LABEL: Record<EditDomain, { idle: string; busy: string; saved: string }> = {
-  content: { idle: "Save draft", busy: "Saving…", saved: "Draft saved" },
-  style: { idle: "Save styles", busy: "Saving…", saved: "Styles saved" },
+const SAVE_LABEL: Record<EditDomain, { idle: string; busy: string; saved: string; unsaved: string }> = {
+  content: { idle: "Save draft", busy: "Saving…", saved: "Draft saved", unsaved: "Unsaved content" },
+  style: { idle: "Save styles", busy: "Saving…", saved: "Styles saved", unsaved: "Unsaved styles" },
+  motion: { idle: "Save motion", busy: "Saving…", saved: "Motion saved", unsaved: "Unsaved entrance" },
 };
 
 function SaveBar({
@@ -343,14 +377,25 @@ function SaveBar({
   onRevert: (domain: EditDomain) => void;
 }) {
   if (!canManage) return null;
-  const dirty = domain === "content" ? buffer.contentDirty : buffer.styleDirty;
+  const dirty = dirtyOf(buffer)[domain];
   const busy = buffer.saving === domain;
-  // The other domain writing is still a reason not to start: one row, one
+  // Another domain writing is still a reason not to start: one row, one
   // revision, and two requests in flight against it is a race this browser
   // would have created on its own.
   const blocked = buffer.saving !== null;
   const label = SAVE_LABEL[domain];
-  const onFile = domain === "content" ? buffer.data.hasDraft : buffer.data.hasStyleDraft;
+  /**
+   * What the *server* is holding for this domain, which is a different
+   * sentence from what this browser has unsaved. "Unsaved entrance" means
+   * nobody else can see it yet; "Draft on file" means it is stored and waiting
+   * to be published. Conflating them is how somebody closes a tab believing
+   * their work is safe.
+   */
+  const onFile: Record<EditDomain, boolean> = {
+    content: buffer.data.hasDraft,
+    style: buffer.data.hasStyleDraft,
+    motion: buffer.data.hasMotionDraft,
+  };
   const showsStatus = buffer.statusDomain === domain;
 
   return (
@@ -373,10 +418,10 @@ function SaveBar({
           {busy
             ? ""
             : dirty
-              ? `Unsaved ${domain === "content" ? "content" : "styles"}`
+              ? label.unsaved
               : showsStatus && buffer.status === "saved"
                 ? label.saved
-                : onFile
+                : onFile[domain]
                   ? "Draft on file"
                   : "No changes"}
         </span>

@@ -1,3 +1,4 @@
+import { motionOf, type MotionPreset } from "./motion";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 import { type DraftStructure } from "./structure";
 
@@ -8,8 +9,8 @@ import { type DraftStructure } from "./structure";
  * "preview" means:
  *
  *   **Published** — what a visitor gets. Established, visible sections in their
- *   stored `position` order, reading published values and published styles.
- *   Nothing draft, ever, in either domain.
+ *   stored `position` order, reading published values, published styles and
+ *   the published entrance. Nothing draft, ever, in any of the three domains.
  *
  *   **Preview** — what an authorised editor gets. Drafts win over published
  *   values, hidden sections are included so the editor can see what they are
@@ -27,7 +28,18 @@ import { type DraftStructure } from "./structure";
 export type CompositionRow = {
   id: number;
   blockType: string;
+  /** The published entrance preset. What a visitor gets, always. */
   animation: string;
+  /**
+   * The pending entrance preset, or `null` for none.
+   *
+   * The same distinction the style draft makes, for the same reason. `null`
+   * means "no motion draft, show what is published"; `"none"` is a real
+   * preset meaning "publishing me removes this section's entrance". If
+   * emptiness were the test the two would be one answer, and an editor who
+   * turned an animation off would find it still running.
+   */
+  draftAnimation: string | null;
   published: Record<string, unknown> | null;
   draft: Record<string, unknown> | null;
   /** Published visual overrides. */
@@ -49,7 +61,13 @@ export type CompositionRow = {
 export type ComposedSection = {
   id: number;
   blockType: string;
-  animation: string;
+  /**
+   * The entrance this render should apply, already normalised to one of the
+   * five presets — never the raw column. A row written before the vocabulary
+   * was enforced falls back to the default rather than reaching the renderer
+   * as a string nothing knows what to do with.
+   */
+  animation: MotionPreset;
   values: Record<string, unknown>;
   /**
    * The overrides this render should apply, already validated. Never the raw
@@ -58,12 +76,13 @@ export type ComposedSection = {
    * anything into a style property.
    */
   styles: StyleDocument;
-  /** Either domain has something unpublished. */
+  /** Any of the three domains has something unpublished. */
   isDraft: boolean;
-  /** …and which, because the two are published and discarded together but
+  /** …and which, because the three are published and discarded together but
    * edited in different places and worth naming separately. */
   hasContentDraft: boolean;
   hasStyleDraft: boolean;
+  hasMotionDraft: boolean;
   /**
    * Whether this row exists only because of a pending structural draft. Not
    * rendered differently — it is here so the editor's Layers panel can say
@@ -83,12 +102,15 @@ export type ComposedSection = {
 const published = (row: CompositionRow): ComposedSection => ({
   id: row.id,
   blockType: row.blockType,
-  animation: row.animation,
+  // The published column and nothing else. A motion draft is invisible here
+  // in exactly the way a content draft is: this is what a visitor gets.
+  animation: motionOf(row.animation),
   values: row.published ?? {},
   styles: validateStyleDocument(row.styles),
   isDraft: false,
   hasContentDraft: false,
   hasStyleDraft: false,
+  hasMotionDraft: false,
   isDraftOnly: false,
   visible: true,
 });
@@ -96,17 +118,21 @@ const published = (row: CompositionRow): ComposedSection => ({
 const editing = (row: CompositionRow, visible = row.isPublished): ComposedSection => {
   const hasContentDraft = row.draft !== null;
   const hasStyleDraft = row.draftStyles !== null;
+  const hasMotionDraft = row.draftAnimation !== null;
   return {
     id: row.id,
     blockType: row.blockType,
-    animation: row.animation,
+    // `??`, not `||`: `"none"` is a truthy-looking choice in the vocabulary but
+    // an empty string is not a preset, and only `null` means "nothing pending".
+    animation: motionOf(hasMotionDraft ? row.draftAnimation : row.animation),
     values: (row.draft ?? row.published) ?? {},
     // The draft document wins whole, including when it is empty — that is what
     // a reset looks like before it is published.
     styles: validateStyleDocument(hasStyleDraft ? row.draftStyles : row.styles),
-    isDraft: hasContentDraft || hasStyleDraft,
+    isDraft: hasContentDraft || hasStyleDraft || hasMotionDraft,
     hasContentDraft,
     hasStyleDraft,
+    hasMotionDraft,
     isDraftOnly: row.isDraftOnly,
     visible,
   };

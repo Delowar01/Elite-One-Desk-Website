@@ -151,6 +151,21 @@ function tagWith(html: string, attribute: string): string | null {
 }
 
 const styleOf = (tag: string | null): string => /style="([^"]*)"/.exec(tag ?? "")?.[1] ?? "";
+
+/**
+ * A style with the reveal's own properties taken out.
+ *
+ * A section wrapper carries `--reveal-delay` from Batch 9 onwards, because the
+ * wrapper *is* the section's entrance. That is the renderer's, not an
+ * editor's, so a test asking "did an override reach this page" has to ask
+ * about the rest.
+ */
+const overridesIn = (style: string): string =>
+  style
+    .split(";")
+    .map((declaration) => declaration.trim())
+    .filter((declaration) => declaration && !declaration.startsWith("--reveal-"))
+    .join(";");
 const classOf = (tag: string | null): string => /class="([^"]*)"/.exec(tag ?? "")?.[1] ?? "";
 
 /** The text inside the element this opening tag begins. */
@@ -388,7 +403,11 @@ describe("a style draft is previewed and a published style is public", () => {
     const hero = await find("privacy", "page-hero");
     const plain = await get(server.origin, "/privacy");
     const plainRoot = tagWith(plain.html, 'data-section="page-hero"');
-    assert.equal(styleOf(plainRoot), "", "a section with no overrides carried a style attribute");
+    assert.equal(
+      overridesIn(styleOf(plainRoot)),
+      "",
+      "a section with no overrides carried a style attribute",
+    );
 
     answered(
       await saveStyles(
@@ -408,7 +427,11 @@ describe("a style draft is previewed and a published style is public", () => {
     assert.match(preview.html, /color:\s*var\(--color-orange\)/);
 
     const live = await get(server.origin, "/privacy");
-    assert.equal(styleOf(tagWith(live.html, 'data-section="page-hero"')), "", "a draft reached a visitor");
+    assert.equal(
+      overridesIn(styleOf(tagWith(live.html, 'data-section="page-hero"'))),
+      "",
+      "a draft reached a visitor",
+    );
     assert.ok(!live.html.includes("var(--color-orange);text-align:center"), "a draft reached a visitor");
   });
 
@@ -1177,14 +1200,38 @@ describe("an opacity is a revealed element's finished state", () => {
     assert.match(style, /border-radius:\s*var\(--radius-lg\)/, "the rest of the node's style was dropped");
   });
 
-  test("a section root is not revealed, so its opacity is simply its opacity", async () => {
+  test("a section root that has an entrance is revealed, so its opacity is the finished state", async () => {
+    // Batch 9 made the section wrapper the section's own entrance, so the rule
+    // that already held for a revealed row now holds for the wrapper too: an
+    // inline opacity would hold it at 60% before it revealed.
     const hero = await find("terms", "page-hero");
+    await sql`update page_sections set animation = 'fade-up' where id = ${hero.id}`;
     answered(await saveStyles(hero, doc({ root: { base: { opacity: 0.6 } } })));
-    const preview = await get(server.origin, "/terms?preview=1", { cookie: owner.cookie });
-    const tag = tagWith(preview.html, 'data-section="page-hero"');
-    assert.ok(!/\breveal\b/.test(classOf(tag)), "the section wrapper became a reveal");
+
+    const previewed = await get(server.origin, "/terms?preview=1", { cookie: owner.cookie });
+    const tag = tagWith(previewed.html, 'data-section="page-hero"');
+    assert.match(classOf(tag), /\breveal\b/, "the section wrapper is not revealed");
+    assert.match(styleOf(tag), /--eod-node-opacity:\s*0\.6/);
+    assert.ok(
+      !/(^|;)\s*opacity:/.test(styleOf(tag)),
+      `the reveal's lifecycle was overridden by an inline opacity: ${styleOf(tag)}`,
+    );
+    assert.match(tag!, /data-shown="false"/);
+  });
+
+  test("a section root with no entrance is not revealed, so its opacity is simply its opacity", async () => {
+    const hero = await find("terms", "page-hero");
+    await sql`update page_sections set animation = 'none' where id = ${hero.id}`;
+    answered(await saveStyles(hero, doc({ root: { base: { opacity: 0.6 } } })));
+
+    // Preview, which is never cached, so the entrance set above is the one
+    // being read rather than whatever a previous test left in the page cache.
+    const previewed = await get(server.origin, "/terms?preview=1", { cookie: owner.cookie });
+    const tag = tagWith(previewed.html, 'data-section="page-hero"');
+    assert.ok(!/\breveal\b/.test(classOf(tag)), "a section with no entrance became a reveal");
     assert.match(styleOf(tag), /opacity:\s*0\.6/);
     assert.ok(!/--eod-node-opacity/.test(styleOf(tag)), "a property nothing reads replaced the opacity");
+    await sql`update page_sections set animation = 'fade-up' where id = ${hero.id}`;
   });
 });
 

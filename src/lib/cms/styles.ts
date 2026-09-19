@@ -15,7 +15,10 @@
  * as a reference to a section that is no longer the one it is sitting in.
  *
  * Motion is deliberately absent. It is a different domain with a different
- * owner — see `page_sections.animation`, and Batch 9.
+ * owner and a column of its own — `page_sections.animation`, drafted in
+ * `draft_animation`, with its vocabulary in `lib/cms/motion`. A section has
+ * one entrance, not a token per node, so putting it here would have meant a
+ * style key that only ever meant anything on `root`.
  *
  * The enumerations below are exported because the panel offers them: one list
  * per token, read by the control that sets it and by the check that accepts it.

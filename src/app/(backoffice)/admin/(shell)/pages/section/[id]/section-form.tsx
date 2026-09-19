@@ -13,8 +13,9 @@ import { BlockEditor } from "@/components/admin/block-editor";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { Icon } from "@/components/ui/icon";
 import type { ActionState } from "@/lib/admin/actions";
-import { ANIMATIONS, type BlockDef } from "@/lib/cms/blocks";
+import type { BlockDef } from "@/lib/cms/blocks";
 import { DRAFT_LABEL, hasDraft, type DraftKind } from "@/lib/cms/drafts";
+import { MOTION_PRESETS } from "@/lib/cms/motion";
 import {
   discardDraft,
   publishSection,
@@ -48,6 +49,7 @@ export function SectionForm({
   csrf: string;
   section: {
     id: number;
+    /** The preset this screen is editing — the motion draft when there is one. */
     animation: string;
     draftKind: DraftKind;
     /**
@@ -174,7 +176,7 @@ export function SectionForm({
 
         <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
           <label className="admin-label" htmlFor="animation">
-            Entrance animation
+            Section entrance
           </label>
           <select
             id="animation"
@@ -182,14 +184,21 @@ export function SectionForm({
             defaultValue={section.animation}
             className="admin-select max-w-sm"
           >
-            {ANIMATIONS.map((preset) => (
+            {MOTION_PRESETS.map((preset) => (
               <option key={preset.value} value={preset.value}>
                 {preset.label}
               </option>
             ))}
           </select>
+          {/*
+            Said plainly because it changed: this used to write the live value
+            on every save, so an editor who only meant to fix a typo could move
+            the site. It is a draft now, like the words above it.
+          */}
           <p className="mt-1.5 text-[0.73rem] text-muted">
-            Ignored for visitors who have asked their device for reduced motion.
+            How the whole section arrives when a visitor scrolls to it. Saved as a draft with
+            everything else on this screen, and ignored for visitors who have asked their device
+            for reduced motion.
           </p>
         </div>
 

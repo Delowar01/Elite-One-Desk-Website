@@ -7,6 +7,7 @@ import { logActivity } from "@/lib/activity";
 import { AccessError, guardAction } from "@/lib/auth/guard";
 import { getSession } from "@/lib/auth/session";
 import { getBlock, type BlockDef } from "@/lib/cms/blocks";
+import { motionOf, readMotion } from "@/lib/cms/motion";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { parseBlockPayload, validateBlockValues } from "@/lib/cms/validate";
 import { emptyValues } from "@/lib/cms/values";
@@ -28,6 +29,7 @@ import { updateSectionGuarded } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
 import type {
   VisualContentSaveResult,
+  VisualMotionSaveResult,
   VisualSectionData,
   VisualSectionLoad,
   VisualStructureResult,
@@ -53,10 +55,12 @@ import type {
  * that grew its own more permissive path would be a way to put into the
  * database exactly what the registry exists to keep out.
  *
- * **Nothing here publishes.** The one column a save writes is `draft`
- * (plus the revision, the author and the timestamp, which the guard writes).
- * `published`, `is_published`, `animation`, `styles` and `position` are somebody
- * else's business, and a content save must never move them by accident.
+ * **Nothing here publishes.** Each save writes exactly one column — `draft`,
+ * `draft_styles` or `draft_animation` — plus the revision, the author and the
+ * timestamp, which the guard writes. `published`, `is_published`, `animation`,
+ * `styles`, `position`, `is_draft_only` and `pages.draft_structure` are
+ * somebody else's business, and a save in one domain must never move them, or
+ * another domain's column, by accident.
  */
 
 const MESSAGES = {
@@ -66,6 +70,7 @@ const MESSAGES = {
   unknownBlock: "That section type is no longer available.",
   invalid: "Those values could not be read. Reload the canvas and try again.",
   invalidStyles: "Those styles could not be read. Reload the canvas and try again.",
+  invalidMotion: "That entrance is not one of the available options. Reload the canvas and try again.",
   conflict:
     "This section changed while you were editing it. Reload the latest version before saving, " +
     "or your colleague's work would be overwritten.",
@@ -83,6 +88,7 @@ const MESSAGES = {
 function toData(row: typeof pageSections.$inferSelect, block: BlockDef): VisualSectionData {
   const stored = (row.draft ?? row.published) as Record<string, unknown>;
   const hasStyleDraft = row.draftStyles !== null;
+  const hasMotionDraft = row.draftAnimation !== null;
   return {
     sectionId: row.id,
     pageId: row.pageId,
@@ -90,11 +96,15 @@ function toData(row: typeof pageSections.$inferSelect, block: BlockDef): VisualS
     revision: row.revision,
     hasDraft: Boolean(row.draft),
     hasStyleDraft,
+    hasMotionDraft,
     isDraftOnly: row.isDraftOnly,
     values: validateBlockValues(block, { ...emptyValues(block), ...stored }),
     // The draft document whole when there is one, empty included — an empty
     // style draft is a pending reset, not an absent one.
     styles: validateStyleDocument(hasStyleDraft ? row.draftStyles : row.styles),
+    // The same rule, one column over: the draft preset when there is one, the
+    // published one otherwise, and never the raw string either way.
+    motion: motionOf(hasMotionDraft ? row.draftAnimation : row.animation),
   };
 }
 
@@ -179,8 +189,8 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
      * The whole write. `draft` and nothing else — the guard adds `revision`,
      * `updated_at` and takes `updated_by` — so a content save cannot publish,
      * cannot show a hidden section, and cannot disturb motion or styles.
-     * Content and style are two draft domains sharing one row and one
-     * concurrency timeline; each save writes only its own column.
+     * Content, style and motion are three draft domains sharing one row and
+     * one concurrency timeline; each save writes only its own column.
      */
     const result = await updateSectionGuarded(sectionId, expected, {
       draft: values,
@@ -331,6 +341,96 @@ export async function saveVisualSectionStyles(form: FormData): Promise<VisualSty
   } catch (error) {
     if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };
     console.error("[visual-editor:styles]", error);
+    return { ok: false, reason: "invalid", message: "Something went wrong. The change was not saved." };
+  }
+}
+
+/**
+ * Saves one section's entrance as a draft. Never publishes.
+ *
+ * The third of three identical shapes, and the sameness is the point: same
+ * door (`guardAction`, so the session's CSRF token and `content.manage` are
+ * both checked), same ownership check against the row rather than against what
+ * was asked, same revision guard, same one-column write, same conflict answer
+ * carrying the version that won. A domain that let itself in a different way
+ * would be the weakest lock on the site, and a domain that guarded itself
+ * differently would be the one that loses somebody's work.
+ *
+ * What it writes is `draft_animation` and only that. `animation` is what the
+ * live wrapper renders, and the whole of this batch's promise — editing motion
+ * does not change the live site until the motion draft is published — is that
+ * this action cannot reach it.
+ *
+ * The preset is read by `readMotion`, the single validator, which accepts the
+ * five exactly. There is no fallback to the default: a value outside the
+ * vocabulary is a stale or tampered request, and storing a guess for it would
+ * report success while leaving the section moving in a way nobody chose.
+ */
+export async function saveVisualSectionMotion(form: FormData): Promise<VisualMotionSaveResult> {
+  try {
+    const session = await guardAction("content.manage", form);
+
+    const sectionId = Number(form.get("sectionId"));
+    const pageId = Number(form.get("pageId"));
+    const expected = Number(form.get("expectedRevision"));
+
+    const found = await ownedSection(sectionId, pageId);
+    if (!found.ok) return found;
+
+    const motion = readMotion(form.get("motion"));
+    if (!motion) return { ok: false, reason: "invalid", message: MESSAGES.invalidMotion };
+    if (!Number.isInteger(expected) || expected < 0) {
+      return { ok: false, reason: "invalid", message: MESSAGES.invalid };
+    }
+
+    /**
+     * Stored even when it matches what is published.
+     *
+     * Deliberately different from the ordinary admin form, which folds a
+     * matching choice back to `null` because motion rides along with a content
+     * save there and an editor who never touched the menu must not acquire a
+     * draft. Here the editor pressed "Save motion" about motion specifically,
+     * so the draft is what they asked for — and `"none"` beside a published
+     * `"none"` is still a real, publishable "leave this section still".
+     */
+    const result = await updateSectionGuarded(sectionId, expected, {
+      draftAnimation: motion,
+      updatedBy: session.user.id,
+    });
+
+    if (!result.ok) {
+      if (result.reason === "missing") {
+        return { ok: false, reason: "missing", message: MESSAGES.missing };
+      }
+      const fresh = await ownedSection(sectionId, pageId);
+      if (!fresh.ok) return fresh;
+      return {
+        ok: false,
+        reason: "conflict",
+        message: MESSAGES.conflict,
+        section: toData(fresh.row, fresh.block),
+      };
+    }
+
+    await logActivity(session, {
+      action: "section.motion_draft_saved",
+      entityType: "section",
+      entityId: sectionId,
+      summary: `Saved a motion draft for the ${found.block.name} section`,
+    });
+
+    const [page] = await db
+      .select({ slug: pages.slug })
+      .from(pages)
+      .where(eq(pages.id, found.row.pageId))
+      .limit(1);
+    if (page) revalidatePath(`/admin/pages/${page.slug}`);
+    revalidatePath("/admin/pages");
+
+    return { ok: true, revision: result.revision, motion };
+  } catch (error) {
+    if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };
+    console.error("[visual-editor:motion]", error);
     return { ok: false, reason: "invalid", message: "Something went wrong. The change was not saved." };
   }
 }

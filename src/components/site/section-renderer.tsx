@@ -11,9 +11,11 @@ import {
 import { getMediaMap } from "@/lib/queries/site";
 import type { RenderedSection } from "@/lib/queries/content";
 import { getSettings, whatsappLink } from "@/lib/settings";
+import { motionOf } from "@/lib/cms/motion";
 import { blockNode } from "@/lib/cms/node";
 import type { EditorRender } from "@/lib/visual-editor/render";
 
+import { SectionMotion, type SectionWrapperAttrs } from "./section-motion";
 import { ContactDetailsBlock } from "./blocks/contact-details";
 import type { BlockContext, BlockProps } from "./blocks/context";
 import { DestinationFeatureBlock } from "./blocks/destination-feature";
@@ -134,31 +136,53 @@ export async function SectionRenderer({
         // address, whether or not anybody is editing.
         const node = blockNode({ editor, styles: section.styles });
 
-        return (
-          <div
-            key={section.id}
-            data-section={section.blockType}
-            data-draft={section.isDraft || undefined}
-            {...node(undefined, "section")}
-            // Layers is built from what actually rendered, so the facts it
-            // needs travel with the element rather than being asked of the
-            // database a second time and risking a different answer.
-            {...(editorMode
-              ? {
-                  "data-eod-draft": String(section.isDraft),
-                  "data-eod-draft-only": String(section.isDraftOnly),
-                  "data-eod-visible": String(section.visible),
-                }
-              : {})}
-          >
-            <Renderer
-              values={section.values}
-              ctx={context}
-              index={index}
-              editor={editor}
-              styles={section.styles}
-            />
+        const attrs: SectionWrapperAttrs = {
+          "data-section": section.blockType,
+          ...(section.isDraft ? { "data-draft": true as const } : {}),
+          ...node(undefined, "section"),
+          // Layers is built from what actually rendered, so the facts it
+          // needs travel with the element rather than being asked of the
+          // database a second time and risking a different answer.
+          ...(editorMode
+            ? {
+                "data-eod-draft": String(section.isDraft),
+                "data-eod-draft-only": String(section.isDraftOnly),
+                "data-eod-visible": String(section.visible),
+              }
+            : {}),
+        };
+
+        const body = (
+          <Renderer
+            values={section.values}
+            ctx={context}
+            index={index}
+            editor={editor}
+            styles={section.styles}
+          />
+        );
+
+        /**
+         * The entrance the editor chose, on the wrapper that already exists.
+         *
+         * `composition` has already decided which value this is — published on
+         * the live site, the motion draft in preview — so there is nothing to
+         * choose here beyond whether the wrapper needs a lifecycle at all.
+         * "No entrance animation" gets the plain element: no class, no
+         * observer, no client component, and markup identical to what this
+         * renderer produced before motion existed. That is what makes `none` a
+         * real answer rather than an animation that happens to end where it
+         * began.
+         */
+        const motion = motionOf(section.animation);
+        return motion === "none" ? (
+          <div key={section.id} {...attrs}>
+            {body}
           </div>
+        ) : (
+          <SectionMotion key={section.id} motion={motion} attrs={attrs}>
+            {body}
+          </SectionMotion>
         );
       })}
     </>

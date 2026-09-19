@@ -1,5 +1,6 @@
 import type { PageStructure } from "@/lib/cms/structure";
 import { parseNodePath } from "@/lib/cms/address";
+import type { MotionPreset } from "@/lib/cms/motion";
 import type { StyleDocument } from "@/lib/cms/styles";
 
 /**
@@ -34,6 +35,17 @@ export type VisualSectionData = {
    * silently keep the overrides the editor just cleared.
    */
   hasStyleDraft: boolean;
+  /**
+   * A motion draft is on file — `draft_animation IS NOT NULL`.
+   *
+   * The same null-versus-value distinction as the styles above, and the same
+   * consequence if it were got wrong. `"none"` is a preset: it means
+   * "publishing me removes this section's entrance", and it is stored. `null`
+   * means there is nothing pending. Testing the preset for emptiness would
+   * make turning an animation *off* indistinguishable from never having
+   * touched it, and publishing would leave the animation running.
+   */
+  hasMotionDraft: boolean;
   isDraftOnly: boolean;
   /**
    * Draft values if there are any, otherwise the published ones — completed
@@ -43,6 +55,12 @@ export type VisualSectionData = {
   values: Record<string, unknown>;
   /** The style draft if there is one, otherwise the published document. */
   styles: StyleDocument;
+  /**
+   * The entrance the panel should show: the motion draft if there is one,
+   * otherwise the published preset. Normalised to one of the five on the way
+   * out, so the chooser never has to render an option that does not exist.
+   */
+  motion: MotionPreset;
 };
 
 /**
@@ -83,6 +101,19 @@ export type VisualContentSaveResult =
  */
 export type VisualStyleSaveResult =
   | { ok: true; revision: number; styles: StyleDocument }
+  | { ok: false; reason: "conflict"; message: string; section: VisualSectionData }
+  | { ok: false; reason: VisualLoadFailure | "invalid"; message: string };
+
+/**
+ * The answer to a motion-draft save.
+ *
+ * Narrow, like the style result and for the same reason: a motion save owns
+ * `draft_animation` and the revision and says nothing about content or styles.
+ * Returning a whole section document would invite the panel to adopt values
+ * and overrides it did not write, over the top of edits nobody has saved.
+ */
+export type VisualMotionSaveResult =
+  | { ok: true; revision: number; motion: MotionPreset }
   | { ok: false; reason: "conflict"; message: string; section: VisualSectionData }
   | { ok: false; reason: VisualLoadFailure | "invalid"; message: string };
 

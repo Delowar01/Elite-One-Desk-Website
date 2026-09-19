@@ -8,6 +8,7 @@ import { pageSections, pages } from "@/lib/db/schema";
 
 import { blocksForPage, getBlock, type BlockDef } from "./blocks";
 import { withFreshItemIds, remapStyleItemIds } from "./duplicate";
+import { motionOf } from "./motion";
 import { validateStyleDocument } from "./styles";
 import {
   DRAFT_STRUCTURE_VERSION,
@@ -464,10 +465,18 @@ export async function duplicateStructureSection(
         draft: copiedValues,
         styles: copiedStyles,
         draftStyles: copiedStyles,
-        // Only what the current renderer already reads, so the copy previews
-        // the way the original does. Motion editing is a later batch and
-        // `draft_animation` stays where it is.
-        animation: source.animation,
+        /**
+         * The entrance the original *previews* with, as this row's published
+         * preset — which is how every other domain is copied here: the copy's
+         * published and draft columns both hold what the original was showing,
+         * so the copy previews the way the original does and has nothing
+         * pending of its own to publish separately.
+         *
+         * So `draft_animation` is deliberately left null rather than copied. A
+         * motion draft is a pending *change*, and a brand-new section has not
+         * changed from anything.
+         */
+        animation: motionOf(source.draftAnimation ?? source.animation),
       })
       .returning({ id: pageSections.id });
     created = row!.id;

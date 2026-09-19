@@ -903,44 +903,51 @@ describe("the backfill adds an id and changes nothing else", () => {
 
 /* -------------------------------------------------------------------------- */
 
-describe("the entrance-animation control is still dead, and deliberately so", () => {
+describe("the entrance preset is connected, and the draft leak that blocked it is closed", () => {
   const read = (file: string) => readFileSync(path.join(REPO_ROOT, file), "utf8");
 
-  test("the renderer never mentions it, so no block can receive it", () => {
-    // This asserts a DEFECT, not a behaviour. `page_sections.animation` is
-    // stored, edited in the Pages panel and read into `RenderedSection`, and
-    // then dropped: every block hard-codes its own `<Reveal variant>`.
-    //
-    // It is left alone on purpose. `saveSectionDraft` writes `animation`
-    // outside the draft document — on the same guarded write that stores the
-    // draft, see below — so wiring the value through today would make saving a
-    // *draft* change the live page, which is the one thing a draft must not do.
-    // Motion is Batch 9's, together with a draft column for it.
-    //
-    // If this test fails because the renderer now uses the value, that is not a
-    // test to update: it is the draft leak, and it needs the draft column first.
+  /**
+   * These four used to assert a DEFECT: `page_sections.animation` was stored,
+   * edited in the Pages panel, read as far as `RenderedSection` and then
+   * dropped, because wiring it through while `saveSectionDraft` wrote the
+   * published column would have made saving a *draft* change the live page.
+   *
+   * Batch 9 fixed the cause first and the symptom second, and these assert
+   * that order: the draft column is where a draft save goes, and only then
+   * does the renderer read the value.
+   */
+  test("the renderer reads the preset and puts it on the section's own wrapper", () => {
     const renderer = read("src/components/site/section-renderer.tsx");
-    assert.ok(!/\banimation\b/i.test(renderer), "the renderer now reads animation");
+    // Through the one validator, never the raw column.
+    assert.match(renderer, /motionOf\(section\.animation\)/);
+    // And onto the element that already exists, rather than a new one around
+    // it: a wrapper added here would move every `root` address, every stored
+    // root override and every rectangle the editor bridge measures.
+    assert.match(renderer, /<SectionMotion key=\{section\.id\} motion=\{motion\} attrs=\{attrs\}>/);
+    assert.match(renderer, /motion === "none" \? \(/);
   });
 
-  test("no block component takes it either", () => {
+  test("no block component takes it — the entrance is the section's, not a block's", () => {
     assert.ok(!/\banimation\b/i.test(read("src/components/site/blocks/context.ts")));
   });
 
-  test("it is still carried as far as the renderer's door", () => {
-    assert.match(read("src/lib/queries/content.ts"), /animation: string;/);
+  test("it is carried as a preset rather than as a string", () => {
+    assert.match(read("src/lib/queries/content.ts"), /animation: MotionPreset;/);
   });
 
-  test("a draft save still writes it live — the reason the defect stays", () => {
+  test("a draft save writes the draft column and never the live one", () => {
     const actions = read("src/app/(backoffice)/admin/(shell)/pages/actions.ts");
-    // The one write the section editor makes, read out of the source: the draft
-    // goes in it, and so does `animation`, which is a published column. Saving a
-    // draft therefore changes a value the live site would render, if anything
-    // rendered it — which is the whole reason the control stays disconnected.
+    // The one write the section editor makes, read out of the source. The
+    // draft path may name `draftAnimation`; the published `animation` column
+    // belongs to the publish branch and to nothing else on this screen.
     const body = actions.slice(actions.indexOf("async function writeSectionValues"));
     const write = body.slice(body.indexOf("updateSectionGuarded("), body.indexOf("if (!result.ok)"));
     assert.ok(write.length > 0, "the section editor no longer makes one guarded write");
     assert.match(write, /draft: values/);
-    assert.match(write, /\banimation\b/);
+    assert.match(write, /draftAnimation: motion === live \? null : motion/);
+    // `animation:` appears once, inside the publish branch, and the publish
+    // branch is the one that also clears the draft.
+    assert.match(write, /published: values, draft: null, animation: motion, draftAnimation: null/);
+    assert.equal((write.match(/(?<!draft)[Aa]nimation: motion\b/g) ?? []).length, 1);
   });
 });
