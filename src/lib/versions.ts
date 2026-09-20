@@ -4,6 +4,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 
 import { getBlock } from "@/lib/cms/blocks";
 import {
+  readPageSnapshot,
   snapshotFromSections,
   validatePageSnapshot,
   type PageSnapshot,
@@ -16,15 +17,26 @@ import {
 import { planRestoreFrom, type RestorePlan } from "@/lib/cms/restore";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
+import { KEEP_PAGE_VERSIONS } from "@/lib/visual-editor/publish";
+import type { Executor } from "@/lib/db/revision";
 import { pageSections, pageVersions, pages } from "@/lib/db/schema";
 
 /**
  * Page versions: capture, and put back.
  *
- * Nothing in the admin calls any of this yet. Publishing is unchanged — it does
- * not write a version row — because starting to snapshot now would be a visible
- * behaviour change in a batch whose whole point is that nothing changes.
- * Batch 10 wires it up.
+ * A version row is a **pre-publish restore point**: the page's published
+ * composition as it stood immediately *before* a successful live publication.
+ * That is the shape Undo wants. The live page is already on screen and needs no
+ * row of its own; what an editor reaches for after publishing something wrong
+ * is the state they just left, and the newest history row is exactly that.
+ * Labelling one of these "after publishing" would be the same row under a name
+ * that sends people to the wrong entry.
+ *
+ * Every helper here takes an executor, because a restore point that is not
+ * written in the same transaction as the publication it describes is worse than
+ * none: a publication that rolls back would leave a history entry for something
+ * that never happened, and one that succeeded after a failed insert would leave
+ * a live state nobody can get back from.
  *
  * The rule the restore side is built around: **a restore must not be live.**
  * It writes drafts, draft styles, draft motion and the page's draft structure,
@@ -71,8 +83,8 @@ import { pageSections, pageVersions, pages } from "@/lib/db/schema";
  * The two look identical at `isPublished = false`, which is exactly why the
  * distinction is a column rather than an inference.
  */
-export async function capturePageSnapshot(pageId: number): Promise<PageSnapshot> {
-  const rows = await db
+export async function capturePageSnapshotIn(on: Executor, pageId: number): Promise<PageSnapshot> {
+  const rows = await on
     .select({
       id: pageSections.id,
       blockType: pageSections.blockType,
@@ -88,14 +100,34 @@ export async function capturePageSnapshot(pageId: number): Promise<PageSnapshot>
   return snapshotFromSections(rows);
 }
 
-export async function savePageVersion(input: {
+/** The same, on the pool, for a caller that is not inside a transaction. */
+export const capturePageSnapshot = (pageId: number): Promise<PageSnapshot> =>
+  capturePageSnapshotIn(db, pageId);
+
+/**
+ * How many restore points a page keeps.
+ *
+ * Bounded because each row carries a full composition, so an unbounded history
+ * is an unbounded database — and because nobody reaches past the last few. The
+ * prune runs in the same transaction as the insert, so a publication that rolls
+ * back changes neither the history nor the ceiling.
+ *
+ * Declared in `lib/visual-editor/publish` and re-exported here: the panel that
+ * says "the last 30 published states are kept" is a client component and cannot
+ * import this module to find the number out.
+ */
+export { KEEP_PAGE_VERSIONS } from "@/lib/visual-editor/publish";
+
+export type VersionInput = {
   pageId: number;
   label?: string;
   userId?: number | null;
   actorName?: string;
-}): Promise<number> {
-  const snapshot = await capturePageSnapshot(input.pageId);
-  const [row] = await db
+};
+
+export async function savePageVersionIn(on: Executor, input: VersionInput): Promise<number> {
+  const snapshot = await capturePageSnapshotIn(on, input.pageId);
+  const [row] = await on
     .insert(pageVersions)
     .values({
       pageId: input.pageId,
@@ -106,6 +138,25 @@ export async function savePageVersion(input: {
     })
     .returning({ id: pageVersions.id });
   return row!.id;
+}
+
+export const savePageVersion = (input: VersionInput): Promise<number> =>
+  savePageVersionIn(db, input);
+
+/**
+ * One restore point, written and pruned together.
+ *
+ * The pair every publication path calls, so "publishing writes history" has one
+ * implementation and the retention cannot be observed at a different ceiling
+ * depending on which button was pressed.
+ */
+export async function recordRestorePointIn(
+  on: Executor,
+  input: VersionInput,
+): Promise<{ versionId: number; pruned: number }> {
+  const versionId = await savePageVersionIn(on, input);
+  const pruned = await prunePageVersionsIn(on, input.pageId, KEEP_PAGE_VERSIONS);
+  return { versionId, pruned };
 }
 
 export async function listPageVersions(pageId: number, limit = 20) {
@@ -149,22 +200,58 @@ export async function readPageVersionRecord(versionId: number): Promise<PageVers
 }
 
 /**
+ * The same row, read the way a **restore** has to read it.
+ *
+ * `validatePageSnapshot` rebuilds anything into a valid document, and for a
+ * history *list* that is right. For a restore it is not: the document an
+ * unreadable snapshot rebuilds into is a page with no sections, and restoring
+ * that stages the removal of everything on the page. `readPageSnapshot`
+ * refuses instead, and a genuinely empty historical page still restores,
+ * because emptiness is not what it tests.
+ */
+export type StrictVersionRead =
+  | { ok: true; record: PageVersionRecord }
+  | { ok: false; reason: "missing" | "unsupported" };
+
+export async function readPageVersionStrict(versionId: number): Promise<StrictVersionRead> {
+  if (!Number.isInteger(versionId) || versionId <= 0) return { ok: false, reason: "missing" };
+  const [row] = await db
+    .select({ id: pageVersions.id, pageId: pageVersions.pageId, snapshot: pageVersions.snapshot })
+    .from(pageVersions)
+    .where(eq(pageVersions.id, versionId))
+    .limit(1);
+  if (!row) return { ok: false, reason: "missing" };
+  const read = readPageSnapshot(row.snapshot);
+  if (!read.ok) return { ok: false, reason: "unsupported" };
+  return { ok: true, record: { versionId: row.id, pageId: row.pageId, snapshot: read.snapshot } };
+}
+
+/**
  * Keeps the history bounded. Called by whoever writes a version, so the ceiling
  * holds whether or not anybody opens the screen that lists them.
  */
-export async function prunePageVersions(pageId: number, keep: number): Promise<number> {
-  const rows = await db
+export async function prunePageVersionsIn(
+  on: Executor,
+  pageId: number,
+  keep: number,
+): Promise<number> {
+  const rows = await on
     .select({ id: pageVersions.id })
     .from(pageVersions)
     .where(eq(pageVersions.pageId, pageId))
+    // Newest first, id as the tiebreaker: two rows written inside one clock
+    // tick are indistinguishable by time, and a history whose order depends on
+    // timestamp resolution would prune a different row on a faster machine.
     .orderBy(desc(pageVersions.createdAt), desc(pageVersions.id));
 
   const doomed = rows.slice(Math.max(0, keep));
-  for (const row of doomed) {
-    await db.delete(pageVersions).where(eq(pageVersions.id, row.id));
-  }
+  if (!doomed.length) return 0;
+  await on.delete(pageVersions).where(inArray(pageVersions.id, doomed.map((row) => row.id)));
   return doomed.length;
 }
+
+export const prunePageVersions = (pageId: number, keep: number): Promise<number> =>
+  prunePageVersionsIn(db, pageId, keep);
 
 /* -------------------------------------------------------------------------- */
 /* Restore — planned, then applied, and never live                             */
@@ -256,7 +343,8 @@ class UnownedSections extends Error {
   }
 }
 
-export async function applyRestorePlan(
+export async function applyRestorePlanIn(
+  tx: Executor,
   plan: RestorePlan,
   actor: RestoreActor = {},
 ): Promise<RestoreApplied> {
@@ -264,8 +352,8 @@ export async function applyRestorePlan(
   const updated: number[] = [];
   const updatedBy = actor.userId ?? null;
 
-  try {
-    await db.transaction(async (tx) => {
+  {
+    {
       // Every existing section the plan mentions, from both places it can be
       // mentioned. `order` matters as much as `drafts`: it is what becomes the
       // page's draft structure.
@@ -362,15 +450,32 @@ export async function applyRestorePlan(
           updatedAt: new Date(),
         })
         .where(eq(pages.id, plan.pageId));
-    });
+    }
+  }
+
+  return { ok: true, recreated, updated };
+}
+
+/**
+ * The same, in a transaction of its own.
+ *
+ * Kept for callers that restore a plan they built themselves. The version
+ * restore below opens its own transaction instead, because the check it has to
+ * make — that the page has no saved drafts — is only worth anything if nothing
+ * can write one between the check and the restore.
+ */
+export async function applyRestorePlan(
+  plan: RestorePlan,
+  actor: RestoreActor = {},
+): Promise<RestoreApplied> {
+  try {
+    return await db.transaction(async (tx) => applyRestorePlanIn(tx, plan, actor));
   } catch (error) {
     if (error instanceof UnownedSections) {
       return { ok: false, reason: "unowned_sections", sectionIds: error.sectionIds };
     }
     throw error;
   }
-
-  return { ok: true, recreated, updated };
 }
 
 /**
@@ -381,30 +486,110 @@ export async function applyRestorePlan(
  * target — the stored id decides that — it is there so a caller that thinks it
  * knows which page it is restoring finds out when it is wrong, rather than
  * pouring one page's history into another.
+ *
+ * Two things this batch added, and both are about what the restore is allowed
+ * to land on top of.
+ *
+ * **The snapshot is read strictly.** A history row this build cannot parse is
+ * refused rather than rebuilt into an empty page, because restoring an empty
+ * page stages the removal of every section on it.
+ *
+ * **The page must have nothing saved.** A restore writes into every draft
+ * column the page has, so applying one over existing saved work would replace
+ * it — possibly a colleague's, on a page they have open and have not published
+ * yet. Requiring a clean slate and saying so is the honest V1 answer; merging
+ * two sets of pending intentions is not something software should guess at.
+ *
+ * Both the check and the restore happen inside one transaction with the page
+ * row locked, so the answer cannot go stale between them: a colleague's save
+ * either lands before the lock, and the restore is refused, or after it, and it
+ * is refused by the revision the restore bumped.
  */
 export type RestoreOutcome =
   | { ok: true; pageId: number; plan: RestorePlan; recreated: number[]; updated: number[] }
-  | { ok: false; reason: "missing" | "wrong_page" | "unowned_sections" };
+  | {
+      ok: false;
+      reason: "missing" | "wrong_page" | "unowned_sections" | "unsupported" | "not_clean";
+    };
+
+/** Thrown inside the restore transaction so the abort rolls it back. */
+class RestoreStopped extends Error {
+  constructor(readonly reason: "not_clean" | "unowned_sections") {
+    super(reason);
+    this.name = "RestoreStopped";
+  }
+}
 
 export async function restoreVersionToDraft(
   versionId: number,
   expectedPageId: number,
   actor: RestoreActor = {},
 ): Promise<RestoreOutcome> {
-  const record = await readPageVersionRecord(versionId);
-  if (!record) return { ok: false, reason: "missing" };
+  const read = await readPageVersionStrict(versionId);
+  if (!read.ok) return { ok: false, reason: read.reason };
+  const record = read.record;
   if (record.pageId !== expectedPageId) return { ok: false, reason: "wrong_page" };
 
-  const plan = await planRestore(record.pageId, record.snapshot);
-  const result = await applyRestorePlan(plan, actor);
-  // A section deleted between planning and applying lands here, which is the
-  // right answer: re-plan against what the page is now.
-  if (!result.ok) return { ok: false, reason: result.reason };
+  let outcome: { plan: RestorePlan; recreated: number[]; updated: number[] } | null = null;
+
+  try {
+    await db.transaction(async (tx) => {
+      const [page] = await tx
+        .select({ id: pages.id, draftStructure: pages.draftStructure })
+        .from(pages)
+        .where(eq(pages.id, record.pageId))
+        .limit(1)
+        .for("update");
+      if (!page) throw new RestoreStopped("not_clean");
+
+      const rows = await tx
+        .select({
+          id: pageSections.id,
+          blockType: pageSections.blockType,
+          draft: pageSections.draft,
+          draftStyles: pageSections.draftStyles,
+          draftAnimation: pageSections.draftAnimation,
+          isDraftOnly: pageSections.isDraftOnly,
+        })
+        .from(pageSections)
+        .where(eq(pageSections.pageId, record.pageId))
+        .orderBy(asc(pageSections.position), asc(pageSections.id));
+
+      const dirty =
+        page.draftStructure !== null ||
+        rows.some(
+          (row) =>
+            row.isDraftOnly ||
+            row.draft !== null ||
+            row.draftStyles !== null ||
+            row.draftAnimation !== null,
+        );
+      if (dirty) throw new RestoreStopped("not_clean");
+
+      // Planned against the rows this transaction read, under the lock, so the
+      // plan cannot name a section that has since gone.
+      const plan = planRestoreFrom(
+        record.pageId,
+        record.snapshot,
+        rows.map((row) => ({ id: row.id, blockType: row.blockType })),
+      );
+      const applied = await applyRestorePlanIn(tx, plan, actor);
+      if (!applied.ok) throw new RestoreStopped("unowned_sections");
+      outcome = { plan, recreated: applied.recreated, updated: applied.updated };
+    });
+  } catch (error) {
+    if (error instanceof RestoreStopped) return { ok: false, reason: error.reason };
+    if (error instanceof UnownedSections) return { ok: false, reason: "unowned_sections" };
+    throw error;
+  }
+
+  const done = outcome as { plan: RestorePlan; recreated: number[]; updated: number[] } | null;
+  if (!done) return { ok: false, reason: "not_clean" };
   return {
     ok: true,
     pageId: record.pageId,
-    plan,
-    recreated: result.recreated,
-    updated: result.updated,
+    plan: done.plan,
+    recreated: done.recreated,
+    updated: done.updated,
   };
 }

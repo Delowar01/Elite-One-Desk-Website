@@ -135,3 +135,50 @@ export function snapshotFromSections(
     })),
   };
 }
+
+/**
+ * The strict reading, for restoring rather than for describing.
+ *
+ * `validatePageSnapshot` above rebuilds whatever it is handed into a valid
+ * document, and for a *reader* that is right: a history row nobody can parse
+ * should still draw a list entry rather than crash a screen. For a **restore**
+ * it is dangerous, because the shape it rebuilds an unreadable snapshot into is
+ * `{ v: 1, sections: [] }` — a page with no sections. Restoring that would
+ * stage the removal of every section on the page, and publishing the restore
+ * would carry it out, all from a column that could not be read.
+ *
+ * A genuinely empty V1 snapshot is a real historical state: a page that had no
+ * sections. It has to stay restorable. So emptiness cannot be the test, and
+ * this answers the other question instead — is this a document this build
+ * wrote? A future version, a missing array, a malformed entry and a block type
+ * the registry has forgotten are all "not restorable by this build", and they
+ * are refused by name rather than flattened into an empty page.
+ */
+export type SnapshotRead =
+  | { ok: true; snapshot: PageSnapshot }
+  | { ok: false; reason: "unsupported" };
+
+const UNSUPPORTED: SnapshotRead = { ok: false, reason: "unsupported" };
+
+export function readPageSnapshot(input: unknown): SnapshotRead {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return UNSUPPORTED;
+  const source = input as Record<string, unknown>;
+  const version = source.v;
+  if (typeof version !== "number" || !Number.isInteger(version)) return UNSUPPORTED;
+  if (version < 1 || version > PAGE_SNAPSHOT_VERSION) return UNSUPPORTED;
+  if (!Array.isArray(source.sections)) return UNSUPPORTED;
+
+  for (const entry of source.sections) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return UNSUPPORTED;
+    const row = entry as Record<string, unknown>;
+    if (typeof row.blockType !== "string" || !row.blockType) return UNSUPPORTED;
+    // A type the registry has forgotten cannot be rendered or edited, and
+    // `validatePageSnapshot` drops it — which would silently restore a page
+    // *without* that section. Refusing says so instead.
+    if (!getBlock(row.blockType)) return UNSUPPORTED;
+    if (typeof row.visible !== "boolean") return UNSUPPORTED;
+  }
+
+  // Shape accepted; the values still go through the same sanitiser a save does.
+  return { ok: true, snapshot: validatePageSnapshot(source) };
+}

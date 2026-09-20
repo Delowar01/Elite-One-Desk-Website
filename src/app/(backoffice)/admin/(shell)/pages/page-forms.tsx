@@ -1,8 +1,7 @@
 "use client";
 
 import { AdminForm, ConfirmSubmit, Field, SubmitButton } from "@/components/admin/form";
-import { Icon } from "@/components/ui/icon";
-import { createPage, deletePage, publishAllDrafts, updatePage } from "./actions";
+import { createPage, deletePage, updatePage } from "./actions";
 
 export function NewPageForm({ csrf }: { csrf: string }) {
   return (
@@ -92,23 +91,6 @@ export function DeletePageForm({ csrf, id, title }: { csrf: string; id: number; 
       </p>
       <ConfirmSubmit message={`Delete “${title}” and all of its sections? This cannot be undone.`}>
         Delete page
-      </ConfirmSubmit>
-    </AdminForm>
-  );
-}
-
-export function PublishAllButton({ csrf, pageId, count }: { csrf: string; pageId: number; count: number }) {
-  if (!count) return null;
-  return (
-    <AdminForm action={publishAllDrafts} guardUnsaved={false} className="inline">
-      <input type="hidden" name="_csrf" value={csrf} />
-      <input type="hidden" name="pageId" value={pageId} />
-      <ConfirmSubmit
-        variant="primary"
-        message={`Publish ${count} draft section${count === 1 ? "" : "s"} to the live site?`}
-      >
-        <Icon name="check" size={14} />
-        Publish {count} draft{count === 1 ? "" : "s"}
       </ConfirmSubmit>
     </AdminForm>
   );

@@ -869,7 +869,7 @@ describe("publishing a whole page is all or nothing", () => {
 
     const url = "/admin/pages/terms";
     const page = await get(server.origin, url, { cookie: owner.cookie });
-    const form = formWith(page.html, 'name="pageId"', ">Publish");
+    const form = formWith(page.html, 'name="pageId"', "Publish saved changes");
     const refused = await submitForm(server.origin, url, form, owner.cookie);
     assert.match(refused.html, /Nothing was published/i);
 
@@ -883,7 +883,7 @@ describe("publishing a whole page is all or nothing", () => {
     const published = await submitForm(
       server.origin,
       url,
-      formWith(again.html, 'name="pageId"', ">Publish"),
+      formWith(again.html, 'name="pageId"', "Publish saved changes"),
       owner.cookie,
     );
     assert.ok(published.status < 400);

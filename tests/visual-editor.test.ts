@@ -94,7 +94,15 @@ describe("the editor route is behind the ordinary admin wall", () => {
     // Content editing arrived in Batch 5, but it belongs to a selected node:
     // with nothing selected the inspector says so and offers nothing.
     assert.match(page.html, /Select something on the canvas/);
-    assert.ok(!/>\s*(Save draft|Publish)\s*</.test(page.html), "a save control appeared unselected");
+    assert.ok(!/>\s*Save now\s*</.test(page.html), "a save control appeared unselected");
+    /**
+     * The page-level Publish button is a different thing and is deliberately
+     * always there: publishing, discarding and history act on the page, not on
+     * whatever happens to be selected. Asserted rather than merely allowed,
+     * because an editor with nothing selected is exactly the person most
+     * likely to be looking for it.
+     */
+    assert.match(page.html, /Publish<\/span>/);
   });
 
   test("an unknown page in the address falls back instead of crashing", async () => {

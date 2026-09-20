@@ -86,6 +86,35 @@ const idsIn = (structure: DraftStructure | null): number[] =>
   structure ? structure.sections.map((entry) => entry.sectionId) : [];
 
 /** The block types a rendered page shows, in document order. */
+/**
+ * The page-level publication, as an editor's screen calls it.
+ *
+ * Batch 10 replaced "Publish all drafts" — which published content and styles
+ * and silently left the layout behind — with one action that publishes
+ * everything a page has saved. The tests below were written against the old
+ * promise that it "never publishes structure"; that promise was the defect,
+ * and they now assert the structural publication instead.
+ */
+const publishSavedChanges = (
+  origin: string,
+  page: { id: number; slug: string; revision: number },
+  csrf: string,
+  cookie: string,
+) => {
+  const form = new FormData();
+  form.set("_csrf", csrf);
+  form.set("pageId", String(page.id));
+  form.set("expectedRevision", String(page.revision));
+  return callAction<ActionState>({
+    origin,
+    route: `/admin/pages/${page.slug}`,
+    file: PAGE_ACTIONS,
+    action: "publishPage",
+    args: [{ ok: false }, form],
+    cookie,
+  });
+};
+
 const orderOf = (html: string): string[] =>
   [...html.matchAll(/data-section="([^"]+)"/g)].map((match) => match[1]!);
 
@@ -1107,7 +1136,10 @@ describe("a pending section cannot be published on its own", () => {
     assert.ok(!screen.html.includes("Save and publish"), "a pending section offered Publish");
   });
 
-  test("Publish all leaves pending sections where they are", async () => {
+  test("Publishing the page's saved changes establishes a pending section", async () => {
+    // The old page-level button deliberately skipped pending sections, because
+    // it could not publish the layout that gave them a place. Batch 10's can,
+    // so a section added in the editor becomes an ordinary established one.
     const page = await reset("about");
     const established = (await sectionsOf(page.id))[0]!;
     await sql`update page_sections set draft = ${sql.json({ title: { en: "Ready", ar: "" } })}::jsonb
@@ -1116,32 +1148,27 @@ describe("a pending section cannot be published on its own", () => {
     assert.ok(added.ok);
     const pending = added.sectionId!;
 
-    const form = new FormData();
-    form.set("_csrf", owner.csrfToken);
-    form.set("pageId", String(page.id));
+    const current = await pageBySlug("about");
     const published = answered(
-      await callAction<ActionState>({
-        origin: server.origin,
-        route: "/admin/pages/about",
-        file: PAGE_ACTIONS,
-        action: "publishAllDrafts",
-        args: [{ ok: false }, form],
-        cookie: owner.cookie,
-      }),
+      await publishSavedChanges(server.origin, current, owner.csrfToken, owner.cookie),
     );
     assert.equal(published.ok, true, JSON.stringify(published));
-    assert.match(published.message ?? "", /Published 1 section/);
 
     // The established one went out…
     const now = (await sectionById(established.id))!;
     assert.equal(now.draft, null);
     assert.equal((now.published as { title: { en: string } }).title.en, "Ready");
-    // …and the pending one was not reported, published or emptied.
+
+    // …and so did the pending one, as one row rather than a copy.
     const row = (await sectionById(pending))!;
-    assert.equal(row.is_published, false);
-    assert.equal(row.is_draft_only, true);
-    assert.ok(row.draft, "Publish all consumed a pending section's draft");
-    assert.ok(await structureOf(page.id), "Publish all published the layout");
+    assert.equal(row.is_draft_only, false, "a published section is still pending");
+    assert.equal(row.is_published, true, "the layout said visible and it is not");
+    assert.equal(row.draft, null, "its draft was not promoted");
+    assert.equal(await structureOf(page.id), null, "the layout draft was not cleared");
+    assert.ok(
+      orderOf((await get(server.origin, "/about")).html).includes("stats"),
+      "the new section is not on the live page",
+    );
   });
 });
 
@@ -1491,7 +1518,7 @@ describe("publishing content does not publish a section", () => {
     assert.deepEqual(orderOf((await get(server.origin, "/terms")).html), live);
   });
 
-  test("Publish all promotes both and changes neither section's visibility", async () => {
+  test("Publishing the page promotes every draft and applies the layout's visibility", async () => {
     const page = await reset("disclaimer");
     const rows = await sectionsOf(page.id);
     const visible = rows[0]!;
@@ -1503,21 +1530,11 @@ describe("publishing content does not publish a section", () => {
                  where id = ${id}`;
     }
 
-    const form = new FormData();
-    form.set("_csrf", owner.csrfToken);
-    form.set("pageId", String(page.id));
+    const current = await pageBySlug("disclaimer");
     const published = answered(
-      await callAction<ActionState>({
-        origin: server.origin,
-        route: "/admin/pages/disclaimer",
-        file: PAGE_ACTIONS,
-        action: "publishAllDrafts",
-        args: [{ ok: false }, form],
-        cookie: owner.cookie,
-      }),
+      await publishSavedChanges(server.origin, current, owner.csrfToken, owner.cookie),
     );
     assert.equal(published.ok, true, JSON.stringify(published));
-    assert.match(published.message ?? "", /Published 2 sections/);
 
     const afterVisible = (await sectionById(visible.id))!;
     const afterHidden = (await sectionById(hidden.id))!;
@@ -1526,13 +1543,23 @@ describe("publishing content does not publish a section", () => {
     assert.equal((afterVisible.published as { title: { en: string } }).title.en, "Both ready");
     assert.equal((afterHidden.published as { title: { en: string } }).title.en, "Both ready");
 
-    // The one thing Publish all may never become is a structural publisher.
+    /**
+     * With no layout draft, the composition is the live one — so visibility is
+     * unchanged even though this action *can* change it. The rule that moved in
+     * Batch 10 is where visibility may be published from, not whether content
+     * publication may do it: it still may not.
+     */
     assert.equal(afterVisible.is_published, true, "a visible section stopped being visible");
-    assert.equal(afterHidden.is_published, false, "Publish all made a hidden section live");
-    assert.equal(await structureOf(page.id), null, "Publish all wrote a layout");
-    assert.equal((await pageBySlug("disclaimer")).revision, page.revision);
+    assert.equal(afterHidden.is_published, false, "a hidden section was made live");
+    assert.equal(await structureOf(page.id), null);
     assert.deepEqual(orderOf((await get(server.origin, "/disclaimer")).html), live);
+    // A page-level publication is a checkpoint, so the page's own revision moves.
+    assert.ok(
+      (await pageBySlug("disclaimer")).revision > current.revision,
+      "the page revision did not advance",
+    );
   });
+
 
   test("a visible section publishes exactly as it always did", async () => {
     const page = await reset("privacy");

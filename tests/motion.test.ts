@@ -541,21 +541,25 @@ describe("publishing refuses a stored draft it cannot read", () => {
     assert.match(body.slice(decide, write), /if \(!promoted\.ok\) return fail\(CONFLICT\.motionDraft\);/);
   });
 
-  test("Publish all decides for every section before the transaction opens", () => {
-    const body = actions.slice(actions.indexOf("export async function publishAllDrafts"));
-    const decide = body.indexOf("const promotions = drafts.map(");
-    const transaction = body.indexOf("await db.transaction(");
-    assert.ok(decide > 0 && transaction > decide, "the batch is validated inside the transaction");
-    assert.match(
-      body.slice(decide, transaction),
-      /if \(promotions\.some\(\(\{ promoted \}\) => !promoted\.ok\)\) return fail\(CONFLICT\.publishAllMotion\);/,
-    );
+  test("publishing a whole page validates every motion draft before it writes", () => {
+    // Batch 10 replaced the section-only "Publish all" with a complete page
+    // publication, so the strict gate moved with it — into the service, still
+    // ahead of the first write, and now ahead of the restore point too.
+    const service = read("src/lib/cms/publish-service.ts");
+    const body = service.slice(service.indexOf("export async function publishPageChanges"));
+    const validate = body.indexOf("const motion = readMotion(row.draftAnimation);");
+    const version = body.indexOf("await recordRestorePointIn(tx");
+    const write = body.indexOf("await updateSectionGuardedIn(tx");
+    assert.ok(validate > 0, "the page publisher no longer validates stored motion");
+    assert.ok(version > validate, "a restore point is taken before motion is checked");
+    assert.ok(write > version, "sections are promoted before the restore point");
+    assert.match(body.slice(validate, version), /if \(!motion\) throw new PublishStopped\("invalid_motion"\)/);
   });
 
   test("discarding never reads the value it is deleting", () => {
     const body = actions.slice(
       actions.indexOf("export async function discardDraft"),
-      actions.indexOf("export async function publishAllDrafts"),
+      actions.indexOf("/* ----", actions.indexOf("export async function discardDraft")),
     );
     assert.match(body, /draftAnimation: null/);
     assert.ok(!/readMotion|motionOf|promotion\(/.test(body), "discard validates what it is throwing away");

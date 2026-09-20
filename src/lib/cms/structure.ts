@@ -208,3 +208,94 @@ export const removedSections = (page: PageStructure): PageStructureSection[] => 
 /** What the structure intends for one section, or `null` when it omits it. */
 export const entryFor = (page: PageStructure, sectionId: number): DraftStructureEntry | null =>
   page.structure.sections.find((entry) => entry.sectionId === sectionId) ?? null;
+
+/* -------------------------------------------------------------------------- */
+/* What publication is allowed to act on                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The strict reading, for the one caller that turns this document into live
+ * rows.
+ *
+ * Everything above is deliberately tolerant, because everything above is for
+ * *rendering*: a damaged column must not blank a page an editor is working on,
+ * so `validateDraftStructure` rebuilds whatever it is handed and
+ * `readDraftStructure` falls back to the established order. Publication cannot
+ * afford either kindness. It deletes rows, rewrites `position` and decides
+ * `is_published`, and every tolerance above becomes a destructive guess at that
+ * moment:
+ *
+ *   · a dropped malformed entry reads as "remove this section";
+ *   · a de-duplicated repeat reads as "the second copy was never intended";
+ *   · a `visible` that is not a boolean normalises to `true`, which publishes a
+ *     section the editor may have hidden;
+ *   · an id belonging to another page, silently filtered, quietly changes what
+ *     the layout meant.
+ *
+ * So this refuses instead. A document that is not exactly what this build
+ * wrote is not a layout anybody intended, and the honest answer is to publish
+ * nothing and say the stored layout cannot be read.
+ *
+ * A genuinely empty list is **valid** and means "publish a page with no
+ * sections". That is the one case tolerance and strictness must not collapse
+ * together, because corrupt JSON also produces an empty list under the
+ * validator — and the difference between them is a page and no page.
+ */
+export type PublishableStructure =
+  | { ok: true; structure: DraftStructure }
+  | { ok: false; reason: "corrupt" };
+
+const CORRUPT: PublishableStructure = { ok: false, reason: "corrupt" };
+
+export function readPublishableStructure(
+  input: unknown,
+  pageSectionIds: readonly number[],
+): PublishableStructure {
+  if (input === null || input === undefined) return CORRUPT;
+  if (typeof input !== "object" || Array.isArray(input)) return CORRUPT;
+
+  const source = input as Record<string, unknown>;
+  const version = source.v;
+  if (typeof version !== "number" || !Number.isInteger(version)) return CORRUPT;
+  if (version < 1 || version > DRAFT_STRUCTURE_VERSION) return CORRUPT;
+  if (!Array.isArray(source.sections)) return CORRUPT;
+
+  const owned = new Set(pageSectionIds);
+  const seen = new Set<number>();
+  const sections: DraftStructureEntry[] = [];
+
+  for (const entry of source.sections) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return CORRUPT;
+    const row = entry as Record<string, unknown>;
+    const sectionId = row.sectionId;
+    if (!isSectionId(sectionId)) return CORRUPT;
+    if (seen.has(sectionId)) return CORRUPT;
+    // Not merely truthy, and not merely "not false": a layout entry whose
+    // visibility is a string or a number is a document this build did not
+    // write, and guessing at it decides whether a visitor sees a section.
+    if (typeof row.visible !== "boolean") return CORRUPT;
+    if (!owned.has(sectionId)) return CORRUPT;
+    seen.add(sectionId);
+    sections.push({ sectionId, visible: row.visible });
+  }
+
+  return { ok: true, structure: { v: DRAFT_STRUCTURE_VERSION, sections } };
+}
+
+/** The live composition of a page, in the same shape a layout draft has. */
+export const liveStructure = (
+  rows: readonly { id: number; isDraftOnly: boolean; isPublished: boolean }[],
+): DraftStructure => ({
+  v: DRAFT_STRUCTURE_VERSION,
+  sections: rows
+    .filter((row) => !row.isDraftOnly)
+    .map((row) => ({ sectionId: row.id, visible: row.isPublished })),
+});
+
+/** Whether publishing this document would change the page's composition. */
+export const structureDiffers = (a: DraftStructure, b: DraftStructure): boolean =>
+  a.sections.length !== b.sections.length ||
+  a.sections.some(
+    (entry, index) =>
+      entry.sectionId !== b.sections[index]!.sectionId || entry.visible !== b.sections[index]!.visible,
+  );

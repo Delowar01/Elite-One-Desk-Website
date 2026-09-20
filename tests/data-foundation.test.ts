@@ -951,9 +951,14 @@ describe("the entrance preset is connected, and the draft leak that blocked it i
     assert.match(decided, /animation: chosen, draftAnimation: null/);
     assert.equal((decided.match(/(?<!draft)[Aa]nimation: chosen\b/g) ?? []).length, 1);
 
-    const write = body.slice(body.indexOf("const result = await updateSectionGuarded("), body.indexOf("if (!result.ok)"));
+    const write = body.slice(body.indexOf("const written = {"), body.indexOf("if (!result.ok)"));
     assert.ok(write.length > 0, "the section editor no longer makes one guarded write");
     assert.match(write, /draft: values/);
+    // Publishing goes through the helper that takes the page's restore point in
+    // the same transaction; saving a draft does not, because a draft changes
+    // nothing a visitor can see and so is not a point anybody restores to.
+    assert.match(write, /publishSectionIn\(\{/);
+    assert.match(write, /updateSectionGuarded\(id, expected, \{ \.\.\.written/);
     // The guarded update names no motion column of its own — it spreads
     // whatever the decision above produced, which for a request that did not
     // mention motion is nothing.

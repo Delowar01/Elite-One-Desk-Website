@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
@@ -111,3 +111,59 @@ export const updatePageGuardedIn = (
   expectedRevision: number,
   values: Record<string, unknown>,
 ): Promise<GuardedUpdate> => guarded(on, pages, id, expectedRevision, values);
+
+/**
+ * Delete one section, only if it is still at the revision the caller read.
+ *
+ * Publishing a layout that removes a section deletes the row, and a delete is
+ * the one operation a stale guard cannot be forgiven for: an UPDATE that loses
+ * a race leaves the newer value in place, while a DELETE that loses one takes
+ * somebody's work with it and leaves nothing to compare against. So removal
+ * names a revision exactly as promotion does, and a row that moved underneath
+ * the publication rolls the whole transaction back rather than disappearing.
+ *
+ * There is no `revision` to return — the row is gone — so the answer is only
+ * whether it went. `missing` and `conflict` are still kept apart: a row already
+ * deleted by somebody else is not the same accident as one that was edited.
+ */
+export type GuardedDelete = { ok: true } | { ok: false; reason: "conflict" | "missing" };
+
+export async function deleteSectionGuardedIn(
+  on: Executor,
+  id: number,
+  expectedRevision: number,
+): Promise<GuardedDelete> {
+  const removed = await on
+    .delete(pageSections)
+    .where(and(eq(pageSections.id, id), eq(pageSections.revision, expectedRevision)))
+    .returning({ id: pageSections.id });
+  if (removed.length) return { ok: true };
+
+  const [row] = await on
+    .select({ id: pageSections.id })
+    .from(pageSections)
+    .where(eq(pageSections.id, id))
+    .limit(1);
+  return { ok: false, reason: row ? "conflict" : "missing" };
+}
+
+/**
+ * Delete several sections of one page, each against the revision that was read.
+ *
+ * Used where the rows being removed carry nothing worth keeping — a page-level
+ * discard throwing away the sections a layout draft invented. The page scope is
+ * belt to the id's braces: an id from another page simply does not match, and
+ * the count coming back short is what the caller checks.
+ */
+export async function deleteSectionsIn(
+  on: Executor,
+  pageId: number,
+  ids: readonly number[],
+): Promise<number> {
+  if (!ids.length) return 0;
+  const removed = await on
+    .delete(pageSections)
+    .where(and(eq(pageSections.pageId, pageId), inArray(pageSections.id, [...ids])))
+    .returning({ id: pageSections.id });
+  return removed.length;
+}

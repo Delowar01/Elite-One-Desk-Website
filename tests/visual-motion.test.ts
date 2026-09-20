@@ -868,7 +868,7 @@ describe("the page screen counts motion as a draft", () => {
     assert.match(screen.html, /Motion draft/);
   });
 
-  test("“Publish all drafts” picks up a section whose only draft is motion", async () => {
+  test("publishing the page picks up a section whose only draft is motion", async () => {
     // The filter used to be content-or-styles, so a motion-only section would
     // have been left behind by the button that claims to publish the page.
     const section = await setLive("terms", "page-hero", "fade-up");
@@ -877,12 +877,13 @@ describe("the page screen counts motion as a draft", () => {
     const form = new FormData();
     form.set("_csrf", owner.csrfToken);
     form.set("pageId", String(section.page_id));
+    form.set("expectedRevision", String(await pageRevision(section.page_id)));
     const published = answered(
       await callAction<{ ok: boolean; message?: string }>({
         origin: server.origin,
         route: "/admin/pages/terms",
         file: PAGE_ACTIONS,
-        action: "publishAllDrafts",
+        action: "publishPage",
         args: [{ ok: false }, form],
         cookie: owner.cookie,
       }),
@@ -936,28 +937,40 @@ describe("a section that only exists in a layout draft", () => {
     assert.equal(after.is_published, false);
   });
 
-  test("…and “Publish all drafts” still leaves it where it is", async () => {
-    // Content and layout are published by different acts. A pending section's
-    // entrance going live with the page's content would make a section a
-    // visitor cannot reach report itself as published.
+  test("…and publishing the page establishes it rather than leaving it pending", async () => {
+    /**
+     * The opposite of what the old page-level button did, and deliberately.
+     * "Publish all drafts" skipped pending sections because it could not
+     * publish the layout that gave them a place, so it reported a page as
+     * published while a section a visitor cannot reach was still waiting.
+     * Batch 10's publication takes the layout too, so a section added in the
+     * editor becomes an ordinary established one — the same row, promoted.
+     */
     const section = await pending("terms");
     answered(await saveMotion(section, "fade"));
 
     const form = new FormData();
     form.set("_csrf", owner.csrfToken);
     form.set("pageId", String(section.page_id));
-    await callAction<{ ok: boolean }>({
-      origin: server.origin,
-      route: "/admin/pages/terms",
-      file: PAGE_ACTIONS,
-      action: "publishAllDrafts",
-      args: [{ ok: false }, form],
-      cookie: owner.cookie,
-    });
+    form.set("expectedRevision", String(await pageRevision(section.page_id)));
+    const published = answered(
+      await callAction<{ ok: boolean; message?: string }>({
+        origin: server.origin,
+        route: "/admin/pages/terms",
+        file: PAGE_ACTIONS,
+        action: "publishPage",
+        args: [{ ok: false }, form],
+        cookie: owner.cookie,
+      }),
+    );
+    assert.equal(published.ok, true, JSON.stringify(published));
 
     const after = await row(section.id);
-    assert.equal(after.draft_animation, "fade", "a pending section's motion was published");
-    assert.equal(after.is_draft_only, true);
+    assert.equal(after.id, section.id, "the section was republished under a new id");
+    assert.equal(after.is_draft_only, false, "a published section is still pending");
+    assert.equal(after.animation, "fade", "its motion draft was not promoted");
+    assert.equal(after.draft_animation, null);
+    assert.equal(after.draft, null);
   });
 
   test("…and it previews with its own entrance", async () => {
@@ -1053,7 +1066,7 @@ describe("a stored motion draft nobody can read", () => {
     assert.equal(await logCount("section.published"), before, "a refused publish was logged as one");
   });
 
-  test("Publish all is refused atomically — a valid draft elsewhere on the page is left alone", async () => {
+  test("page publication is refused atomically — a valid draft elsewhere is left alone", async () => {
     const broken = await corrupt("disclaimer", "page-hero", "slide-in");
     const healthy = await setLive("disclaimer", "rich-text", "fade-up");
     answered(await saveMotion(healthy, "scale-in"));
@@ -1063,12 +1076,13 @@ describe("a stored motion draft nobody can read", () => {
     const form = new FormData();
     form.set("_csrf", owner.csrfToken);
     form.set("pageId", String(broken.page_id));
+    form.set("expectedRevision", String(await pageRevision(broken.page_id)));
     const refused = answered(
       await callAction<{ ok: boolean; message?: string }>({
         origin: server.origin,
         route: "/admin/pages/disclaimer",
         file: PAGE_ACTIONS,
-        action: "publishAllDrafts",
+        action: "publishPage",
         args: [{ ok: false }, form],
         cookie: owner.cookie,
       }),

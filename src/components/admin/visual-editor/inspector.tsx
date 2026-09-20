@@ -128,7 +128,7 @@ export function InspectorPanel({
   onValues: (values: Record<string, unknown>) => void;
   onStyles: (styles: StyleDocument) => void;
   onMotion: (motion: MotionPreset) => void;
-  onSave: (domain: EditDomain) => void;
+  onSave: () => void;
   onRevert: (domain: EditDomain) => void;
   onTakeLatest: () => void;
   onClear: () => void;
@@ -357,12 +357,25 @@ function Conflict({ message, onTakeLatest }: { message?: string; onTakeLatest: (
   );
 }
 
-const SAVE_LABEL: Record<EditDomain, { idle: string; busy: string; saved: string; unsaved: string }> = {
-  content: { idle: "Save draft", busy: "Saving…", saved: "Draft saved", unsaved: "Unsaved content" },
-  style: { idle: "Save styles", busy: "Saving…", saved: "Styles saved", unsaved: "Unsaved styles" },
-  motion: { idle: "Save motion", busy: "Saving…", saved: "Motion saved", unsaved: "Unsaved entrance" },
+const SAVE_LABEL: Record<EditDomain, { saved: string; unsaved: string }> = {
+  content: { saved: "Draft saved", unsaved: "Unsaved content" },
+  style: { saved: "Styles saved", unsaved: "Unsaved styles" },
+  motion: { saved: "Motion saved", unsaved: "Unsaved entrance" },
 };
 
+/**
+ * What a section is doing, and the one button that hurries it along.
+ *
+ * Saving is automatic now, so this stopped being the way drafts reach the
+ * server and became the way to stop waiting for the debounce. The button says
+ * "Save now" because that is what it does; calling it "Save" would imply that
+ * not pressing it leaves the work unsaved, which is the opposite of true.
+ *
+ * Every state is a word as well as a colour, and the words distinguish the two
+ * things it would be easy to conflate: **Unsaved** is this browser holding
+ * something nobody else can see, and **Draft saved** is the server holding it.
+ * An editor closing a tab needs to know which one they are looking at.
+ */
 function SaveBar({
   domain,
   buffer,
@@ -373,7 +386,7 @@ function SaveBar({
   domain: EditDomain;
   buffer: SectionBuffer;
   canManage: boolean;
-  onSave: (domain: EditDomain) => void;
+  onSave: () => void;
   onRevert: (domain: EditDomain) => void;
 }) {
   if (!canManage) return null;
@@ -403,11 +416,11 @@ function SaveBar({
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
-          onClick={() => onSave(domain)}
+          onClick={onSave}
           disabled={!dirty || blocked}
           className="admin-btn admin-btn-sm admin-btn-primary"
         >
-          {busy ? label.busy : label.idle}
+          {blocked ? "Saving…" : "Save now"}
         </button>
         {dirty && !blocked ? (
           <button type="button" onClick={() => onRevert(domain)} className="admin-btn admin-btn-sm">
@@ -416,14 +429,16 @@ function SaveBar({
         ) : null}
         <span className="text-[0.72rem] text-muted" aria-live="polite">
           {busy
-            ? ""
-            : dirty
-              ? label.unsaved
-              : showsStatus && buffer.status === "saved"
-                ? label.saved
-                : onFile[domain]
-                  ? "Draft on file"
-                  : "No changes"}
+            ? "Saving…"
+            : showsStatus && buffer.status === "error"
+              ? "Save failed"
+              : dirty
+                ? label.unsaved
+                : showsStatus && buffer.status === "saved"
+                  ? label.saved
+                  : onFile[domain]
+                    ? "Draft on file"
+                    : "No changes"}
         </span>
       </div>
       {showsStatus && buffer.status === "error" && buffer.message ? (

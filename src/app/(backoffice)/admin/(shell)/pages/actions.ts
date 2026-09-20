@@ -1,6 +1,6 @@
 "use server";
 
-import { and, eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 
@@ -17,6 +17,13 @@ import {
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
+import {
+  discardPageChanges,
+  getPageDraftSummary,
+  publishPageChanges,
+  restoreBlockers,
+  RESTORE_BLOCKED,
+} from "@/lib/cms/publish-service";
 import { hasDraft, draftKindOf } from "@/lib/cms/drafts";
 import { motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
 import {
@@ -37,6 +44,7 @@ import { parseBlockPayload } from "@/lib/cms/validate";
 import { db } from "@/lib/db";
 import { updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
+import { recordRestorePointIn, restoreVersionToDraft } from "@/lib/versions";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** Addresses the site owns; a custom page may not shadow one. */
@@ -132,13 +140,6 @@ function expectedRevisionOf(form: FormData): number | null {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
-/** Thrown inside the publish-all transaction so the whole batch rolls back. */
-class PublishRace extends Error {
-  constructor(readonly reason: "conflict" | "missing") {
-    super(reason);
-    this.name = "PublishRace";
-  }
-}
 
 const refreshPage = (slug: string) => {
   revalidate(TAGS.pages);
@@ -364,6 +365,56 @@ function promotion(row: typeof pageSections.$inferSelect): Promotion {
   return { ok: true, values };
 }
 
+/**
+ * One section published, with the page's restore point, in one transaction.
+ *
+ * History is *page* history, so every path that changes what a visitor sees
+ * writes one — publishing a single section included. Doing it inside the same
+ * transaction as the promotion is what keeps the two honest: a version row
+ * committed before a promotion that then failed would be a restore point for
+ * something that never happened, and a promotion that succeeded after a failed
+ * insert would be a live state with no way back.
+ *
+ * The snapshot is taken *before* the guarded update, so it records the page as
+ * it stood immediately before this publication — which is what an editor
+ * reaching for Undo wants, and what the label says.
+ */
+async function publishSectionIn(input: {
+  sectionId: number;
+  pageId: number;
+  expectedRevision: number;
+  values: Record<string, unknown>;
+  label: string;
+  userId: number;
+  actorName: string;
+}): Promise<{ ok: true; revision: number } | { ok: false; reason: "conflict" | "missing" }> {
+  return db.transaction(async (tx) => {
+    await recordRestorePointIn(tx, {
+      pageId: input.pageId,
+      label: input.label,
+      userId: input.userId,
+      actorName: input.actorName,
+    });
+    const result = await updateSectionGuardedIn(tx, input.sectionId, input.expectedRevision, {
+      ...input.values,
+      updatedBy: input.userId,
+    });
+    if (!result.ok) {
+      // Rolls the version row back with it: a refused publish leaves no trace.
+      tx.rollback();
+      throw new Error("unreachable");
+    }
+    return { ok: true as const, revision: result.revision };
+  }).catch(async () => {
+    const [row] = await db
+      .select({ id: pageSections.id })
+      .from(pageSections)
+      .where(eq(pageSections.id, input.sectionId))
+      .limit(1);
+    return { ok: false as const, reason: row ? ("conflict" as const) : ("missing" as const) };
+  });
+}
+
 async function pageOf(sectionId: number) {
   const [row] = await db
     .select({ slug: pages.slug, pageId: pages.id })
@@ -483,13 +534,25 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
         ? { animation: chosen, draftAnimation: null }
         : { draftAnimation: chosen === motionOf(section.animation) ? null : chosen };
 
-  const result = await updateSectionGuarded(id, expected, {
+  const written = {
     // Publishing content writes content. `is_published` is the live layout's
     // answer to a different question and is not this button's to change.
     ...(publish ? { published: values, draft: null } : { draft: values }),
     ...motion,
-    updatedBy: session.user.id,
-  });
+  };
+  // Publishing changes what a visitor sees, so it leaves a restore point;
+  // saving a draft changes nothing anybody can see, so it does not.
+  const result = publish
+    ? await publishSectionIn({
+        sectionId: id,
+        pageId: section.pageId,
+        expectedRevision: expected,
+        values: written,
+        label: `Before publishing the ${block.name} section`,
+        userId: session.user.id,
+        actorName: session.user.name,
+      })
+    : await updateSectionGuarded(id, expected, { ...written, updatedBy: session.user.id });
   if (!result.ok) {
     if (result.reason === "missing") return fail(CONFLICT.gone);
     return fail(publish ? CONFLICT.publish : CONFLICT.save);
@@ -559,14 +622,20 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
     if (!hasAnyDraft(section)) return fail("There is no draft to publish.");
 
     // Decided before anything is written, so a refusal costs nothing: no
-    // column moves, no revision moves, no draft is cleared and no activity is
-    // logged as a publish that did not happen.
+    // column moves, no revision moves, no draft is cleared, no restore point is
+    // taken and no activity is logged as a publish that did not happen.
     const promoted = promotion(section);
     if (!promoted.ok) return fail(CONFLICT.motionDraft);
 
-    const result = await updateSectionGuarded(id, expected, {
-      ...promoted.values,
-      updatedBy: session.user.id,
+    const block = getBlock(section.blockType);
+    const result = await publishSectionIn({
+      sectionId: id,
+      pageId: section.pageId,
+      expectedRevision: expected,
+      values: promoted.values,
+      label: `Before publishing the ${block?.name ?? section.blockType} section`,
+      userId: session.user.id,
+      actorName: session.user.name,
     });
     if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.publish);
 
@@ -624,76 +693,140 @@ export async function discardDraft(_prev: ActionState, form: FormData): Promise<
   });
 }
 
-export async function publishAllDrafts(_prev: ActionState, form: FormData): Promise<ActionState> {
-  return runAction("page-publish-all", async () => {
+/* -------------------------------------------------------------------------- */
+/* The page, published whole                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Publish everything this page has saved.
+ *
+ * This replaced "Publish all drafts", which published content and styles and
+ * silently left the layout behind — so a page could be reordered, a section
+ * added and another removed, the button pressed, and a visitor see none of it
+ * under a message saying the page had been published. Two meanings of "all" is
+ * one too many, so there is now one page-level action and it is the complete
+ * one, in `cms/publish-service`, shared with the Visual Editor.
+ *
+ * The individual section actions above are untouched: publishing one section's
+ * words is still a useful, smaller act, and it still does not publish layout.
+ */
+export async function publishPage(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("page-publish", async () => {
     const session = await guardAction("content.manage", form);
     const pageId = Number(form.get("pageId"));
+    const expected = expectedRevisionOf(form);
+    if (expected === null) return fail(CONFLICT.unreadable);
+
     const [page] = await db.select().from(pages).where(eq(pages.id, pageId)).limit(1);
     if (!page) return fail("That page no longer exists.");
 
-    /**
-     * Established sections only.
-     *
-     * A pending section always has a draft — it is created with one — so
-     * without this filter every Add would arm this button, and pressing it
-     * would report a section as published that a visitor cannot reach. Content
-     * and layout are published by different acts; this one is content's.
-     */
-    const drafts = await db
-      .select()
-      .from(pageSections)
-      .where(
-        and(
-          eq(pageSections.pageId, pageId),
-          eq(pageSections.isDraftOnly, false),
-          sql`(${pageSections.draft} is not null or ${pageSections.draftStyles} is not null or ${pageSections.draftAnimation} is not null)`,
-        ),
-      );
-    if (!drafts.length) return fail("There are no drafts waiting on this page.");
+    const result = await publishPageChanges({
+      pageId,
+      expectedRevision: expected,
+      userId: session.user.id,
+      actorName: session.user.name,
+    });
+    if (!result.ok) return fail(result.message);
 
-    /**
-     * Every section's promotion worked out before the transaction opens.
-     *
-     * One unreadable motion draft anywhere on the page stops the whole batch,
-     * and it stops it here rather than inside the transaction — a rollback
-     * would leave the same end state, but this way the database is never asked
-     * to do work that was always going to be undone, and there is no ordering
-     * in which some sections have already been written. Skipping the bad
-     * section instead would be the worst of the options: the button says it
-     * published the page, and one section would silently still be waiting.
-     */
-    const promotions = drafts.map((section) => ({ section, promoted: promotion(section) }));
-    if (promotions.some(({ promoted }) => !promoted.ok)) return fail(CONFLICT.publishAllMotion);
+    await logActivity(session, {
+      action: "page.changes_published",
+      entityType: "page",
+      entityId: pageId,
+      summary: `${result.summary} on “${page.titleEn}”`,
+    });
+    refreshPage(page.slug);
+    return ok(result.message);
+  });
+}
 
-    // All or nothing. Each section is published only against the revision this
-    // read saw, and one section moving underneath us rolls the whole batch back
-    // — a half-published page is worse than an unpublished one, because nobody
-    // can tell by looking which half went out.
-    try {
-      await db.transaction(async (tx) => {
-        for (const { section, promoted } of promotions) {
-          const result = await updateSectionGuardedIn(tx, section.id, section.revision, {
-            ...(promoted.ok ? promoted.values : {}),
-            updatedBy: session.user.id,
-          });
-          if (!result.ok) throw new PublishRace(result.reason);
-        }
-      });
-    } catch (error) {
-      if (error instanceof PublishRace) {
-        return fail(error.reason === "missing" ? CONFLICT.publishAllGone : CONFLICT.publishAll);
+/**
+ * Throw away everything this page has saved, and leave the live page alone.
+ *
+ * The counterpart to publishing, and the only way out of a state publication
+ * refuses to act on — a layout draft that cannot be read, a motion draft
+ * nobody can parse, a historical restore an editor previewed and thought
+ * better of.
+ */
+export async function discardPageDrafts(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("page-discard", async () => {
+    const session = await guardAction("content.manage", form);
+    const pageId = Number(form.get("pageId"));
+    const expected = expectedRevisionOf(form);
+    if (expected === null) return fail(CONFLICT.unreadable);
+
+    const [page] = await db.select().from(pages).where(eq(pages.id, pageId)).limit(1);
+    if (!page) return fail("That page no longer exists.");
+
+    const result = await discardPageChanges({
+      pageId,
+      expectedRevision: expected,
+      userId: session.user.id,
+    });
+    if (!result.ok) return fail(result.message);
+
+    await logActivity(session, {
+      action: "page.drafts_discarded",
+      entityType: "page",
+      entityId: pageId,
+      summary: `Discarded the saved changes on “${page.titleEn}”`,
+    });
+    // Drafts are invisible to visitors, so the public cache is untouched — but
+    // the admin's own screens count them.
+    revalidatePath(`/admin/pages/${page.slug}`);
+    revalidatePath("/admin/pages");
+    return ok(result.message);
+  });
+}
+
+/**
+ * Put a published version back — as drafts, and never as the live page.
+ *
+ * The wording in the UI says so and this is what makes it true: the restore
+ * writes `draft`, `draft_styles`, `draft_animation` and `draft_structure`, and
+ * touches no published column. A visitor sees exactly what they saw before;
+ * the editor previews the historical state and publishes it deliberately, or
+ * discards it.
+ */
+export async function restorePageVersion(_prev: ActionState, form: FormData): Promise<ActionState> {
+  return runAction("page-restore", async () => {
+    const session = await guardAction("content.manage", form);
+    const pageId = Number(form.get("pageId"));
+    const versionId = Number(form.get("versionId"));
+
+    const [page] = await db.select().from(pages).where(eq(pages.id, pageId)).limit(1);
+    if (!page) return fail("That page no longer exists.");
+
+    // Checked here as well as inside the restore, so the common case gets the
+    // sentence that tells an editor what to do rather than a generic refusal.
+    const summary = await getPageDraftSummary(pageId);
+    if (summary && restoreBlockers(summary)) return fail(RESTORE_BLOCKED);
+
+    const result = await restoreVersionToDraft(versionId, pageId, { userId: session.user.id });
+    if (!result.ok) {
+      if (result.reason === "not_clean") return fail(RESTORE_BLOCKED);
+      if (result.reason === "unsupported") {
+        return fail(
+          "That version was saved by a different build and cannot be restored here. The live " +
+            "page is unchanged.",
+        );
       }
-      throw error;
+      if (result.reason === "wrong_page") return fail("That version belongs to a different page.");
+      if (result.reason === "missing") return fail("That version no longer exists.");
+      return fail("The page changed while restoring. Nothing was restored — reload and try again.");
     }
 
     await logActivity(session, {
-      action: "page.published",
+      action: "page.version_restored_to_draft",
       entityType: "page",
       entityId: pageId,
-      summary: `Published ${drafts.length} section${drafts.length === 1 ? "" : "s"} on “${page.titleEn}”`,
+      summary: `Restored version #${versionId} of “${page.titleEn}” into saved changes`,
     });
-    refreshPage(page.slug);
-    return ok(`Published ${drafts.length} section${drafts.length === 1 ? "" : "s"}.`);
+    revalidatePath(`/admin/pages/${page.slug}`);
+    revalidatePath("/admin/pages");
+    return ok(
+      "Restored into saved changes. Preview the page, then publish when you are ready — the " +
+        "live site has not changed.",
+    );
   });
 }
 

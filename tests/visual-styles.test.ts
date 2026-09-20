@@ -640,7 +640,7 @@ describe("content and style share one revision", () => {
 /* -------------------------------------------------------------------------- */
 
 describe("the whole page publishes together", () => {
-  test("a style-only draft takes part in Publish all", async () => {
+  test("a style-only draft takes part in the page's publication", async () => {
     const heroSection = await find("terms", "page-hero");
     const textSection = await find("terms", "rich-text");
 
@@ -655,7 +655,9 @@ describe("the whole page publishes together", () => {
     const result = await submitForm(
       server.origin,
       url,
-      formWith(screen.html, 'name="pageId"', ">Publish"),
+      // Named exactly: ">Publish" also matches a block *description* in the
+      // Add-section form, and submitting that one publishes nothing.
+      formWith(screen.html, 'name="pageId"', "Publish saved changes"),
       owner.cookie,
     );
     assert.ok(result.status < 400);
@@ -678,7 +680,12 @@ describe("the whole page publishes together", () => {
 
     const url = "/admin/pages/about";
     const screen = await get(server.origin, url, { cookie: owner.cookie });
-    await submitForm(server.origin, url, formWith(screen.html, 'name="pageId"', ">Publish"), owner.cookie);
+    await submitForm(
+      server.origin,
+      url,
+      formWith(screen.html, 'name="pageId"', "Publish saved changes"),
+      owner.cookie,
+    );
 
     const after = await row(section.id);
     assert.equal(after.draft_styles, null, "the style draft was not published");

@@ -7,12 +7,15 @@ import { Icon } from "@/components/ui/icon";
 import { requirePermission } from "@/lib/auth/guard";
 import { blocksForPage, getBlock } from "@/lib/cms/blocks";
 import { text } from "@/lib/cms/values";
-import { draftKindOf, hasDraft } from "@/lib/cms/drafts";
+import { draftKindOf } from "@/lib/cms/drafts";
+import { getPageDraftSummary } from "@/lib/cms/publish-service";
+import { KEEP_PAGE_VERSIONS, listPageVersions } from "@/lib/versions";
 import { getPageStructure } from "@/lib/cms/structure-service";
 import { removedSections } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
-import { DeletePageForm, PageSettingsForm, PublishAllButton } from "../page-forms";
+import { DeletePageForm, PageSettingsForm } from "../page-forms";
+import { PageChanges } from "./page-changes";
 import { SectionList, type SectionRow } from "./section-list";
 
 export const dynamic = "force-dynamic";
@@ -81,11 +84,27 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
     .map((section) => toRow(section.sectionId, null))
     .filter((row): row is SectionRow => row !== null);
 
-  // Only established sections can have their content published on its own, so
-  // only they arm Publish all — see `publishAllDrafts`.
-  const draftCount = sections.filter(
-    (section) => !section.isDraftOnly && hasDraft(section.draftKind),
-  ).length;
+  /**
+   * What the *page* has waiting, read from the database rather than counted
+   * off the rows above.
+   *
+   * The old count was of established sections with a content or style draft,
+   * which is what the old button could publish — and it was therefore blind to
+   * exactly the changes an editor was most likely to have made in the Visual
+   * Editor. The summary knows about the layout too.
+   */
+  const summary = await getPageDraftSummary(page.id);
+  const versions = await listPageVersions(page.id, KEEP_PAGE_VERSIONS);
+  const history = {
+    pageId: page.id,
+    keep: KEEP_PAGE_VERSIONS,
+    versions: versions.map((row) => ({
+      id: row.id,
+      label: row.label,
+      actorName: row.actorName,
+      createdAt: row.createdAt.toISOString(),
+    })),
+  };
   const livePath = page.slug === "home" ? "/" : `/${page.slug}`;
 
   return (
@@ -96,9 +115,6 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
         crumbs={[{ label: "Pages & sections", href: "/admin/pages" }, { label: page.titleEn }]}
         actions={
           <>
-            {canManage ? (
-              <PublishAllButton csrf={session.csrfToken} pageId={page.id} count={draftCount} />
-            ) : null}
             <Link href={`/admin/pages/${page.slug}/preview`} className="admin-btn">
               <Icon name="search" size={13} />
               Preview
@@ -125,6 +141,14 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
 
         {canManage ? (
           <div className="space-y-5">
+            {summary ? (
+              <PageChanges
+                csrf={session.csrfToken}
+                pageId={page.id}
+                summary={summary}
+                history={history}
+              />
+            ) : null}
             <PageSettingsForm csrf={session.csrfToken} page={page} />
             {page.kind === "custom" ? (
               <DeletePageForm csrf={session.csrfToken} id={page.id} title={page.titleEn} />

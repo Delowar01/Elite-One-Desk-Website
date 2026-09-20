@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
+import { TAGS, revalidate } from "@/lib/cache";
 import { AccessError, guardAction } from "@/lib/auth/guard";
 import { getSession } from "@/lib/auth/session";
 import { getBlock, type BlockDef } from "@/lib/cms/blocks";
@@ -24,9 +25,22 @@ import {
   type StructureResult,
 } from "@/lib/cms/structure-service";
 import { readVisibility } from "@/lib/cms/structure";
+import {
+  discardPageChanges,
+  getPageDraftSummary,
+  publishPageChanges,
+  restoreBlockers,
+  RESTORE_BLOCKED,
+} from "@/lib/cms/publish-service";
+import { KEEP_PAGE_VERSIONS, listPageVersions, restoreVersionToDraft } from "@/lib/versions";
 import { db } from "@/lib/db";
 import { updateSectionGuarded } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
+import type {
+  PageActionResult,
+  PageHistoryView,
+  PageSummaryView,
+} from "@/lib/visual-editor/publish";
 import type {
   VisualContentSaveResult,
   VisualMotionSaveResult,
@@ -595,4 +609,192 @@ export async function restorePageSection(form: FormData): Promise<VisualStructur
 
 export async function discardPageLayout(form: FormData): Promise<VisualStructureResult> {
   return runStructure(form, (context) => discardLayoutDraft(context), "discard");
+}
+
+/* -------------------------------------------------------------------------- */
+/* The page: summary, publication, discard, history                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The page-level half of the editor, and the only part of it that is not a
+ * draft.
+ *
+ * Everything above this line writes a draft column and nothing else. These four
+ * are where a page's saved work becomes the live site, goes away, or comes back
+ * from history — and all four are thin adapters over `cms/publish-service` and
+ * `lib/versions`, which the Pages screen calls too. One primitive per act, two
+ * surfaces, so the editor and the admin cannot come to mean different things by
+ * "publish this page".
+ *
+ * The counts a review shows come from `getPageDraftSummary`, never from the
+ * panel's own buffers: the browser is the one participant here that is allowed
+ * to be out of date, and a confirmation built from it would promise to publish
+ * whatever that tab happened to know about.
+ */
+
+export async function loadPageSummary(pageId: number): Promise<PageSummaryView | null> {
+  try {
+    const session = await getSession();
+    if (!session?.permissions.has("content.view")) return null;
+    return await getPageDraftSummary(pageId);
+  } catch (error) {
+    console.error("[visual-editor:summary]", error);
+    return null;
+  }
+}
+
+/** `content.view`, because a reader who can see the page can see its history. */
+export async function loadPageHistory(pageId: number): Promise<PageHistoryView | null> {
+  try {
+    const session = await getSession();
+    if (!session?.permissions.has("content.view")) return null;
+    if (!Number.isInteger(pageId) || pageId <= 0) return null;
+    const versions = await listPageVersions(pageId, KEEP_PAGE_VERSIONS);
+    return {
+      pageId,
+      keep: KEEP_PAGE_VERSIONS,
+      versions: versions.map((row) => ({
+        id: row.id,
+        label: row.label,
+        actorName: row.actorName,
+        createdAt: row.createdAt.toISOString(),
+      })),
+    };
+  } catch (error) {
+    console.error("[visual-editor:history]", error);
+    return null;
+  }
+}
+
+const pageFailure = (reason: string, message: string): PageActionResult => ({
+  ok: false,
+  reason,
+  message,
+});
+
+async function pageSlug(pageId: number): Promise<string | null> {
+  const [page] = await db.select({ slug: pages.slug }).from(pages).where(eq(pages.id, pageId)).limit(1);
+  return page?.slug ?? null;
+}
+
+export async function publishPageFromEditor(form: FormData): Promise<PageActionResult> {
+  try {
+    const session = await guardAction("content.manage", form);
+    const pageId = Number(form.get("pageId"));
+    const expectedRevision = expectedPageRevision(form);
+
+    const result = await publishPageChanges({
+      pageId,
+      expectedRevision,
+      userId: session.user.id,
+      actorName: session.user.name,
+    });
+    if (!result.ok) return pageFailure(result.reason, result.message);
+
+    await logActivity(session, {
+      action: "page.changes_published",
+      entityType: "page",
+      entityId: pageId,
+      summary: result.summary,
+    });
+
+    /**
+     * A publication changes what a visitor gets, so — unlike every draft save
+     * in this module — it drops the public cache.
+     *
+     * By **tag**, not by path. `getPage` is an `unstable_cache` entry keyed on
+     * the slug and tagged `TAGS.pages`; revalidating the route alone leaves
+     * that entry in place, so the page would keep serving the composition it
+     * had before. This is the same `revalidate(TAGS.pages)` the Pages screen's
+     * own publish paths use, and using anything else here is how the two
+     * surfaces would come to publish to different caches.
+     */
+    revalidate(TAGS.pages);
+    const slug = await pageSlug(pageId);
+    if (slug) revalidatePath(`/admin/pages/${slug}`);
+    revalidatePath("/admin/pages");
+    return { ok: true, revision: result.revision, message: result.message };
+  } catch (error) {
+    if (error instanceof AccessError) return pageFailure("denied", error.message);
+    console.error("[visual-editor:publish]", error);
+    return pageFailure("invalid", "Something went wrong. Nothing was published.");
+  }
+}
+
+export async function discardPageFromEditor(form: FormData): Promise<PageActionResult> {
+  try {
+    const session = await guardAction("content.manage", form);
+    const pageId = Number(form.get("pageId"));
+    const expectedRevision = expectedPageRevision(form);
+
+    const result = await discardPageChanges({ pageId, expectedRevision, userId: session.user.id });
+    if (!result.ok) return pageFailure(result.reason, result.message);
+
+    await logActivity(session, {
+      action: "page.drafts_discarded",
+      entityType: "page",
+      entityId: pageId,
+      summary: "Discarded the saved changes on this page",
+    });
+
+    const slug = await pageSlug(pageId);
+    if (slug) revalidatePath(`/admin/pages/${slug}`);
+    revalidatePath("/admin/pages");
+    return { ok: true, revision: result.revision, message: result.message };
+  } catch (error) {
+    if (error instanceof AccessError) return pageFailure("denied", error.message);
+    console.error("[visual-editor:discard]", error);
+    return pageFailure("invalid", "Something went wrong. Nothing was discarded.");
+  }
+}
+
+export async function restoreVersionFromEditor(form: FormData): Promise<PageActionResult> {
+  try {
+    const session = await guardAction("content.manage", form);
+    const pageId = Number(form.get("pageId"));
+    const versionId = Number(form.get("versionId"));
+
+    const summary = await getPageDraftSummary(pageId);
+    if (!summary) return pageFailure("missing", "That page no longer exists.");
+    if (restoreBlockers(summary)) return pageFailure("not_clean", RESTORE_BLOCKED);
+
+    const result = await restoreVersionToDraft(versionId, pageId, { userId: session.user.id });
+    if (!result.ok) {
+      const message =
+        result.reason === "not_clean"
+          ? RESTORE_BLOCKED
+          : result.reason === "unsupported"
+            ? "That version was saved by a different build and cannot be restored here. The live page is unchanged."
+            : result.reason === "wrong_page"
+              ? "That version belongs to a different page."
+              : result.reason === "missing"
+                ? "That version no longer exists."
+                : "The page changed while restoring. Nothing was restored — reload and try again.";
+      return pageFailure(result.reason, message);
+    }
+
+    await logActivity(session, {
+      action: "page.version_restored_to_draft",
+      entityType: "page",
+      entityId: pageId,
+      summary: `Restored version #${versionId} into saved changes`,
+    });
+
+    // Drafts only: nothing a visitor sees moved, so the public cache stands.
+    const slug = await pageSlug(pageId);
+    if (slug) revalidatePath(`/admin/pages/${slug}`);
+    revalidatePath("/admin/pages");
+
+    const [page] = await db.select({ revision: pages.revision }).from(pages).where(eq(pages.id, pageId)).limit(1);
+    return {
+      ok: true,
+      revision: page?.revision ?? 0,
+      message:
+        "Restored into saved changes. Preview the page, then publish when you are ready — the live site has not changed.",
+    };
+  } catch (error) {
+    if (error instanceof AccessError) return pageFailure("denied", error.message);
+    console.error("[visual-editor:restore]", error);
+    return pageFailure("invalid", "Something went wrong. Nothing was restored.");
+  }
 }
