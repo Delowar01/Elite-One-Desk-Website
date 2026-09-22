@@ -5,7 +5,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   deleteSectionGuardedIn,
-  deleteSectionsIn,
+  lockPageForWrite,
   updatePageGuardedIn,
   updateSectionGuardedIn,
   type Executor,
@@ -103,10 +103,20 @@ export type PageDraftSummary = {
 
 type SectionRow = typeof pageSections.$inferSelect;
 
+/**
+ * The page and its sections.
+ *
+ * `lock` is the difference between describing a page and acting on one. A
+ * summary is a snapshot for a screen and may be a moment out of date; a
+ * publication, a discard and a restore decide what to write from what they
+ * read, and have to hold every row they read until they are done. Locking goes
+ * through `lockPageForWrite`, which is the single definition of the order those
+ * locks are taken in — page first, then sections by id.
+ */
 async function readPage(on: Executor, pageId: number, lock = false) {
+  if (lock) return lockPageForWrite(on, pageId);
   if (!Number.isInteger(pageId) || pageId <= 0) return null;
-  const query = on.select().from(pages).where(eq(pages.id, pageId)).limit(1);
-  const [page] = await (lock ? query.for("update") : query);
+  const [page] = await on.select().from(pages).where(eq(pages.id, pageId)).limit(1);
   if (!page) return null;
   const rows = await on
     .select()
@@ -290,13 +300,29 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
     return { ok: false, reason: "conflict", message: PUBLISH_MESSAGES.conflict };
   }
 
-  let outcome: { revision: number; versionId: number; counts: PublishCounts } | null = null;
+  let outcome: {
+    revision: number;
+    versionId: number;
+    counts: PublishCounts;
+    /** The page's own published state, read under the lock. */
+    live: boolean;
+  } | null = null;
 
   try {
     await db.transaction(async (tx) => {
-      // Locked for the length of the transaction, so two publications of one
-      // page serialise rather than both reading the same revision and both
-      // believing they won.
+      /**
+       * The page *and every section row* are locked for the rest of the
+       * transaction.
+       *
+       * Two publications of one page serialise on the page row rather than
+       * both reading the same revision and both believing they won — and,
+       * just as importantly, an autosave cannot land on a section between
+       * this read and the promotion below. Without the section locks the row
+       * this transaction is about to publish could be rewritten underneath
+       * it; the revision guard would catch that and roll everything back,
+       * which is correct but means an editor's publication fails for a reason
+       * that need never have arisen.
+       */
       const loaded = await readPage(tx, pageId, true);
       if (!loaded) throw new PublishStopped("missing");
       const { page, rows } = loaded;
@@ -422,6 +448,11 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
         revision: guard.revision,
         versionId,
         counts: { promoted, added, removed, reordered },
+        // Read under the lock, and never written: whether the page is part of
+        // the site is page settings, and publishing a page's changes is not a
+        // request to change that. It is carried out only so the sentence at
+        // the end can be true.
+        live: page.isPublished,
       };
     });
   } catch (error) {
@@ -443,7 +474,9 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
     throw error;
   }
 
-  const done = outcome as { revision: number; versionId: number; counts: PublishCounts } | null;
+  const done = outcome as
+    | { revision: number; versionId: number; counts: PublishCounts; live: boolean }
+    | null;
   if (!done) return { ok: false, reason: "nothing", message: PUBLISH_MESSAGES.nothing };
 
   const parts: string[] = [];
@@ -453,12 +486,26 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
   if (done.counts.reordered) parts.push("reordered");
   const detail = parts.length ? ` (${parts.join(", ")})` : "";
 
+  /**
+   * What to say, and it depends on something this action deliberately does not
+   * change.
+   *
+   * `pages.is_published` is page settings: it decides whether the page is part
+   * of the site at all, and publishing the changes made *to* a page is not a
+   * request to put that page on the site. So an unpublished page can be
+   * published-to, and telling its editor "the page is live now" would be
+   * false — they would go looking for it. Each sentence describes what
+   * actually happened to the thing it names.
+   */
   return {
     ok: true,
     revision: done.revision,
     versionId: done.versionId,
     counts: done.counts,
-    message: `Published. The page is live now${detail}.`,
+    message: done.live
+      ? `Published. The saved changes are live now${detail}.`
+      : `Published saved changes${detail}. This page is still unpublished, so visitors ` +
+        `cannot see it yet — that is a page setting.`,
     summary: `Published saved changes${detail}`,
   };
 }
@@ -523,11 +570,23 @@ export async function discardPageChanges(context: {
         if (!result.ok) throw new PublishStopped("conflict");
       }
 
-      // Pending rows carry nothing published, so there is nothing to guard
-      // against losing — but the page scope still holds, and a count that comes
-      // back short means the page moved and the transaction should not stand.
-      const deleted = await deleteSectionsIn(tx, pageId, doomed.map((row) => row.id));
-      if (deleted !== doomed.length) throw new PublishStopped("conflict");
+      /**
+       * A pending row is deleted against the revision this transaction read,
+       * exactly like an established one.
+       *
+       * It used to be a bulk delete, on the reasoning that a row nobody has
+       * published carries nothing worth guarding. That is false: a section
+       * added in the editor is editable the moment it exists, and by the time
+       * somebody reviews a discard it may hold several autosaves of content,
+       * styles and motion. Deleting it unguarded is deleting work that arrived
+       * after the review — the one thing a "discard what I am looking at"
+       * button must not do.
+       */
+      for (const row of doomed) {
+        const result = await deleteSectionGuardedIn(tx, row.id, row.revision);
+        if (!result.ok) throw new PublishStopped("conflict");
+      }
+      const deleted = doomed.length;
 
       const guard = await updatePageGuardedIn(tx, pageId, expectedRevision, {
         draftStructure: null,

@@ -19,8 +19,12 @@
  * id, never by bytes; the library's own delete guard (`lib/media/usage.ts`)
  * is what keeps those ids resolvable.
  *
- * Dormant in this release: nothing writes a version row, and there is no
- * restore in the admin.
+ * A version row is written by every path that changes live section content —
+ * publishing one section, and publishing a page's saved changes — always as
+ * the state immediately *before* that publication, in the same transaction, so
+ * a publication that rolls back leaves no history behind. `readPageSnapshot`
+ * at the end of this file is the strict reader a restore uses; the tolerant
+ * one above is for describing a version, not for acting on it.
  */
 import { getBlock } from "./blocks";
 import { motionOf } from "./motion";

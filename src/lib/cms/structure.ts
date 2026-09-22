@@ -1,19 +1,25 @@
 /**
  * A page's structure as it is being edited.
  *
- * The current structural mutations are immediate and live: `reorderSections`
- * rewrites `position`, `toggleSection` flips `isPublished`, `deleteSection`
- * removes the row. There is nowhere for "I have rearranged this page but not
- * published it" to live, which means a visual editor cannot honestly offer a
- * draft for structure while calling them.
+ * Structural editing used to be immediate and live — reordering rewrote
+ * `position`, hiding flipped `isPublished`, removing deleted the row — so
+ * there was nowhere for "I have rearranged this page but not published it" to
+ * live, and a visual editor could not honestly offer a draft for structure.
  *
  * This document is that place. Array order is the draft order, `visible` is the
  * intended published visibility, and a section that exists on the page but is
  * absent from the list is a deletion waiting to be published.
  *
- * Dormant in this release. The public renderer does not read it and the Pages
- * admin keeps its current behaviour; Batch 8 builds draft-aware structural
- * editing on top of it.
+ * Both halves exist now. `cms/structure-service` writes it — every structural
+ * operation in the Pages screen and the Visual Editor edits this column and
+ * nothing live — and `cms/publish-service` turns it into rows: the array order
+ * becomes `position`, each entry's `visible` becomes `is_published`, a listed
+ * pending row becomes established and an omitted established row is deleted.
+ * `composePreview` renders it so an editor can see what publishing would do.
+ *
+ * The readers below are deliberately tolerant, because rendering a damaged
+ * column must not blank a page. `readPublishableStructure` at the end of this
+ * file is the strict one, and it is the only reading publication may act on.
  */
 
 export const DRAFT_STRUCTURE_VERSION = 1;

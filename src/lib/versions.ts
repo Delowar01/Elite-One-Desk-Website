@@ -18,7 +18,7 @@ import { planRestoreFrom, type RestorePlan } from "@/lib/cms/restore";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
 import { KEEP_PAGE_VERSIONS } from "@/lib/visual-editor/publish";
-import type { Executor } from "@/lib/db/revision";
+import { lockPageForWrite, type Executor } from "@/lib/db/revision";
 import { pageSections, pageVersions, pages } from "@/lib/db/schema";
 
 /**
@@ -48,17 +48,19 @@ import { pageSections, pageVersions, pages } from "@/lib/db/schema";
  *
  * `page_sections.isDraftOnly` is what tells a pending row from an established
  * one, and nothing else does — a hidden established section and a pending new
- * one both sit at `isPublished = false`. Recorded here because the three
- * operations have to agree and only the first exists yet:
+ * one both sit at `isPublished = false`. All four operations exist now, and
+ * they agree:
  *
- *   Restore (here)     inserts a recreated section `isDraftOnly: true`,
- *                      `isPublished: false`, published values empty, content in
- *                      `draft`, place in `pages.draft_structure`.
- *   Add (Batch 8)      the same shape for a block placed in the editor.
- *   Publish (Batch 10) clears `isDraftOnly` on the rows the structure includes,
- *                      along with their order, visibility and content.
- *   Discard (Batch 8)  may delete `isDraftOnly` rows, and must never delete an
- *                      established one merely because it is hidden.
+ *   Restore (here)             inserts a recreated section `isDraftOnly: true`,
+ *                              `isPublished: false`, published values empty,
+ *                              content in `draft`, place in
+ *                              `pages.draft_structure`.
+ *   Add (structure-service)    the same shape for a block placed in an editor.
+ *   Publish (publish-service)  clears `isDraftOnly` on the rows the structure
+ *                              includes, along with their order, visibility
+ *                              and content, and deletes the rows it omits.
+ *   Discard (publish-service)  deletes `isDraftOnly` rows, and never deletes an
+ *                              established one merely because it is hidden.
  *
  * None of publish or discard is implemented here. This batch only guarantees
  * that the distinction they need is recorded rather than guessed at.
@@ -534,26 +536,24 @@ export async function restoreVersionToDraft(
 
   try {
     await db.transaction(async (tx) => {
-      const [page] = await tx
-        .select({ id: pages.id, draftStructure: pages.draftStructure })
-        .from(pages)
-        .where(eq(pages.id, record.pageId))
-        .limit(1)
-        .for("update");
-      if (!page) throw new RestoreStopped("not_clean");
-
-      const rows = await tx
-        .select({
-          id: pageSections.id,
-          blockType: pageSections.blockType,
-          draft: pageSections.draft,
-          draftStyles: pageSections.draftStyles,
-          draftAnimation: pageSections.draftAnimation,
-          isDraftOnly: pageSections.isDraftOnly,
-        })
-        .from(pageSections)
-        .where(eq(pageSections.pageId, record.pageId))
-        .orderBy(asc(pageSections.position), asc(pageSections.id));
+      /**
+       * The page **and every section row**, locked for the rest of the
+       * transaction.
+       *
+       * This is what makes the clean-state check below mean anything. A lock
+       * on the `pages` row alone does not stop a section autosave, because a
+       * section save writes `page_sections` and never touches `pages` — so the
+       * old version of this could read three null draft columns, conclude the
+       * page was clean, and have a colleague's autosave land in one of them
+       * before it wrote the historical values over the top.
+       *
+       * With the rows held, the two orderings are the only ones possible: the
+       * save commits first and this sees the draft and refuses, or this commits
+       * first and the save's expected revision is stale and it conflicts.
+       */
+      const locked = await lockPageForWrite(tx, record.pageId);
+      if (!locked) throw new RestoreStopped("not_clean");
+      const { page, rows } = locked;
 
       const dirty =
         page.draftStructure !== null ||
@@ -566,8 +566,8 @@ export async function restoreVersionToDraft(
         );
       if (dirty) throw new RestoreStopped("not_clean");
 
-      // Planned against the rows this transaction read, under the lock, so the
-      // plan cannot name a section that has since gone.
+      // Planned against the rows this transaction locked, so the plan cannot
+      // name a section that has since gone or miss one that has since arrived.
       const plan = planRestoreFrom(
         record.pageId,
         record.snapshot,
@@ -575,6 +575,39 @@ export async function restoreVersionToDraft(
       );
       const applied = await applyRestorePlanIn(tx, plan, actor);
       if (!applied.ok) throw new RestoreStopped("unowned_sections");
+
+      /**
+       * Every section the restore *re-interprets* becomes stale, not just the
+       * ones it writes into.
+       *
+       * A restore that leaves a section out of the historical layout has
+       * staged its removal — that section's meaning has changed completely —
+       * but `applyRestorePlanIn` only bumps the rows it puts draft values in.
+       * An editor who had one of the omitted sections open would keep a
+       * revision the restore never moved, and their next save would pass the
+       * guard and write into a section the page is about to delete.
+       *
+       * Recreated rows are deliberately excluded: they are new, and nobody has
+       * them open. Rows the plan already bumped are excluded too — one
+       * restore, one increment per row.
+       */
+      const touched = new Set(applied.updated);
+      const stale = rows
+        .filter((row) => !touched.has(row.id))
+        .map((row) => row.id);
+      if (stale.length) {
+        await tx
+          .update(pageSections)
+          .set({
+            revision: sql`${pageSections.revision} + 1`,
+            updatedBy: actor.userId ?? null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(eq(pageSections.pageId, record.pageId), inArray(pageSections.id, stale)),
+          );
+      }
+
       outcome = { plan, recreated: applied.recreated, updated: applied.updated };
     });
   } catch (error) {

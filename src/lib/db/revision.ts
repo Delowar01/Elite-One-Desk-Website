@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
@@ -31,6 +31,80 @@ import { pageSections, pages } from "@/lib/db/schema";
  * did not participate would make the others' guarantees worthless, because the
  * counter only means anything if nothing moves the row without moving it.
  */
+
+/* -------------------------------------------------------------------------- */
+/* Serialising a whole page                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A page and all of its sections, locked for the rest of the transaction.
+ *
+ * The revision guard below answers "did this row move since I read it". It
+ * cannot answer "will this row move while I am deciding", and for a page-wide
+ * operation that second question is the one that matters: publishing, discarding
+ * and restoring all read the whole page, reason about it, and then write — and
+ * an autosave landing between the reading and the writing is a save that either
+ * gets destroyed or destroys.
+ *
+ * A lock on the `pages` row alone does not stop it. Section saves write
+ * `page_sections` directly and never touch `pages`, so they sail past a page
+ * lock entirely. The restore's clean-state check was exactly this bug: it read
+ * three null draft columns under a page lock, concluded the page was clean, and
+ * a concurrent autosave could fill one in before the restore wrote over it.
+ *
+ * So the rows themselves are locked, and this is the **one** place that does
+ * it, in **one** order:
+ *
+ *     1. the page row
+ *     2. every section row of that page, by ascending id
+ *
+ * Both parts matter. Page-first means two page-wide operations queue on the
+ * page row before either touches a section, so they can never hold half of
+ * each other's rows. Ascending id means two operations that somehow did reach
+ * the sections first still take them in the same order. Nothing in this
+ * codebase locks a section before its page; introducing that would be the way
+ * to deadlock this.
+ *
+ * `ORDER BY id ... FOR UPDATE` locks in the sorted order rather than the plan's:
+ * Postgres puts the LockRows node above the Sort, so the rows are sorted first
+ * and locked as they come out.
+ *
+ * This is a database lock, deliberately. An in-process mutex would serialise
+ * one Node process and nothing else, which is a guarantee that quietly stops
+ * being true the first time the site runs on two.
+ */
+export type LockedPage = {
+  page: typeof pages.$inferSelect;
+  /** In composition order — position, then id — for the caller's benefit. */
+  rows: (typeof pageSections.$inferSelect)[];
+};
+
+export async function lockPageForWrite(
+  on: Executor,
+  pageId: number,
+): Promise<LockedPage | null> {
+  if (!Number.isInteger(pageId) || pageId <= 0) return null;
+
+  const [page] = await on.select().from(pages).where(eq(pages.id, pageId)).limit(1).for("update");
+  if (!page) return null;
+
+  await on
+    .select({ id: pageSections.id })
+    .from(pageSections)
+    .where(eq(pageSections.pageId, pageId))
+    .orderBy(asc(pageSections.id))
+    .for("update");
+
+  // Read again, unlocked and in composition order: the lock is already held, so
+  // this cannot see anything the lock did not freeze.
+  const rows = await on
+    .select()
+    .from(pageSections)
+    .where(eq(pageSections.pageId, pageId))
+    .orderBy(asc(pageSections.position), asc(pageSections.id));
+
+  return { page, rows };
+}
 
 export type GuardedUpdate =
   | { ok: true; revision: number }
@@ -147,23 +221,3 @@ export async function deleteSectionGuardedIn(
   return { ok: false, reason: row ? "conflict" : "missing" };
 }
 
-/**
- * Delete several sections of one page, each against the revision that was read.
- *
- * Used where the rows being removed carry nothing worth keeping — a page-level
- * discard throwing away the sections a layout draft invented. The page scope is
- * belt to the id's braces: an id from another page simply does not match, and
- * the count coming back short is what the caller checks.
- */
-export async function deleteSectionsIn(
-  on: Executor,
-  pageId: number,
-  ids: readonly number[],
-): Promise<number> {
-  if (!ids.length) return 0;
-  const removed = await on
-    .delete(pageSections)
-    .where(and(eq(pageSections.pageId, pageId), inArray(pageSections.id, [...ids])))
-    .returning({ id: pageSections.id });
-  return removed.length;
-}

@@ -37,11 +37,23 @@ export function PageChanges({
   pageId,
   summary,
   history,
+  canManage,
 }: {
   csrf: string;
   pageId: number;
   summary: PageSummaryView;
   history: PageHistoryView | null;
+  /**
+   * Whether this reader may act, as opposed to look.
+   *
+   * The card used to be rendered only for an editor, which meant a
+   * `content.view` user could see a page's history in the Visual Editor and
+   * not on the screen that is actually *about* pages — the same permission
+   * answering two different ways depending on which door somebody came
+   * through. It renders for everyone who can view; the controls are what this
+   * flag removes.
+   */
+  canManage: boolean;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [tone, setTone] = useState<"ok" | "error">("ok");
@@ -97,7 +109,7 @@ export function PageChanges({
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        {summary.publishable ? (
+        {canManage && summary.publishable ? (
           <InlineAction
             action={publishPage}
             hidden={{ _csrf: csrf, pageId, expectedRevision: summary.revision }}
@@ -117,7 +129,7 @@ export function PageChanges({
             </ConfirmSubmit>
           </InlineAction>
         ) : null}
-        {summary.discardable ? (
+        {canManage && summary.discardable ? (
           <InlineAction
             action={discardPageDrafts}
             hidden={{ _csrf: csrf, pageId, expectedRevision: summary.revision }}
@@ -145,6 +157,13 @@ export function PageChanges({
             promise it makes — the live site does not change — is the same
             promise wherever it is made.
           */}
+          {/*
+            `canManage={false}` on purpose: the shared component's own Restore
+            button would need a click handler, and this screen restores through
+            an ordinary admin form below so it works without JavaScript. The
+            list, the labels, the actor and the times are the same for everyone
+            who can view the page.
+          */}
           <PageHistory
             history={history}
             canManage={false}
@@ -156,7 +175,7 @@ export function PageChanges({
             }
             onRestore={() => undefined}
           />
-          {!summary.discardable && history?.versions.length ? (
+          {canManage && !summary.discardable && history?.versions.length ? (
             <div className="mt-2 flex flex-col gap-1.5">
               {history.versions.map((version) => (
                 <InlineAction

@@ -1162,3 +1162,419 @@ describe("the structural draft version is what this build writes", () => {
     assert.equal(stored.v, DRAFT_STRUCTURE_VERSION);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+
+describe("a page-wide operation holds every row it reasons about", () => {
+  /**
+   * A second connection, used to hold a lock while an action runs.
+   *
+   * The races these tests are about are all of one shape: an operation reads a
+   * page, decides something from what it read, and writes — and a save lands in
+   * between. Reproducing that with timing would be a coin toss dressed up as a
+   * test, so the gap is held open with a real database lock instead, and the
+   * action genuinely blocks on it.
+   */
+  const barriers: Sql[] = [];
+  after(async () => {
+    for (const connection of barriers) await connection.end({ timeout: 5 }).catch(() => undefined);
+  });
+
+  type Held = {
+    /** Let the holder finish: it runs its write, commits, and the lock is gone. */
+    release: () => Promise<void>;
+  };
+
+  /**
+   * Take `lock` on a second connection and return only once it is genuinely
+   * held, so the operation under test is launched into a lock that already
+   * exists rather than into a race to take one. `then` is the colleague's
+   * write, committed in the same transaction the moment the hold is released.
+   */
+  async function hold(
+    lock: (tx: Sql) => Promise<unknown>,
+    then?: (tx: Sql) => Promise<unknown>,
+  ): Promise<Held> {
+    const connection = connect(database);
+    barriers.push(connection);
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    let acquired!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
+    let failure: unknown = null;
+    const holding = connection
+      .begin(async (tx) => {
+        await lock(tx as unknown as Sql);
+        acquired();
+        await gate;
+        if (then) await then(tx as unknown as Sql);
+      })
+      .catch((error: unknown) => {
+        failure = error;
+        acquired();
+      });
+    await locked;
+    if (failure) throw failure;
+    let released = false;
+    return {
+      release: async () => {
+        if (released) return;
+        released = true;
+        open();
+        await holding;
+        if (failure) throw failure;
+      },
+    };
+  }
+
+  /** Wait until `n` backends are blocked on a lock — the deterministic barrier. */
+  async function waitForBlocked(n: number): Promise<boolean> {
+    for (let i = 0; i < 200; i += 1) {
+      const [row] = await sql<{ n: number }[]>`
+        select count(*)::int as n from pg_stat_activity
+         where datname = current_database() and wait_event_type = 'Lock'`;
+      if ((row?.n ?? 0) >= n) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return false;
+  }
+
+  test("a restore blocked by a concurrent save sees the save and refuses", async () => {
+    // The exact sequence Batch 10 claimed to prevent and did not: the restore
+    // reads three null draft columns, concludes the page is clean, and an
+    // autosave fills one in before it writes over the top.
+    const page = await reset("privacy");
+    const section = (await sectionsOf(page.id))[0]!;
+    await sql`update page_sections set published = jsonb_set(published, '{title,en}', '"Historic"')
+               where id = ${section.id}`;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Published", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+    assert.equal(answered(await publish(await pageBySlug("privacy"))).ok, true);
+    const [version] = await versionsOf(page.id);
+
+    // Hold the section row, so the restore blocks the moment it tries to lock.
+    const held = await hold(
+      (tx) => tx`select id from page_sections where id = ${section.id} for update`,
+      // The colleague's autosave, committed while the restore waits.
+      (tx) => tx`update page_sections
+                    set draft = ${sql.json({ title: { en: "Typed during the restore", ar: "" } })}::jsonb,
+                        revision = revision + 1
+                  where id = ${section.id}`,
+    );
+
+    const attempt = restore(await pageBySlug("privacy"), version!.id);
+    let blocked = false;
+    try {
+      blocked = await waitForBlocked(1);
+    } finally {
+      await held.release();
+    }
+
+    const refused = answered(await attempt);
+    assert.ok(blocked, "the restore did not block on the locked row");
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(!refused.ok && refused.reason, "not_clean");
+    assert.equal(
+      ((await sectionById(section.id))!.draft!.title as { en: string }).en,
+      "Typed during the restore",
+      "the restore overwrote a draft that was saved while it waited",
+    );
+    assert.equal((await pageBySlug("privacy")).draft_structure, null);
+  });
+
+  test("…and a save that arrives after a restore conflicts instead of winning", async () => {
+    const page = await reset("terms");
+    const section = (await sectionsOf(page.id))[0]!;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Published", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+    assert.equal(answered(await publish(await pageBySlug("terms"))).ok, true);
+    const [version] = await versionsOf(page.id);
+
+    const stale = (await sectionById(section.id))!.revision;
+    assert.equal(answered(await restore(await pageBySlug("terms"), version!.id)).ok, true);
+
+    // The editor that was open before the restore names the old revision.
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("sectionId", String(section.id));
+    form.set("pageId", String(page.id));
+    form.set("expectedRevision", String(stale));
+    form.set("values", JSON.stringify({ title: { en: "Written against the old page", ar: "" } }));
+    const refused = answered(
+      await editorAction<{ ok: boolean; reason?: string }>("saveVisualSectionDraft", form),
+    );
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "conflict");
+  });
+
+  test("a restore makes every re-interpreted section stale, removals included", async () => {
+    /**
+     * A section the historical layout leaves out is staged for removal, which
+     * changes what it *is* as completely as new draft values would — so an
+     * editor holding it must be told. It used to keep its revision, because
+     * only the rows receiving draft values were bumped.
+     */
+    const page = await reset("about");
+    const rows = await sectionsOf(page.id);
+    const doomed = rows[rows.length - 1]!;
+
+    // Publish a page without that section, so history holds a layout that
+    // omits it and restoring stages its removal.
+    answered(await structural("removePageSection", page, { sectionId: String(doomed.id) }));
+    assert.equal(answered(await publish(await pageBySlug("about"))).ok, true);
+    assert.equal(await sectionById(doomed.id), null);
+
+    // Put it back and publish, so the current page has it again.
+    const [withoutIt] = await versionsOf(page.id);
+    assert.equal(answered(await restore(await pageBySlug("about"), withoutIt!.id)).ok, true);
+    assert.equal(answered(await discardAll(await pageBySlug("about"))).ok, true);
+
+    const current = await sectionsOf(page.id);
+    const keeper = current[0]!;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "New live", ar: "" } })}::jsonb
+               where id = ${keeper.id}`;
+    assert.equal(answered(await publish(await pageBySlug("about"))).ok, true);
+    const [newest] = await versionsOf(page.id);
+
+    const before = new Map((await sectionsOf(page.id)).map((row) => [row.id, row.revision]));
+    assert.equal(answered(await restore(await pageBySlug("about"), newest!.id)).ok, true);
+
+    for (const [id, revision] of before) {
+      const after = (await sectionById(id))!;
+      assert.equal(
+        after.revision,
+        revision + 1,
+        `section ${id} did not become stale (was ${revision}, now ${after.revision})`,
+      );
+    }
+    // …and exactly once. A recreated row is new and is not in `before`.
+    const recreated = (await sectionsOf(page.id)).filter((row) => !before.has(row.id));
+    for (const row of recreated) assert.equal(row.is_draft_only, true);
+  });
+
+  test("a discard blocked by a save deletes the row it actually read", async () => {
+    const page = await reset("disclaimer");
+    const added = answered(
+      await structural("addPageSection", page, { blockType: "rich-text" }),
+    );
+    const pending = added.sectionId!;
+    await sql`update page_sections set draft = ${sql.json({ body: { en: "First", ar: "" } })}::jsonb
+               where id = ${pending}`;
+
+    const held = await hold(
+      (tx) => tx`select id from page_sections where id = ${pending} for update`,
+      (tx) => tx`update page_sections
+                    set draft = ${sql.json({ body: { en: "Second, while discarding", ar: "" } })}::jsonb,
+                        revision = revision + 1
+                  where id = ${pending}`,
+    );
+
+    const attempt = discardAll(await pageBySlug("disclaimer"));
+    let blocked = false;
+    try {
+      blocked = await waitForBlocked(1);
+    } finally {
+      await held.release();
+    }
+
+    const done = answered(await attempt);
+    assert.ok(blocked, "the discard did not block on the locked row");
+    // Either outcome is coherent; what must not happen is a silent delete of a
+    // revision the discard never reviewed.
+    if (done.ok) {
+      assert.equal(await sectionById(pending), null, "the pending row survived a successful discard");
+    } else {
+      assert.equal(!done.ok && done.reason, "conflict");
+      assert.ok(await sectionById(pending), "a refused discard deleted the row anyway");
+      assert.equal(
+        ((await sectionById(pending))!.draft!.body as { en: string }).en,
+        "Second, while discarding",
+      );
+    }
+    assert.equal((await pageBySlug("disclaimer")).draft_structure, done.ok ? null : (await pageBySlug("disclaimer")).draft_structure);
+  });
+
+  test("…and a save that arrives after a discard finds the row gone", async () => {
+    const page = await reset("disclaimer");
+    const added = answered(await structural("addPageSection", page, { blockType: "rich-text" }));
+    const pending = added.sectionId!;
+    const row = (await sectionById(pending))!;
+
+    assert.equal(answered(await discardAll(await pageBySlug("disclaimer"))).ok, true);
+    assert.equal(await sectionById(pending), null);
+
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("sectionId", String(pending));
+    form.set("pageId", String(page.id));
+    form.set("expectedRevision", String(row.revision));
+    form.set("values", JSON.stringify({ body: { en: "Too late", ar: "" } }));
+    const refused = answered(
+      await editorAction<{ ok: boolean; reason?: string }>("saveVisualSectionDraft", form),
+    );
+    assert.equal(refused.ok, false);
+    assert.equal(refused.reason, "missing");
+    assert.equal(await sectionById(pending), null, "a refused save resurrected the row");
+  });
+
+  test("two sections publishing at once produce linear history, never two copies of A", async () => {
+    /**
+     * The defect this exists for: both transactions snapshot the live page
+     * before either writes, so history holds the same state twice and there is
+     * no restore point for the one in between. The page row is the
+     * serialisation point — taken before the snapshot, by every path that
+     * writes one.
+     */
+    const page = await reset("about");
+    const rows = await sectionsOf(page.id);
+    const [x, y] = rows;
+    assert.ok(x && y);
+
+    await sql`update page_sections set published = jsonb_set(published, '{title,en}', '"A-x"') where id = ${x.id}`;
+    await sql`update page_sections set published = jsonb_set(published, '{title,en}', '"A-y"') where id = ${y.id}`;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "B-x", ar: "" } })}::jsonb where id = ${x.id}`;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "B-y", ar: "" } })}::jsonb where id = ${y.id}`;
+    const fresh = await sectionsOf(page.id);
+    const revisionOf = new Map(fresh.map((row) => [row.id, row.revision]));
+
+    const publishOne = (id: number) => {
+      const form = new FormData();
+      form.set("_csrf", owner.csrfToken);
+      form.set("id", String(id));
+      form.set("expectedRevision", String(revisionOf.get(id)));
+      return callAction<{ ok: boolean; message?: string }>({
+        origin: server.origin,
+        route: `/admin/pages/section/${id}`,
+        file: PAGE_ACTIONS,
+        action: "publishSection",
+        args: [{ ok: false }, form],
+        cookie: owner.cookie,
+      });
+    };
+
+    // Hold the page row, so both publications queue behind it rather than
+    // racing each other to the snapshot.
+    const held = await hold((tx) => tx`select id from pages where id = ${page.id} for update`);
+
+    const both = Promise.all([publishOne(x.id), publishOne(y.id)]);
+    let blocked = false;
+    try {
+      blocked = await waitForBlocked(2);
+    } finally {
+      await held.release();
+    }
+
+    const [first, second] = await both;
+    assert.ok(blocked, "both publications did not block on the page row");
+    assert.equal(answered(first).ok, true, JSON.stringify(answered(first)));
+    assert.equal(answered(second).ok, true, JSON.stringify(answered(second)));
+
+    // Both went live…
+    assert.equal(((await sectionById(x.id))!.published.title as { en: string }).en, "B-x");
+    assert.equal(((await sectionById(y.id))!.published.title as { en: string }).en, "B-y");
+
+    // …and history is a chain, not two copies of where it started.
+    const history = await versionsOf(page.id);
+    assert.equal(history.length, 2, `${history.length} restore points`);
+    const titles = await Promise.all(
+      history.map(async (version) => {
+        const [row] = await sql<{ snapshot: { sections: { sourceSectionId: number; published: Record<string, unknown> }[] } }[]>`
+          select snapshot from page_versions where id = ${version.id}`;
+        const find = (id: number) =>
+          (row!.snapshot.sections.find((entry) => entry.sourceSectionId === id)?.published.title as
+            | { en: string }
+            | undefined)?.en ?? "";
+        return { x: find(x.id), y: find(y.id) };
+      }),
+    );
+    // Newest first: the second publication saw the first one's result.
+    const [newer, older] = titles;
+    assert.deepEqual(older, { x: "A-x", y: "A-y" }, "the older restore point is not the starting state");
+    assert.ok(
+      (newer!.x === "B-x" && newer!.y === "A-y") || (newer!.x === "A-x" && newer!.y === "B-y"),
+      `the newer restore point is not the intermediate state: ${JSON.stringify(newer)}`,
+    );
+    assert.notDeepEqual(newer, older, "history holds the same state twice");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a publication says what actually happened to the page it names", () => {
+  test("a published page is told its changes are live", async () => {
+    const page = await reset("terms");
+    assert.equal((await sql<{ is_published: boolean }[]>`
+      select is_published from pages where id = ${page.id}`)[0]!.is_published, true);
+    const rows = await sectionsOf(page.id);
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Live now", ar: "" } })}::jsonb
+               where id = ${rows[0]!.id}`;
+
+    const done = answered(await publish(await pageBySlug("terms")));
+    assert.equal(done.ok, true);
+    assert.match(done.ok ? done.message : "", /saved changes are live now/i);
+  });
+
+  test("an unpublished page is not told it is live, because it is not", async () => {
+    // `pages.is_published` is page settings and this action never touches it,
+    // so the old unconditional "the page is live now" sent an editor looking
+    // for a page a visitor cannot reach.
+    const page = await reset("disclaimer");
+    await sql`update pages set is_published = false where id = ${page.id}`;
+    const rows = await sectionsOf(page.id);
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Still hidden", ar: "" } })}::jsonb
+               where id = ${rows[0]!.id}`;
+
+    const done = answered(await publish(await pageBySlug("disclaimer")));
+    assert.equal(done.ok, true);
+    assert.ok(!/is live now/i.test(done.ok ? done.message : ""), done.ok ? done.message : "");
+    assert.match(done.ok ? done.message : "", /still unpublished/i);
+
+    // …and the setting itself is untouched.
+    assert.equal((await sql<{ is_published: boolean }[]>`
+      select is_published from pages where id = ${page.id}`)[0]!.is_published, false);
+    await sql`update pages set is_published = true where id = ${page.id}`;
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a reader may see a page's history and may not change anything", () => {
+  test("the Pages screen shows history to a content.view user", async () => {
+    const page = await reset("privacy");
+    const rows = await sectionsOf(page.id);
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "For history", ar: "" } })}::jsonb
+               where id = ${rows[0]!.id}`;
+    assert.equal(answered(await publish(await pageBySlug("privacy"))).ok, true);
+
+    const screen = await get(server.origin, "/admin/pages/privacy", { cookie: viewer.cookie });
+    assert.equal(screen.status, 200);
+    assert.match(screen.html, /Version history/, "a reader cannot see the history section");
+    assert.match(screen.html, /Current live/);
+    assert.match(screen.html, /Before publishing/, "no restore point is listed");
+
+    // …and nothing that would change anything.
+    assert.ok(!/Restore to draft/.test(screen.html), "a reader was offered Restore");
+    assert.ok(!/Publish saved changes/.test(screen.html), "a reader was offered Publish");
+    assert.ok(!/Discard all saved changes/.test(screen.html), "a reader was offered Discard");
+  });
+
+  test("…and the actions refuse that user directly", async () => {
+    const page = await pageBySlug("privacy");
+    const [version] = await versionsOf(page.id);
+    for (const [action, extra] of [
+      ["publishPageFromEditor", {}],
+      ["discardPageFromEditor", {}],
+      ["restoreVersionFromEditor", { versionId: String(version!.id) }],
+    ] as const) {
+      const refused = answered(
+        await editorAction<PageActionResult>(action, pageForm(page, viewer, extra), viewer),
+      );
+      assert.equal(refused.ok, false, action);
+      assert.equal(!refused.ok && refused.reason, "denied", action);
+    }
+  });
+});

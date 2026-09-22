@@ -139,22 +139,30 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
           canManage={canManage}
         />
 
-        {canManage ? (
-          <div className="space-y-5">
-            {summary ? (
-              <PageChanges
-                csrf={session.csrfToken}
-                pageId={page.id}
-                summary={summary}
-                history={history}
-              />
-            ) : null}
-            <PageSettingsForm csrf={session.csrfToken} page={page} />
-            {page.kind === "custom" ? (
-              <DeletePageForm csrf={session.csrfToken} id={page.id} title={page.titleEn} />
-            ) : null}
-          </div>
-        ) : null}
+        <div className="space-y-5">
+          {/*
+            Visible to anybody who can view the page: what is waiting, and what
+            has been published before. The controls inside are `canManage`'s.
+            Page Settings below stays an editor's screen.
+          */}
+          {summary ? (
+            <PageChanges
+              csrf={session.csrfToken}
+              pageId={page.id}
+              summary={summary}
+              history={history}
+              canManage={canManage}
+            />
+          ) : null}
+          {canManage ? (
+            <>
+              <PageSettingsForm csrf={session.csrfToken} page={page} />
+              {page.kind === "custom" ? (
+                <DeletePageForm csrf={session.csrfToken} id={page.id} title={page.titleEn} />
+              ) : null}
+            </>
+          ) : null}
+        </div>
       </div>
     </>
   );

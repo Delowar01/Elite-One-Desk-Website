@@ -42,7 +42,7 @@ import { validateStyleDocument } from "@/lib/cms/styles";
 import { emptyValues } from "@/lib/cms/values";
 import { parseBlockPayload } from "@/lib/cms/validate";
 import { db } from "@/lib/db";
-import { updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
+import { lockPageForWrite, updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
 import { recordRestorePointIn, restoreVersionToDraft } from "@/lib/versions";
 
@@ -365,6 +365,14 @@ function promotion(row: typeof pageSections.$inferSelect): Promotion {
   return { ok: true, values };
 }
 
+/** The two ways a section publication can lose a race, and nothing else. */
+class SectionPublishRace extends Error {
+  constructor(readonly reason: "conflict" | "missing") {
+    super(reason);
+    this.name = "SectionPublishRace";
+  }
+}
+
 /**
  * One section published, with the page's restore point, in one transaction.
  *
@@ -374,6 +382,15 @@ function promotion(row: typeof pageSections.$inferSelect): Promotion {
  * committed before a promotion that then failed would be a restore point for
  * something that never happened, and a promotion that succeeded after a failed
  * insert would be a live state with no way back.
+ *
+ * **The page row is locked before the snapshot is taken**, and that is what
+ * makes the history linear rather than merely present. Without it, two tabs
+ * publishing two different sections of one page both snapshot the same live
+ * state before either writes, and the history ends up holding that state twice
+ * with no restore point for the one in between — so the page goes A → B → C
+ * and history offers A and A. The lock is only for serialisation: it does not
+ * move `pages.revision`, because publishing one section's words is not a
+ * change to the page's structural timeline.
  *
  * The snapshot is taken *before* the guarded update, so it records the page as
  * it stood immediately before this publication — which is what an editor
@@ -388,31 +405,47 @@ async function publishSectionIn(input: {
   userId: number;
   actorName: string;
 }): Promise<{ ok: true; revision: number } | { ok: false; reason: "conflict" | "missing" }> {
-  return db.transaction(async (tx) => {
-    await recordRestorePointIn(tx, {
-      pageId: input.pageId,
-      label: input.label,
-      userId: input.userId,
-      actorName: input.actorName,
+  try {
+    return await db.transaction(async (tx) => {
+      // Page first, section rows next — the order `lockPageForWrite` defines
+      // and every page-wide operation uses.
+      const locked = await lockPageForWrite(tx, input.pageId);
+      if (!locked) throw new SectionPublishRace("missing");
+      if (!locked.rows.some((row) => row.id === input.sectionId)) {
+        throw new SectionPublishRace("missing");
+      }
+
+      await recordRestorePointIn(tx, {
+        pageId: input.pageId,
+        label: input.label,
+        userId: input.userId,
+        actorName: input.actorName,
+      });
+      const result = await updateSectionGuardedIn(tx, input.sectionId, input.expectedRevision, {
+        ...input.values,
+        updatedBy: input.userId,
+      });
+      // Thrown, so the abort rolls the restore point and the prune back with
+      // it: a refused publish leaves no trace in history.
+      if (!result.ok) throw new SectionPublishRace(result.reason);
+      return { ok: true as const, revision: result.revision };
     });
-    const result = await updateSectionGuardedIn(tx, input.sectionId, input.expectedRevision, {
-      ...input.values,
-      updatedBy: input.userId,
-    });
-    if (!result.ok) {
-      // Rolls the version row back with it: a refused publish leaves no trace.
-      tx.rollback();
-      throw new Error("unreachable");
-    }
-    return { ok: true as const, revision: result.revision };
-  }).catch(async () => {
-    const [row] = await db
-      .select({ id: pageSections.id })
-      .from(pageSections)
-      .where(eq(pageSections.id, input.sectionId))
-      .limit(1);
-    return { ok: false as const, reason: row ? ("conflict" as const) : ("missing" as const) };
-  });
+  } catch (error) {
+    /**
+     * Only the race is an answer; everything else is a failure.
+     *
+     * This used to catch every rejection and report "this section changed
+     * while you were editing it" if the row still existed — so a failed
+     * history insert, a lost connection or any unexpected database error was
+     * reported to an editor as a concurrency conflict, and they would reload
+     * and try again against a problem that reloading cannot fix. The
+     * transaction rolls back either way, so nothing is inconsistent; what
+     * differs is whether the sentence is true. Anything unexpected goes up to
+     * the action's own error handler.
+     */
+    if (error instanceof SectionPublishRace) return { ok: false as const, reason: error.reason };
+    throw error;
+  }
 }
 
 async function pageOf(sectionId: number) {
@@ -842,7 +875,7 @@ export async function restorePageVersion(_prev: ActionState, form: FormData): Pr
  *
  * The consequence worth stating plainly: **none of them changes the live page
  * any more.** A visitor keeps getting the composition they were getting until
- * the layout draft is published, which is a later batch's button and not
+ * the layout draft is published, which is `publishPage`'s job and not
  * reachable from here.
  */
 const structuralConflict = (result: StructureResult & { ok: false }) => fail(result.message);

@@ -255,6 +255,8 @@ export function VisualEditorShell({
   const [pageError, setPageError] = useState<string | null>(null);
 
   const page = useMemo(() => pages.find((row) => row.slug === slug) ?? pages[0], [pages, slug]);
+  /** Which page is being edited, as a value — `page` itself is a new object on every refresh. */
+  const pageId = page?.id ?? null;
   pageRef.current = page?.id ?? null;
 
   /**
@@ -1058,8 +1060,6 @@ export function VisualEditorShell({
     let cancelled = false;
     setSummary(null);
     setHistory(null);
-    setPageMessage(null);
-    setPageError(null);
     void Promise.all([loadPageSummary(page.id), loadPageHistory(page.id)]).then(([next, past]) => {
       if (cancelled) return;
       setSummary(next);
@@ -1069,6 +1069,24 @@ export function VisualEditorShell({
       cancelled = true;
     };
   }, [page]);
+
+  /**
+   * What the last page-level act reported is cleared when the editor moves to
+   * another page — and only then.
+   *
+   * It used to be cleared by the effect above, which runs on every new `page`
+   * object. A publication triggers a server refresh, that refresh hands down a
+   * fresh `page`, and the effect ran roughly twenty milliseconds after the
+   * message was set: the sentence describing what had just happened appeared
+   * and vanished inside the same frame. Whether an admin is told "the saved
+   * changes are live now" or "this page is still unpublished, so visitors
+   * cannot see it yet" only matters if the sentence stays on screen long
+   * enough to read.
+   */
+  useEffect(() => {
+    setPageMessage(null);
+    setPageError(null);
+  }, [pageId]);
 
   /**
    * After a page-level act, everything this editor believes is stale.

@@ -41,7 +41,8 @@ import { emptyValues, text } from "./values";
  * A visitor's page is composed from `position` and `is_published`, which no
  * operation in this file moves — reordering, hiding and removing are all edits
  * to a document that says what publishing *would* do. Turning that document
- * into live rows is a later batch's, and deliberately not reachable from here.
+ * into live rows is `cms/publish-service`'s, and deliberately not reachable
+ * from here — one module writes the draft, another publishes it.
  *
  * **Structure is the page's timeline, content is the section's.** Every
  * operation names `pages.revision` and nothing else, so one person rewriting a

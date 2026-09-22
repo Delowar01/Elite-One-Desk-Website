@@ -228,9 +228,12 @@ export const pages = pgTable("pages", {
    * This column is that place: a validated document listing section ids in
    * draft order with their intended visibility — see `lib/cms/structure.ts`.
    *
-   * Dormant in this release. Nothing reads it, the public renderer does not
-   * know it exists, and the Pages admin keeps its current immediate-live
-   * behaviour. Batch 8 makes structural editing draft-aware on top of it.
+   * Written by `cms/structure-service` — every structural operation on either
+   * editing screen edits this and nothing live — read by `composePreview` so an
+   * editor can see what publishing would do, and turned into rows by
+   * `cms/publish-service`. `NULL` means no pending structural change; a stored
+   * document this build cannot read is refused by publication rather than
+   * treated as either of those.
    */
   draftStructure: jsonb("draft_structure").$type<Record<string, unknown>>(),
   /**
@@ -308,7 +311,8 @@ export const pageSections = pgTable(
      * `field:headline`, …); the row already says which section this is. See
      * `lib/cms/styles.ts`.
      *
-     * Dormant in this release: no renderer reads it.
+     * Read by the public renderer through `composePublished`, and by preview
+     * through `composePreview`, which prefers `draft_styles` when there is one.
      */
     styles: jsonb("styles").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
     /** The same document, unpublished. Promoted beside `draft` → `published`. */
@@ -351,7 +355,12 @@ export const pageSections = pgTable(
  * row was written, and a restore has to be previewable before it is live. See
  * `lib/cms/snapshot.ts` for the document and what it excludes.
  *
- * Dormant in this release: nothing writes a row, and there is no restore button.
+ * One row per successful live publication, holding the page as it stood
+ * immediately *before* it — a restore point rather than a record of what went
+ * out, because what an editor reaches for after publishing something wrong is
+ * the state they just left. Written inside the publishing transaction and
+ * pruned there too, so a rolled-back publication leaves neither a version nor a
+ * changed retention. `lib/versions.ts` owns both ends.
  */
 export const pageVersions = pgTable(
   "page_versions",
