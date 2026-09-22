@@ -3,7 +3,11 @@ import "server-only";
 import { redirect } from "next/navigation";
 import { timingSafeEqual } from "node:crypto";
 
-import type { PermissionKey } from "./permissions";
+import {
+  satisfies,
+  type PermissionKey,
+  type PermissionRequirement,
+} from "./permissions";
 import { getSession, type AdminSession } from "./session";
 
 export class AccessError extends Error {
@@ -22,17 +26,36 @@ export async function requireSession(returnTo?: string): Promise<AdminSession> {
   return session;
 }
 
+/**
+ * The guard every admin page runs, for a requirement of any shape.
+ *
+ * One evaluator, shared with the sidebar filter, so a link cannot appear for
+ * somebody the route behind it will turn away — and the reverse, which is the
+ * failure that actually happened: `/admin/users` asked for `users.manage`
+ * alone, so a role holding `roles.manage` could see nothing of the screen that
+ * exists for it.
+ */
+export async function requirePermissions(
+  requirement: PermissionRequirement,
+  returnTo?: string,
+): Promise<AdminSession> {
+  const session = await requireSession(returnTo);
+  if (!satisfies(session.permissions, requirement)) redirect("/admin?denied=1");
+  return session;
+}
+
 export async function requirePermission(
   permission: PermissionKey,
   returnTo?: string,
 ): Promise<AdminSession> {
-  const session = await requireSession(returnTo);
-  if (!session.permissions.has(permission)) redirect("/admin?denied=1");
-  return session;
+  return requirePermissions(permission, returnTo);
 }
 
-export function can(session: AdminSession | null, permission: PermissionKey): boolean {
-  return Boolean(session?.permissions.has(permission));
+export function can(
+  session: AdminSession | null,
+  requirement: PermissionRequirement,
+): boolean {
+  return Boolean(session && satisfies(session.permissions, requirement));
 }
 
 function tokensMatch(a: string, b: string): boolean {

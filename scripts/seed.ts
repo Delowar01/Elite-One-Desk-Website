@@ -38,6 +38,22 @@ import { LEGACY_NOTICE, taxonomyState, type TaxonomyState } from "./seed/state";
  */
 
 async function seedRolesAndPermissions() {
+  /**
+   * Which keys this database already knew about, read *before* the catalogue is
+   * written — the one moment it is possible to tell a permission that is new to
+   * this installation from one whose grants are somebody's decision.
+   *
+   * It is what lets a release add a permission to an existing site. The grant
+   * loop below only fills a role that has none at all, so on a database that has
+   * been running, a new key would land in the catalogue and reach nobody: every
+   * role would silently lose whatever the new key now guards. Backfilling by
+   * "is it missing?" instead would undo every grant an owner had removed, every
+   * time the seed ran.
+   */
+  const before = new Set(
+    (await db.select({ key: permissionsTable.key }).from(permissionsTable)).map((row) => row.key),
+  );
+
   for (const permission of PERMISSIONS) {
     await db
       .insert(permissionsTable)
@@ -47,6 +63,8 @@ async function seedRolesAndPermissions() {
         set: { label: permission.label, groupName: permission.group },
       });
   }
+
+  const introduced = PERMISSIONS.map((p) => p.key).filter((key) => !before.has(key));
 
   for (const [key, grants] of Object.entries(ROLE_DEFAULTS)) {
     const labels = ROLE_LABELS[key]!;
@@ -70,9 +88,16 @@ async function seedRolesAndPermissions() {
 
     // Only fill in grants that are missing, so an owner who removed one from a
     // role in the panel does not get it back on the next deploy.
-    if (existing.length === 0) {
+    //
+    // `introduced` is the exception, and a narrow one: a key this database had
+    // never heard of until a moment ago cannot be a grant anybody decided
+    // against, so the role that was always meant to have it gets it. Once the
+    // key is in the catalogue this never fires again.
+    const wanted = new Set<string>(
+      existing.length === 0 ? grants : grants.filter((grant) => introduced.includes(grant)),
+    );
+    if (wanted.size) {
       const rows = await db.select().from(permissionsTable);
-      const wanted = new Set<string>(grants);
       const values = rows
         .filter((p) => wanted.has(p.key))
         .map((p) => ({ roleId: role.id, permissionId: p.id }));

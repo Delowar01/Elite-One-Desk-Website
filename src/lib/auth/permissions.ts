@@ -9,6 +9,7 @@ export const PERMISSIONS = [
   { key: "enquiries.export", label: "Export enquiries", group: "Enquiries" },
   { key: "content.view", label: "View pages and sections", group: "Content" },
   { key: "content.manage", label: "Edit and publish pages and sections", group: "Content" },
+  { key: "visual_editor.view", label: "Access the Visual Editor", group: "Content" },
   { key: "services.manage", label: "Manage service categories and services", group: "Content" },
   { key: "packages.manage", label: "Manage tour packages and destinations", group: "Content" },
   { key: "videos.manage", label: "Manage the video showcase", group: "Content" },
@@ -33,6 +34,7 @@ const EDITOR: PermissionKey[] = [
   "enquiries.view",
   "content.view",
   "content.manage",
+  "visual_editor.view",
   "services.manage",
   "packages.manage",
   "videos.manage",
@@ -42,7 +44,14 @@ const EDITOR: PermissionKey[] = [
   "seo.manage",
 ];
 
-const VIEWER: PermissionKey[] = ["dashboard.view", "enquiries.view", "content.view"];
+const VIEWER: PermissionKey[] = [
+  "dashboard.view",
+  "enquiries.view",
+  "content.view",
+  // Read-only in the canvas, exactly as it is on the Pages screen: the editor's
+  // own writes each name `content.manage` and refuse without it.
+  "visual_editor.view",
+];
 
 /**
  * Admin holds everything except `roles.manage` — rewriting what a role may do
@@ -68,3 +77,47 @@ export const ROLE_LABELS: Record<string, { name: string; description: string }> 
   },
   viewer: { name: "Viewer", description: "Read-only access to the dashboard and enquiries." },
 };
+
+
+/* -------------------------------------------------------------------------- */
+/* What a screen needs                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A permission requirement, as data.
+ *
+ * A single key was enough while every screen needed exactly one, and two
+ * screens now do not:
+ *
+ *   Visual Editor   `content.view` **and** `visual_editor.view` — the canvas
+ *                   holds unpublished drafts, so access to the editor is not a
+ *                   substitute for being allowed to see page content.
+ *   Users & roles   `users.manage` **or** `roles.manage` — one screen over two
+ *                   separately-granted concerns, and holding either is a reason
+ *                   to be let in to the half you hold.
+ *
+ * Written as data rather than as two special cases so the sidebar filter and
+ * the route guard read the same sentence. Server *actions* are deliberately not
+ * part of this: a write names the one concrete permission it needs, because an
+ * any-of on a mutation would be two keys disagreeing about who may write.
+ */
+export type PermissionRequirement =
+  | PermissionKey
+  | { all: readonly PermissionKey[] }
+  | { any: readonly PermissionKey[] };
+
+export function satisfies(
+  held: ReadonlySet<PermissionKey> | ReadonlySet<string>,
+  need: PermissionRequirement,
+): boolean {
+  const has = (key: PermissionKey) => (held as ReadonlySet<string>).has(key);
+  if (typeof need === "string") return has(need);
+  if ("all" in need) return need.all.every(has);
+  return need.any.some(has);
+}
+
+/** Every key a requirement mentions — for a refusal message or a test. */
+export function requirementKeys(need: PermissionRequirement): PermissionKey[] {
+  if (typeof need === "string") return [need];
+  return [...("all" in need ? need.all : need.any)];
+}

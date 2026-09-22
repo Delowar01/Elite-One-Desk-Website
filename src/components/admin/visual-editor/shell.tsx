@@ -8,6 +8,7 @@ import {
   discardPageFromEditor,
   discardPageLayout,
   duplicatePageSection,
+  loadEditorGlobals,
   loadPageHistory,
   loadPageSummary,
   publishPageFromEditor,
@@ -23,6 +24,7 @@ import {
   setPageSectionVisibility,
 } from "@/app/(backoffice)/admin/visual-editor/actions";
 import type { MediaOption } from "@/components/admin/media-picker";
+import { GlobalsPanel } from "@/components/admin/visual-editor/globals-panel";
 import { Icon } from "@/components/ui/icon";
 import type { BlockDef } from "@/lib/cms/blocks";
 import type { MotionPreset } from "@/lib/cms/motion";
@@ -37,6 +39,7 @@ import {
   type PageHistoryView,
   type PageSummaryView,
 } from "@/lib/visual-editor/publish";
+import type { GlobalsState } from "@/lib/visual-editor/globals";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
 import { DEVICE_BREAKPOINT, EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
 
@@ -134,14 +137,26 @@ const sameValues = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 export function VisualEditorShell({
   pages,
   initial,
-  canManage,
+  canManageContent,
+  canManageNavigation,
+  canManageSettings,
   csrf,
   media,
   blocks,
 }: {
   pages: EditablePage[];
   initial: { slug: string; locale: Locale; device: DeviceKey };
-  canManage: boolean;
+  /**
+   * `content.manage` — may edit and publish page content, styles, motion and
+   * layout. Deliberately one capability per domain rather than one boolean for
+   * the editor: navigation and site settings are granted separately, and a
+   * single flag would have handed all three to whoever held any one of them.
+   */
+  canManageContent: boolean;
+  /** `navigation.manage` — may edit the header and footer menus. */
+  canManageNavigation: boolean;
+  /** `settings.manage` — may edit brand, contact, WhatsApp, disclaimers, features, social. */
+  canManageSettings: boolean;
   /** The session's synchroniser token — every save carries it, like any admin form. */
   csrf: string;
   media: MediaOption[];
@@ -248,6 +263,9 @@ export function VisualEditorShell({
    * somebody about to press Publish.
    */
   const [pagePanel, setPagePanel] = useState(false);
+  const [globalsPanel, setGlobalsPanel] = useState(false);
+  const [globals, setGlobals] = useState<GlobalsState | null>(null);
+  const [globalsLoading, setGlobalsLoading] = useState(false);
   const [summary, setSummary] = useState<PageSummaryView | null>(null);
   const [history, setHistory] = useState<PageHistoryView | null>(null);
   const [pageBusy, setPageBusy] = useState(false);
@@ -285,7 +303,7 @@ export function VisualEditorShell({
    */
   const scheduleAutosave = useCallback(
     (sectionId: number) => {
-      if (!canManage) return;
+      if (!canManageContent) return;
       const existing = autosaveTimers.current.get(sectionId);
       if (existing) window.clearTimeout(existing);
       autosaveTimers.current.set(
@@ -296,7 +314,7 @@ export function VisualEditorShell({
         }, AUTOSAVE_DELAY_MS),
       );
     },
-    [canManage],
+    [canManageContent],
   );
   const activeId = selected?.sectionId ?? null;
   const buffer = activeId === null ? null : buffers[activeId] ?? null;
@@ -440,7 +458,7 @@ export function VisualEditorShell({
 
   const onValues = useCallback(
     (values: Record<string, unknown>) => {
-      if (activeId === null || !canManage) return;
+      if (activeId === null || !canManageContent) return;
       writeBuffers((prev) => {
         const entry = prev[activeId];
         if (!entry) return prev;
@@ -461,12 +479,12 @@ export function VisualEditorShell({
       });
       scheduleAutosave(activeId);
     },
-    [activeId, canManage, scheduleAutosave, writeBuffers],
+    [activeId, canManageContent, scheduleAutosave, writeBuffers],
   );
 
   const onStyles = useCallback(
     (styles: StyleDocument) => {
-      if (activeId === null || !canManage) return;
+      if (activeId === null || !canManageContent) return;
       writeBuffers((prev) => {
         const entry = prev[activeId];
         if (!entry) return prev;
@@ -484,7 +502,7 @@ export function VisualEditorShell({
       });
       scheduleAutosave(activeId);
     },
-    [activeId, canManage, scheduleAutosave, writeBuffers],
+    [activeId, canManageContent, scheduleAutosave, writeBuffers],
   );
 
   /**
@@ -499,7 +517,7 @@ export function VisualEditorShell({
    */
   const onMotion = useCallback(
     (motion: MotionPreset) => {
-      if (activeId === null || !canManage) return;
+      if (activeId === null || !canManageContent) return;
       writeBuffers((prev) => {
         const entry = prev[activeId];
         if (!entry) return prev;
@@ -517,7 +535,7 @@ export function VisualEditorShell({
       });
       scheduleAutosave(activeId);
     },
-    [activeId, canManage, scheduleAutosave, writeBuffers],
+    [activeId, canManageContent, scheduleAutosave, writeBuffers],
   );
 
   /** Puts one domain back to what the server last said, leaving the others alone. */
@@ -604,7 +622,7 @@ export function VisualEditorShell({
   const runSave = useCallback(
     async (sectionId: number, domain: EditDomain): Promise<"ok" | "conflict" | "error"> => {
       const entry = buffersRef.current[sectionId];
-      if (!entry || entry.saving !== null || !canManage) return "error";
+      if (!entry || entry.saving !== null || !canManageContent) return "error";
       if (!dirtyOf(entry)[domain]) return "ok";
 
       const sent = canonical(
@@ -737,7 +755,7 @@ export function VisualEditorShell({
       });
       return "ok";
     },
-    [canManage, csrf, writeBuffers],
+    [canManageContent, csrf, writeBuffers],
   );
 
   /**
@@ -764,7 +782,7 @@ export function VisualEditorShell({
    */
   const drainSection = useCallback(
     async (sectionId: number) => {
-      if (!canManage || draining.current.has(sectionId)) return;
+      if (!canManageContent || draining.current.has(sectionId)) return;
       draining.current.add(sectionId);
       let wrote = false;
       try {
@@ -795,7 +813,7 @@ export function VisualEditorShell({
       freshCanvas();
       if (address) setRestoreToken((n) => n + 1);
     },
-    [canManage, runSave],
+    [canManageContent, runSave],
   );
 
   drainRef.current = (sectionId: number) => void drainSection(sectionId);
@@ -839,7 +857,7 @@ export function VisualEditorShell({
       fill: (form: FormData) => void,
       select: "new" | "keep" | "clear",
     ) => {
-      if (!canManage || !page || !structure || structureBusy) return;
+      if (!canManageContent || !page || !structure || structureBusy) return;
       setStructureBusy(true);
       setStructureFailure(null);
 
@@ -873,7 +891,7 @@ export function VisualEditorShell({
       freshCanvas();
       if (wanted) setRestoreToken((n) => n + 1);
     },
-    [canManage, csrf, page, structure, structureBusy],
+    [canManageContent, csrf, page, structure, structureBusy],
   );
 
   /**
@@ -1033,7 +1051,7 @@ export function VisualEditorShell({
    * autosave that would have carried it is a second away.
    */
   const publishBlocked = useMemo(() => {
-    if (!canManage) return null;
+    if (!canManageContent) return null;
     if (pageLocal.conflicted) {
       return "A section on this page has a conflict. Reload the latest version of it first.";
     }
@@ -1041,7 +1059,7 @@ export function VisualEditorShell({
     if (pageLocal.dirty) return "Saving drafts…";
     if (structureBusy) return "Finishing a layout change…";
     return null;
-  }, [canManage, pageLocal, structureBusy]);
+  }, [canManageContent, pageLocal, structureBusy]);
 
   const refreshPageState = useCallback(async () => {
     if (!page) return;
@@ -1152,13 +1170,68 @@ export function VisualEditorShell({
     [page, refreshPageState, writeBuffers],
   );
 
+  /* ------------------------------------------------------------------ */
+  /* Global site chrome                                                  */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The site's own settings, read when somebody opens the drawer.
+   *
+   * Not with the page: they are not the page's, and fetching them on every
+   * canvas load would send site-wide settings to a browser that never asked
+   * for them. The server decides what comes back — a session without
+   * `navigation.manage` gets no menus at all, not menus with the buttons
+   * greyed out.
+   */
+  const refreshGlobals = useCallback(async () => {
+    if (!canManageNavigation && !canManageSettings) return;
+    setGlobalsLoading(true);
+    try {
+      setGlobals(await loadEditorGlobals());
+    } catch {
+      // The drawer keeps whatever it had and offers its own Refresh.
+    } finally {
+      setGlobalsLoading(false);
+    }
+  }, [canManageNavigation, canManageSettings]);
+
+  /**
+   * After a global change, and the list of what it does **not** do is the
+   * point.
+   *
+   * A Contact address or a menu label has nothing to do with the paragraph
+   * somebody is part way through typing, so this is deliberately not
+   * `afterPageAction`: the edit buffers stay, the page's draft summary and
+   * history stay, no page or section revision moves, and no restore point is
+   * written. The canvas is reloaded because the header, the footer and the
+   * floating button are part of the document it is showing, and the selection
+   * is put back on the far side of it.
+   */
+  const afterGlobalChange = useCallback(async () => {
+    await refreshGlobals();
+    const selected = selectedRef.current;
+    restoreTo.current = selected
+      ? { address: selected.address, fallback: `section:${selected.sectionId}` }
+      : null;
+    freshCanvas();
+    if (selected) setRestoreToken((n) => n + 1);
+  }, [refreshGlobals]);
+
+  const toggleGlobals = useCallback(() => {
+    setGlobalsPanel((value) => {
+      const next = !value;
+      if (next) void refreshGlobals();
+      return next;
+    });
+  }, [refreshGlobals]);
+
   const runPageAction = useCallback(
     async (
       operate: (form: FormData) => Promise<{ ok: boolean; message: string }>,
       fill: (form: FormData) => void,
       keepSelection: boolean,
     ) => {
-      if (!page || !canManage || pageBusy) return;
+      if (!page || !canManageContent || pageBusy) return;
       setPageBusy(true);
       setPageMessage(null);
       setPageError(null);
@@ -1191,7 +1264,7 @@ export function VisualEditorShell({
       setPageBusy(false);
       setPageMessage(answer.message);
     },
-    [afterPageAction, canManage, csrf, page, pageBusy, refreshPageState, structure, summary],
+    [afterPageAction, canManageContent, csrf, page, pageBusy, refreshPageState, structure, summary],
   );
 
   const publishPage = useCallback(() => {
@@ -1316,7 +1389,7 @@ export function VisualEditorShell({
           </Link>
           <span className="hidden items-center gap-2 sm:flex">
             <span className="text-[0.82rem] font-semibold tracking-tight text-strong">Visual Editor</span>
-            {!canManage ? (
+            {!canManageContent ? (
               <span
                 className="rounded-full border border-[var(--admin-line)] px-2 py-0.5 text-[0.66rem] font-semibold uppercase tracking-wide text-muted"
                 title="You can look at every page here, but not change anything."
@@ -1430,6 +1503,24 @@ export function VisualEditorShell({
             <span className="hidden lg:inline">Reload</span>
           </button>
           {/*
+            The site's controls, beside the page's and never mixed into them.
+            Offered only to somebody who may actually change something: a
+            drawer that opens to explain it is empty is a worse answer than a
+            button that was never there.
+          */}
+          {canManageNavigation || canManageSettings ? (
+            <button
+              type="button"
+              onClick={toggleGlobals}
+              aria-expanded={globalsPanel}
+              className="admin-btn admin-btn-sm"
+              title="Header, footer, brand, contact and other site-wide settings"
+            >
+              <Icon name="globe" size={12} />
+              <span className="hidden lg:inline">Globals</span>
+            </button>
+          ) : null}
+          {/*
             The page's own controls, behind one button, because none of them
             act on the selection: publishing, discarding and history all belong
             to the page and would read as the section's beside the Inspector's
@@ -1476,7 +1567,7 @@ export function VisualEditorShell({
           selectedSectionId={activeId}
           dirtyIds={dirtyIds}
           ready={ready}
-          canManage={canManage}
+          canManage={canManageContent}
           busy={structureBusy}
           failure={structureFailure}
           onReloadLayout={reloadLayout}
@@ -1509,7 +1600,7 @@ export function VisualEditorShell({
             title={page.title}
             summary={summary}
             history={history}
-            canManage={canManage}
+            canManage={canManageContent}
             busy={pageBusy}
             blockedReason={publishBlocked}
             message={pageMessage}
@@ -1518,6 +1609,16 @@ export function VisualEditorShell({
             onDiscard={discardPage}
             onRestore={restoreVersion}
             onRefresh={() => void refreshPageState()}
+          />
+
+          <GlobalsPanel
+            open={globalsPanel}
+            onClose={() => setGlobalsPanel(false)}
+            csrf={csrf}
+            globals={globals}
+            loading={globalsLoading}
+            onRefresh={() => void refreshGlobals()}
+            onChanged={afterGlobalChange}
           />
 
           <p className="mt-2.5 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 text-[0.72rem] text-muted">
@@ -1541,7 +1642,7 @@ export function VisualEditorShell({
           sections={sections}
           locale={locale}
           media={media}
-          canManage={canManage}
+          canManage={canManageContent}
           buffer={buffer}
           breakpoint={DEVICE_BREAKPOINT[device]}
           tab={tab}

@@ -14,6 +14,7 @@ export type NavRow = {
   labelAr: string;
   href: string;
   sortOrder: number;
+  isHighlighted: boolean;
   isPublished: boolean;
 };
 
@@ -235,15 +236,34 @@ function NavForm({
         )}
       </div>
 
-      <label className="mt-3 flex cursor-pointer items-center gap-2 text-[0.82rem]">
-        <input
-          type="checkbox"
-          name="isPublished"
-          defaultChecked={row?.isPublished ?? true}
-          className="size-4 accent-[var(--color-orange)]"
-        />
-        Visible on the site
-      </label>
+      <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2">
+        <label className="flex cursor-pointer items-center gap-2 text-[0.82rem]">
+          <input
+            type="checkbox"
+            name="isPublished"
+            defaultChecked={row?.isPublished ?? true}
+            className="size-4 accent-[var(--color-orange)]"
+          />
+          Visible on the site
+        </label>
+        {/*
+          The header draws an emphasised link, and until now nothing could set
+          it: `site-header.tsx` has always read `isHighlighted`, but no admin
+          screen wrote it, so it was whatever the seed left. Offered on the
+          header alone because the footer columns do not draw it.
+        */}
+        {menu === "header" ? (
+          <label className="flex cursor-pointer items-center gap-2 text-[0.82rem]">
+            <input
+              type="checkbox"
+              name="isHighlighted"
+              defaultChecked={row?.isHighlighted ?? false}
+              className="size-4 accent-[var(--color-orange)]"
+            />
+            Emphasised
+          </label>
+        ) : null}
+      </div>
 
       <div className="mt-4">
         <SubmitButton className="admin-btn-sm">{row ? "Save link" : "Add link"}</SubmitButton>

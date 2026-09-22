@@ -1,4 +1,4 @@
-import type { PermissionKey } from "@/lib/auth/permissions";
+import type { PermissionRequirement } from "@/lib/auth/permissions";
 
 /**
  * The admin sidebar. Each entry names the permission it needs, so the menu and
@@ -9,7 +9,13 @@ export type AdminNavItem = {
   href: string;
   label: string;
   icon: string;
-  permission: PermissionKey;
+  /**
+   * What the route behind this link asks for, in the same shape the route asks
+   * for it — a key, `{ all: [...] }` or `{ any: [...] }`. Expressed here rather
+   * than as a special case in the sidebar, so adding a compound screen is one
+   * entry in this file.
+   */
+  permission: PermissionRequirement;
   /** Marks the entry active for its own sub-routes too. */
   exact?: boolean;
 };
@@ -30,7 +36,14 @@ export const ADMIN_NAV: AdminNavGroup[] = [
       { href: "/admin/pages", label: "Pages & sections", icon: "fileText", permission: "content.view" },
       // An additional interface over the same CMS, not a replacement for the
       // screen above it: the two edit the same rows and both stay.
-      { href: "/admin/visual-editor", label: "Visual Editor", icon: "sparkle", permission: "content.view" },
+      // All-of: the canvas shows unpublished drafts, so being allowed into the
+      // editor is not a substitute for being allowed to see page content.
+      {
+        href: "/admin/visual-editor",
+        label: "Visual Editor",
+        icon: "sparkle",
+        permission: { all: ["content.view", "visual_editor.view"] },
+      },
       { href: "/admin/categories", label: "Service categories", icon: "layers", permission: "services.manage" },
       { href: "/admin/services", label: "Services", icon: "briefcase", permission: "services.manage" },
       { href: "/admin/packages/destinations", label: "Destinations", icon: "mapPin", permission: "packages.manage" },
@@ -53,7 +66,14 @@ export const ADMIN_NAV: AdminNavGroup[] = [
   {
     title: "Administration",
     items: [
-      { href: "/admin/users", label: "Users & roles", icon: "users", permission: "users.manage" },
+      // Any-of: one screen over two separately-granted concerns. Holding either
+      // is a reason to be let in to the half you hold.
+      {
+        href: "/admin/users",
+        label: "Users & roles",
+        icon: "users",
+        permission: { any: ["users.manage", "roles.manage"] },
+      },
       { href: "/admin/activity", label: "Activity log", icon: "clock", permission: "activity.view" },
     ],
   },

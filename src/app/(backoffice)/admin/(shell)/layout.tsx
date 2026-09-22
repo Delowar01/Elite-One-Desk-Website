@@ -4,6 +4,7 @@ import { AdminSidebar } from "@/components/admin/sidebar";
 import { Icon } from "@/components/ui/icon";
 import { ADMIN_NAV } from "@/lib/admin/nav";
 import { requireSession } from "@/lib/auth/guard";
+import { satisfies } from "@/lib/auth/permissions";
 import { signOut } from "../login/actions";
 
 /**
@@ -17,7 +18,7 @@ export default async function AdminShellLayout({ children }: { children: React.R
   // The sidebar only lists what this person may actually open.
   const groups = ADMIN_NAV.map((group) => ({
     ...group,
-    items: group.items.filter((item) => session.permissions.has(item.permission)),
+    items: group.items.filter((item) => satisfies(session.permissions, item.permission)),
   })).filter((group) => group.items.length > 0);
 
   return (

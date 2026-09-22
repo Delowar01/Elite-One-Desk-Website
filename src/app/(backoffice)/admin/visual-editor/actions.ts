@@ -7,6 +7,10 @@ import { logActivity } from "@/lib/activity";
 import { TAGS, revalidate } from "@/lib/cache";
 import { AccessError, guardAction } from "@/lib/auth/guard";
 import { getSession } from "@/lib/auth/session";
+import {
+  loadEditorGlobals as readEditorGlobals,
+  type GlobalsState,
+} from "@/lib/visual-editor/globals";
 import { getBlock, type BlockDef } from "@/lib/cms/blocks";
 import { effectiveMotion, readMotion } from "@/lib/cms/motion";
 import { validateStyleDocument } from "@/lib/cms/styles";
@@ -796,5 +800,37 @@ export async function restoreVersionFromEditor(form: FormData): Promise<PageActi
     if (error instanceof AccessError) return pageFailure("denied", error.message);
     console.error("[visual-editor:restore]", error);
     return pageFailure("invalid", "Something went wrong. Nothing was restored.");
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Global site chrome                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Re-read the global state the Globals panel is allowed to hold.
+ *
+ * A read, and the only one this module adds for globals: every *write* is the
+ * ordinary Navigation or Site settings action, called directly, so the two
+ * admin surfaces share one validator, one permission check, one audit
+ * vocabulary and one set of cache tags. Adding a second set here is how they
+ * would come to disagree.
+ *
+ * `loadEditorGlobals` is scoped to what the session may manage, so a caller
+ * without `settings.manage` gets `settings: null` — not a disabled copy of it.
+ * Returning an empty shape rather than throwing keeps a refusal from looking
+ * like a broken panel, and the panel says which halves it has.
+ */
+export async function loadEditorGlobals(): Promise<GlobalsState> {
+  try {
+    const session = await getSession();
+    // The editor's own door: anybody reaching this without it has no business
+    // holding site chrome either.
+    if (!session?.permissions.has("visual_editor.view")) return { navigation: null, settings: null };
+    if (!session.permissions.has("content.view")) return { navigation: null, settings: null };
+    return await readEditorGlobals(session);
+  } catch (error) {
+    console.error("[visual-editor:globals]", error);
+    return { navigation: null, settings: null };
   }
 }

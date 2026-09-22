@@ -35,6 +35,7 @@ export function UsersClient({
   permissions,
   currentUserId,
   isOwner,
+  canManageUsers,
   canManageRoles,
 }: {
   csrf: string;
@@ -43,23 +44,30 @@ export function UsersClient({
   permissions: PermissionRow[];
   currentUserId: number;
   isOwner: boolean;
+  /** `users.manage` — accounts: create, edit, activate, reset, delete. */
+  canManageUsers: boolean;
+  /** `roles.manage` — what each role is allowed to do. Neither implies the other. */
   canManageRoles: boolean;
 }) {
-  const [tab, setTab] = useState<"people" | "roles">("people");
+  // Whichever half this person actually has. The server sends only that half's
+  // data, so landing on an empty tab would be landing on nothing.
+  const [tab, setTab] = useState<"people" | "roles">(canManageUsers ? "people" : "roles");
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const assignable = isOwner ? roles : roles.filter((role) => role.key !== "owner");
 
   return (
     <>
       <nav aria-label="Sections" className="mb-4 flex gap-1.5">
-        <button
-          type="button"
-          onClick={() => setTab("people")}
-          className="admin-btn admin-btn-sm"
-          style={tab === "people" ? { borderColor: "var(--color-orange)" } : undefined}
-        >
-          People ({users.length})
-        </button>
+        {canManageUsers ? (
+          <button
+            type="button"
+            onClick={() => setTab("people")}
+            className="admin-btn admin-btn-sm"
+            style={tab === "people" ? { borderColor: "var(--color-orange)" } : undefined}
+          >
+            People ({users.length})
+          </button>
+        ) : null}
         {canManageRoles ? (
           <button
             type="button"
@@ -72,7 +80,7 @@ export function UsersClient({
         ) : null}
       </nav>
 
-      {tab === "people" ? (
+      {tab === "people" && canManageUsers ? (
         <div className="space-y-5">
           <div className="admin-card p-5">
             <div className="mb-4 flex items-center justify-between gap-3">

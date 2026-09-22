@@ -1,11 +1,12 @@
 import { asc } from "drizzle-orm";
 
 import { VisualEditorShell, type EditablePage } from "@/components/admin/visual-editor/shell";
-import { requirePermission } from "@/lib/auth/guard";
+import { requirePermissions } from "@/lib/auth/guard";
 import { blocksForPage, type BlockDef } from "@/lib/cms/blocks";
 import { db } from "@/lib/db";
 import { media, pages } from "@/lib/db/schema";
 import { localeOrDefault, publicPathForPage } from "@/lib/page-path";
+import { globalsCapabilities } from "@/lib/visual-editor/globals";
 import { deviceOrDefault } from "@/lib/visual-editor/viewport";
 
 export const metadata = { title: "Visual Editor" };
@@ -22,17 +23,31 @@ export const dynamic = "force-dynamic";
  * 1440px page.
  *
  * The cost of stepping outside `(shell)` is that its session check does not
- * apply, so this route performs its own. `content.view` for now — the same key
- * the Pages screen and the preview already use. Visual-editor-specific
- * permissions are a later batch's job, and inventing one here would mean
- * shipping a permission nothing yet enforces.
+ * apply, so this route performs its own — and it asks for **both** keys.
+ *
+ * `visual_editor.view` is the editor's own door, so a role can keep ordinary
+ * Pages access while this screen is switched off for it. `content.view` is
+ * still required beside it, because the canvas renders the page's *drafts*:
+ * letting somebody in on the strength of an editor permission alone would show
+ * unpublished content to an account that is not allowed to see it on any other
+ * screen. The sidebar entry names the same pair, so the link and the route
+ * cannot disagree.
+ *
+ * What may be *changed* stays resource-specific and is passed down as separate
+ * capabilities: `content.manage` for the page, `navigation.manage` for the
+ * menus, `settings.manage` for the site's settings and social links. One
+ * editor-wide "may edit" boolean would have granted all three at once.
  */
 export default async function VisualEditorPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const session = await requirePermission("content.view", "/admin/visual-editor");
+  const session = await requirePermissions(
+    { all: ["content.view", "visual_editor.view"] },
+    "/admin/visual-editor",
+  );
+  const capabilities = globalsCapabilities(session);
   const query = await searchParams;
 
   // Every page the section CMS renders, in the order the Pages screen uses.
@@ -101,7 +116,9 @@ export default async function VisualEditorPage({
         locale: localeOrDefault(query.lang),
         device: deviceOrDefault(query.device),
       }}
-      canManage={session.permissions.has("content.manage")}
+      canManageContent={capabilities.canManageContent}
+      canManageNavigation={capabilities.canManageNavigation}
+      canManageSettings={capabilities.canManageSettings}
       csrf={session.csrfToken}
       blocks={blocks}
       media={library}
