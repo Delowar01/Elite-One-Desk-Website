@@ -60,7 +60,39 @@ export async function saveNavItem(_prev: ActionState, form: FormData): Promise<A
       : [];
     if (id && !current) return fail("That link no longer exists.");
 
+    /**
+     * An existing link keeps the menu it is in.
+     *
+     * Neither editing screen can move a link between menus — there is no
+     * control for it — so a request that says otherwise is a request the panel
+     * cannot have made. Accepting it was the same cross-menu tree the parent
+     * checks below refuse to build, reached through a different field: move a
+     * parent from the header into a footer column and its children stay behind
+     * with `menu = header` and `parent_id` pointing into the footer. Refused
+     * rather than cascaded, because carrying the children across is a feature
+     * this release does not have and should not grow by accident.
+     */
+    if (current && rawMenu !== current.menu) {
+      return fail(
+        "Move links between menus through a dedicated control; this edit cannot change its menu.",
+        { menu: "This link belongs to another menu." },
+      );
+    }
+
     const parentId = optionalId(form, "parentId");
+    /**
+     * Only the header nests.
+     *
+     * The footer columns are flat lists — the public footer has no concept of a
+     * sub-link and would not render one — so a stored parent there is a row
+     * that exists in the database and on no page. A server invariant rather
+     * than a UI choice, because the UI's silence about a field is not a rule.
+     */
+    if (parentId && menu !== "header") {
+      return fail("Only the header menu has sub-links.", {
+        parentId: "Footer links sit on their own.",
+      });
+    }
     // A link cannot be its own parent, and sub-menus stop at one level: the
     // header has no room for a third, and the markup would not render it.
     if (parentId && parentId === id) return fail("A link cannot sit under itself.");
@@ -206,7 +238,18 @@ export async function moveNavItem(_prev: ActionState, form: FormData): Promise<A
       .where(sameGroup)
       .orderBy(up ? sql`sort_order desc` : sql`sort_order asc`)
       .limit(1);
-    if (!neighbour) return ok();
+    /**
+     * Nothing to swap with: this link is already at the end of its own sibling
+     * group. It says so rather than coming back as a bare success — a caller
+     * that shows "Saved live." for an empty result would be reporting a move
+     * that did not happen. Nothing is revalidated and nothing is logged,
+     * because nothing changed.
+     */
+    if (!neighbour) {
+      return ok(
+        up ? "This link is already first in its group." : "This link is already last in its group.",
+      );
+    }
 
     await db.transaction(async (tx) => {
       await tx.update(navigationItems).set({ sortOrder: -1 }).where(eq(navigationItems.id, row.id));
@@ -220,6 +263,6 @@ export async function moveNavItem(_prev: ActionState, form: FormData): Promise<A
         .where(eq(navigationItems.id, row.id));
     });
     refresh();
-    return ok();
+    return ok("Order saved.");
   });
 }

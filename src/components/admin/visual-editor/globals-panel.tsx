@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   deleteNavItem,
@@ -129,11 +129,22 @@ function Feedback({ phase }: { phase: Phase }) {
 }
 
 /**
- * One explicit-save form.
+ * One explicit-save form, with its outcome held above it.
  *
- * `key` on the caller's side is what resets a form after its data has been
- * re-read; nothing here writes into the fields, so a value an admin is part way
- * through typing is never replaced underneath them by a refresh.
+ * `key` on the caller's side is what refreshes the fields once the server has
+ * had its say — a WhatsApp number arrives back as digits, a map address comes
+ * back normalised — and a changing key remounts the component, which destroys
+ * everything it holds locally. The confirmation therefore cannot be local: the
+ * first version of this kept `phase` in here and keyed the form on a value the
+ * save itself changed, so "Saved live." existed for exactly as long as the
+ * refresh took and an admin saw a flicker at best.
+ *
+ * So `phase` is a prop. The remount that refreshes the inputs re-renders the
+ * same sentence, and it stays until that form is edited again, another action
+ * in the same group replaces it, or the drawer closes.
+ *
+ * `dirty` stays local on purpose: after the remount the fields hold canonical
+ * server values, which is exactly when "Not saved yet" should be gone.
  */
 function GlobalForm({
   title,
@@ -142,6 +153,8 @@ function GlobalForm({
   action,
   onSaved,
   submitLabel = "Save",
+  phase,
+  onPhase,
   children,
 }: {
   title: string;
@@ -150,9 +163,10 @@ function GlobalForm({
   action: Runner;
   onSaved: () => Promise<void> | void;
   submitLabel?: string;
+  phase: Phase;
+  onPhase: (phase: Phase) => void;
   children: (errors: Record<string, string>) => React.ReactNode;
 }) {
-  const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [dirty, setDirty] = useState(false);
   const errors = phase.kind === "error" ? (phase.errors ?? {}) : {};
 
@@ -162,14 +176,14 @@ function GlobalForm({
         setDirty(true);
         // A stale "Saved live." beside fields somebody is retyping is a lie
         // about the current state; an error stays until it is dealt with.
-        if (phase.kind === "saved") setPhase({ kind: "idle" });
+        if (phase.kind === "saved") onPhase({ kind: "idle" });
       }}
       onSubmit={async (event) => {
         event.preventDefault();
         const element = event.currentTarget;
         const form = new FormData(element);
         form.set("_csrf", csrf);
-        setPhase({ kind: "saving" });
+        onPhase({ kind: "saving" });
         let result: ActionState | null = null;
         try {
           result = await action(IDLE, form);
@@ -177,18 +191,24 @@ function GlobalForm({
           result = null;
         }
         if (!result) {
-          setPhase({ kind: "error", message: "That could not be sent. Try again." });
+          onPhase({ kind: "error", message: "That could not be sent. Try again." });
           return;
         }
         if (!result.ok) {
-          setPhase({
+          /**
+           * A refusal is the end of it: the fields keep what was typed, the
+           * message and any field errors stay, and nothing is re-read — a
+           * refresh here would replace the rejected values with the stored ones
+           * and lose the work the admin has to correct.
+           */
+          onPhase({
             kind: "error",
             message: result.message ?? "That was not saved.",
             errors: result.errors,
           });
           return;
         }
-        setPhase({ kind: "saved", message: "Saved live." });
+        onPhase({ kind: "saved", message: "Saved live." });
         setDirty(false);
         await onSaved();
       }}
@@ -253,11 +273,38 @@ function NavigationArea({
    * place either can be read.
    */
   const [notice, setNotice] = useState<{ ok: boolean; message: string } | null>(null);
+  /** The open form's outcome, held here so a remount cannot take it away. */
+  const [formPhase, setFormPhase] = useState<Phase>({ kind: "idle" });
 
   const inMenu = useMemo(
     () => rows.filter((row) => row.menu === menu),
     [rows, menu],
   );
+  /**
+   * Where each row sits **among its own siblings**, which is the only group a
+   * move can travel within.
+   *
+   * The list is drawn flat — a parent, then its children, then the next parent
+   * — so a row's position in it is not its position in its group. Disabling the
+   * arrows by that flat index gave a first child an enabled Move up, the server
+   * correctly found no previous sibling, and the panel reported a success for a
+   * move that never happened. Siblings are same menu **and** same parent, the
+   * same pair the server reorders within.
+   */
+  const place = useMemo(() => {
+    const groups = new Map<string, number[]>();
+    for (const row of inMenu) {
+      const key = String(row.parentId ?? "root");
+      groups.set(key, [...(groups.get(key) ?? []), row.id]);
+    }
+    const at = new Map<number, { first: boolean; last: boolean }>();
+    for (const ids of groups.values()) {
+      ids.forEach((id, index) =>
+        at.set(id, { first: index === 0, last: index === ids.length - 1 }),
+      );
+    }
+    return at;
+  }, [inMenu]);
   /** Top-level links of this menu, the only legal parents. */
   const parents = useMemo(
     () => inMenu.filter((row) => row.parentId === null),
@@ -327,7 +374,7 @@ function NavigationArea({
       ) : null}
 
       <ul className="flex flex-col gap-1">
-        {inMenu.map((row, index) => (
+        {inMenu.map((row) => (
           <li key={row.id} className="flex flex-col gap-1.5">
             <div
               className="flex items-center gap-1.5 rounded-lg border border-[var(--admin-line)] px-2 py-1.5"
@@ -350,7 +397,7 @@ function NavigationArea({
               <button
                 type="button"
                 className="admin-btn admin-btn-sm"
-                disabled={busy || index === 0}
+                disabled={busy || (place.get(row.id)?.first ?? true)}
                 aria-label={`Move ${row.labelEn} up`}
                 onClick={() => void runRow(moveNavItem, { id: String(row.id), direction: "up" })}
               >
@@ -359,7 +406,7 @@ function NavigationArea({
               <button
                 type="button"
                 className="admin-btn admin-btn-sm"
-                disabled={busy || index === inMenu.length - 1}
+                disabled={busy || (place.get(row.id)?.last ?? true)}
                 aria-label={`Move ${row.labelEn} down`}
                 onClick={() => void runRow(moveNavItem, { id: String(row.id), direction: "down" })}
               >
@@ -368,7 +415,10 @@ function NavigationArea({
               <button
                 type="button"
                 className="admin-btn admin-btn-sm"
-                onClick={() => setEditing(editing === row.id ? null : row.id)}
+                onClick={() => {
+                  setFormPhase({ kind: "idle" });
+                  setEditing(editing === row.id ? null : row.id);
+                }}
                 aria-expanded={editing === row.id}
               >
                 Edit
@@ -395,6 +445,8 @@ function NavigationArea({
                   menu={menu}
                   row={row}
                   parents={parents.filter((parent) => parent.id !== row.id)}
+                  phase={formPhase}
+                  onPhase={setFormPhase}
                   onSaved={async () => {
                     setEditing(null);
                     setNotice({ ok: true, message: "Saved live." });
@@ -418,6 +470,8 @@ function NavigationArea({
             menu={menu}
             row={null}
             parents={parents}
+            phase={formPhase}
+            onPhase={setFormPhase}
             onSaved={async () => {
               setEditing(null);
               setNotice({ ok: true, message: "Added, live now." });
@@ -426,7 +480,14 @@ function NavigationArea({
           />
         </div>
       ) : (
-        <button type="button" className="admin-btn admin-btn-sm" onClick={() => setEditing("new")}>
+        <button
+          type="button"
+          className="admin-btn admin-btn-sm"
+          onClick={() => {
+            setFormPhase({ kind: "idle" });
+            setEditing("new");
+          }}
+        >
           Add a link
         </button>
       )}
@@ -439,12 +500,16 @@ function NavForm({
   menu,
   row,
   parents,
+  phase,
+  onPhase,
   onSaved,
 }: {
   csrf: string;
   menu: string;
   row: GlobalNavRow | null;
   parents: GlobalNavRow[];
+  phase: Phase;
+  onPhase: (phase: Phase) => void;
   onSaved: () => Promise<void> | void;
 }) {
   return (
@@ -453,6 +518,8 @@ function NavForm({
       csrf={csrf}
       action={saveNavItem}
       onSaved={onSaved}
+      phase={phase}
+      onPhase={onPhase}
       submitLabel={row ? "Save link" : "Add link"}
     >
       {(errors) => (
@@ -523,6 +590,7 @@ function SocialArea({
   const [busy, setBusy] = useState(false);
   /** As in the navigation group: the row actions have nowhere else to report. */
   const [notice, setNotice] = useState<{ ok: boolean; message: string } | null>(null);
+  const [formPhase, setFormPhase] = useState<Phase>({ kind: "idle" });
 
   const runRow = useCallback(
     async (action: Runner, fields: Record<string, string>) => {
@@ -599,7 +667,10 @@ function SocialArea({
               <button
                 type="button"
                 className="admin-btn admin-btn-sm"
-                onClick={() => setEditing(editing === row.id ? null : row.id)}
+                onClick={() => {
+                  setFormPhase({ kind: "idle" });
+                  setEditing(editing === row.id ? null : row.id);
+                }}
                 aria-expanded={editing === row.id}
               >
                 Edit
@@ -623,6 +694,8 @@ function SocialArea({
                   key={`social-${row.id}-${row.url}`}
                   csrf={csrf}
                   row={row}
+                  phase={formPhase}
+                  onPhase={setFormPhase}
                   onSaved={async () => {
                     setEditing(null);
                     setNotice({ ok: true, message: "Saved live." });
@@ -644,6 +717,8 @@ function SocialArea({
             key="social-new"
             csrf={csrf}
             row={null}
+            phase={formPhase}
+            onPhase={setFormPhase}
             onSaved={async () => {
               setEditing(null);
               setNotice({ ok: true, message: "Added, live now." });
@@ -652,7 +727,14 @@ function SocialArea({
           />
         </div>
       ) : (
-        <button type="button" className="admin-btn admin-btn-sm" onClick={() => setEditing("new")}>
+        <button
+          type="button"
+          className="admin-btn admin-btn-sm"
+          onClick={() => {
+            setFormPhase({ kind: "idle" });
+            setEditing("new");
+          }}
+        >
           Add a social link
         </button>
       )}
@@ -663,10 +745,14 @@ function SocialArea({
 function SocialForm({
   csrf,
   row,
+  phase,
+  onPhase,
   onSaved,
 }: {
   csrf: string;
   row: { id: number; platform: string; url: string; isPublished: boolean } | null;
+  phase: Phase;
+  onPhase: (phase: Phase) => void;
   onSaved: () => Promise<void> | void;
 }) {
   /**
@@ -681,6 +767,8 @@ function SocialForm({
       csrf={csrf}
       action={saveSocialLink}
       onSaved={onSaved}
+      phase={phase}
+      onPhase={onPhase}
       submitLabel={row ? "Save link" : "Add link"}
     >
       {(errors) => (
@@ -729,6 +817,26 @@ export function GlobalsPanel({
   /** Re-read the globals and reload the canvas. Never touches page drafts. */
   onChanged: () => Promise<void> | void;
 }) {
+  /**
+   * What each settings form last reported, one entry per domain, held here
+   * rather than inside the forms.
+   *
+   * Each of those forms is keyed on a value its own save changes — that is what
+   * makes the fields show what the server actually stored — so the component
+   * that submitted is not the component that renders the answer. A confirmation
+   * kept inside it would be destroyed by the refresh it just triggered.
+   *
+   * Cleared when the drawer closes, so re-opening it does not begin with a
+   * sentence about something that happened earlier.
+   */
+  const [feedback, setFeedback] = useState<Record<string, Phase>>({});
+  useEffect(() => {
+    if (!open) setFeedback({});
+  }, [open]);
+  const phaseOf = (domain: string): Phase => feedback[domain] ?? { kind: "idle" };
+  const setPhaseOf = (domain: string) => (phase: Phase) =>
+    setFeedback((current) => ({ ...current, [domain]: phase }));
+
   if (!open) return null;
 
   const navigation = globals?.navigation ?? null;
@@ -787,6 +895,8 @@ export function GlobalsPanel({
               <Group title="Brand">
                 <GlobalForm
                   key={`brand-${settings.brand.siteNameEn}`}
+                  phase={phaseOf("brand")}
+                  onPhase={setPhaseOf("brand")}
                   title="Names and tagline"
                   description="Used in the header, the footer and the copyright line."
                   csrf={csrf}
@@ -821,6 +931,8 @@ export function GlobalsPanel({
               <Group title="Contact">
                 <GlobalForm
                   key={`contact-${settings.contact.phone}-${settings.contact.email}`}
+                  phase={phaseOf("contact")}
+                  onPhase={setPhaseOf("contact")}
                   title="How people reach the business"
                   description="Shown in the footer and on the contact page."
                   csrf={csrf}
@@ -884,6 +996,8 @@ export function GlobalsPanel({
               <Group title="WhatsApp">
                 <GlobalForm
                   key={`whatsapp-${settings.whatsapp.number}-${String(settings.whatsapp.enabled)}`}
+                  phase={phaseOf("whatsapp")}
+                  onPhase={setPhaseOf("whatsapp")}
                   title="The floating button and the chat links"
                   csrf={csrf}
                   action={saveWhatsapp}
@@ -931,6 +1045,8 @@ export function GlobalsPanel({
               <Group title="Disclaimers">
                 <GlobalForm
                   key={`disclaimers-${settings.disclaimers.governmentEn.slice(0, 24)}`}
+                  phase={phaseOf("disclaimers")}
+                  onPhase={setPhaseOf("disclaimers")}
                   title="The notices shown with services"
                   csrf={csrf}
                   action={saveDisclaimers}
@@ -985,6 +1101,8 @@ export function GlobalsPanel({
               <Group title="Features">
                 <GlobalForm
                   key={`features-${Object.values(settings.features).join("")}`}
+                  phase={phaseOf("features")}
+                  onPhase={setPhaseOf("features")}
                   title="What the site shows"
                   description="Only the switches whose effect is visible on the page beside this panel."
                   csrf={csrf}

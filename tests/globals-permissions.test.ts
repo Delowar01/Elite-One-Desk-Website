@@ -1111,6 +1111,132 @@ describe("a release can add a permission to a site that is already running", () 
       dropDatabase(upgrading);
     }
   });
+
+  /**
+   * The defect this test exists for: a role with no grants at all is not a new
+   * role.
+   *
+   * The seed used to decide "was this role just created" by asking whether it
+   * currently holds any permission. The Roles screen lets an owner take every
+   * permission off a non-owner role, and that is a decision — but it produced
+   * exactly the state the seed read as "uninitialised", so the next deployment
+   * handed the whole default set back. In a release about permissions, an
+   * upgrade that silently re-grants is the worst possible failure.
+   *
+   * The answer is to record which role *keys* existed before the seed wrote
+   * anything. An empty existing role is still an existing role: it may receive
+   * a key this run introduced, and nothing else.
+   */
+  test("an intentionally emptied role is not mistaken for a new one", async () => {
+    const upgrading = giveFresh("globals_empty_role");
+    const other = connect(upgrading);
+    try {
+      const grantsOf = async (role: string) =>
+        (
+          await other<{ key: string }[]>`
+            select p.key
+              from roles r
+              join role_permissions rp on rp.role_id = r.id
+              join permissions p on p.id = rp.permission_id
+             where r.key = ${role}
+             order by p.key`
+        ).map((row) => row.key);
+
+      // An installation from before this release…
+      await other`
+        delete from role_permissions
+         where permission_id = (select id from permissions where key = 'visual_editor.view')`;
+      await other`delete from permissions where key = 'visual_editor.view'`;
+
+      // …whose owner has emptied the Editor role completely.
+      const [editor] = await other<{ id: number }[]>`select id from roles where key = 'editor'`;
+      await other`delete from role_permissions where role_id = ${editor!.id}`;
+      assert.deepEqual(await grantsOf("editor"), []);
+
+      // Another role, left alone, to prove the run is not simply doing nothing.
+      const viewerBefore = await grantsOf("viewer");
+      assert.ok(viewerBefore.length > 0);
+
+      assert.equal(seed(upgrading).code, 0);
+
+      /**
+       * Editor gets the newly introduced key and **only** that key: it is in
+       * `ROLE_DEFAULTS.editor`, and everything else in that list was removed on
+       * purpose.
+       */
+      assert.deepEqual(
+        await grantsOf("editor"),
+        ["visual_editor.view"],
+        "the seed re-granted an emptied role's defaults",
+      );
+      for (const key of ["content.manage", "media.manage", "seo.manage", "services.manage", "packages.manage"]) {
+        assert.ok(
+          !(await grantsOf("editor")).includes(key),
+          `${key} came back to a role it had been taken from`,
+        );
+      }
+
+      // Viewer keeps what it had, plus the introduced key its defaults name.
+      assert.deepEqual(
+        await grantsOf("viewer"),
+        [...viewerBefore, "visual_editor.view"].sort(),
+        "an untouched role did not receive the introduced key cleanly",
+      );
+
+      // And a second run is byte-for-byte the same.
+      const after = await grantsOf("editor");
+      assert.equal(seed(upgrading).code, 0);
+      assert.deepEqual(await grantsOf("editor"), after, "a repeat seed moved the grants");
+    } finally {
+      await other.end({ timeout: 5 });
+      dropDatabase(upgrading);
+    }
+  });
+
+  /**
+   * A permission is only "introduced" once, and the catalogue write and the
+   * grants that follow it have to stand or fall together — otherwise a run that
+   * died between them would leave the key in the catalogue, already counted as
+   * known, guarding something nobody holds. Both halves are one transaction;
+   * this asserts the outcome that proves it, on a fresh database where every
+   * role and every key is new at once.
+   */
+  test("a fresh database gets every default, and a second run changes nothing", async () => {
+    const fresh = giveFresh("globals_first_run");
+    const other = connect(fresh);
+    try {
+      const grantsOf = async (role: string) =>
+        (
+          await other<{ key: string }[]>`
+            select p.key from roles r
+              join role_permissions rp on rp.role_id = r.id
+              join permissions p on p.id = rp.permission_id
+             where r.key = ${role} order by p.key`
+        ).map((row) => row.key);
+
+      for (const role of ["owner", "admin", "editor", "viewer"]) {
+        assert.deepEqual(
+          await grantsOf(role),
+          [...ROLE_DEFAULTS[role]!].sort(),
+          `${role} did not get its defaults on a first run`,
+        );
+        assert.ok((await grantsOf(role)).includes("visual_editor.view"));
+      }
+
+      const snapshot = await Promise.all(
+        ["owner", "admin", "editor", "viewer"].map((role) => grantsOf(role)),
+      );
+      assert.equal(seed(fresh).code, 0);
+      assert.deepEqual(
+        await Promise.all(["owner", "admin", "editor", "viewer"].map((role) => grantsOf(role))),
+        snapshot,
+        "running the seed twice changed the grants",
+      );
+    } finally {
+      await other.end({ timeout: 5 });
+      dropDatabase(fresh);
+    }
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1201,5 +1327,282 @@ describe("the ordinary Navigation screen still does everything it did", () => {
     const [{ id }] = await sql<{ id: number }[]>`
       select id from navigation_items where label_en = 'Temporary child'`;
     assert.equal(answered(await navAction("deleteNavItem", owner, { id: String(id) })).ok, true);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a navigation row cannot be put into a shape the site cannot draw", () => {
+  /**
+   * Both editing screens refuse these by having no control for them, which is
+   * not the same as refusing them. Everything here is a handcrafted request —
+   * the shape a stale tab, a copied form or a curious admin can produce — and
+   * both surfaces share this action, so one set of refusals covers both.
+   */
+
+  const rowsIn = (menu: string) =>
+    sql<{ id: number; parent_id: number | null; label_en: string; sort_order: number }[]>`
+      select id, parent_id, label_en, sort_order from navigation_items
+       where menu = ${menu} order by sort_order, id`;
+
+  const rowById = async (id: number) =>
+    (
+      await sql<{ menu: string; parent_id: number | null; label_en: string; href: string }[]>`
+        select menu, parent_id, label_en, href from navigation_items where id = ${id}`
+    )[0]!;
+
+  test("A · an existing link cannot be moved to another menu", async () => {
+    const [header] = await rowsIn("header");
+    const before = await rowById(header!.id);
+    const auditBefore = (
+      await sql<{ n: number }[]>`
+        select count(*)::int as n from activity_logs
+         where action in ('navigation.updated', 'navigation.created')`
+    )[0]!.n;
+
+    const result = answered(
+      await navAction("saveNavItem", owner, {
+        id: String(header!.id),
+        menu: "footer_services",
+        labelEn: before.label_en,
+        href: before.href,
+        isPublished: "on",
+      }),
+    );
+    assert.equal(result.ok, false, "a header link was moved into a footer column");
+    assert.match(result.message ?? "", /cannot change its menu/i);
+
+    const after = await rowById(header!.id);
+    assert.equal(after.menu, "header", "the menu changed anyway");
+    assert.equal(after.parent_id, before.parent_id);
+    assert.equal(after.label_en, before.label_en);
+
+    // …and nothing was written to the activity log as a success.
+    const [{ n }] = await sql<{ n: number }[]>`
+      select count(*)::int as n from activity_logs
+       where action in ('navigation.updated', 'navigation.created')`;
+    assert.equal(n, auditBefore, "a refused move still wrote an audit line");
+  });
+
+  test("B · a parent with children cannot be moved, and no cross-menu tree appears", async () => {
+    const parents = await rowsIn("header");
+    const parent = parents.find((row) => row.parent_id === null)!;
+    const child = answered(
+      await navAction("saveNavItem", owner, {
+        menu: "header",
+        labelEn: "A child of its parent",
+        href: "/about",
+        parentId: String(parent.id),
+        isPublished: "on",
+      }),
+    );
+    assert.equal(child.ok, true, child.message);
+
+    const moved = answered(
+      await navAction("saveNavItem", owner, {
+        id: String(parent.id),
+        menu: "footer_company",
+        labelEn: parent.label_en,
+        href: "/",
+        isPublished: "on",
+      }),
+    );
+    assert.equal(moved.ok, false, "a parent was moved into a footer column");
+
+    assert.equal((await rowById(parent.id)).menu, "header");
+    const [orphan] = await sql<{ menu: string; parent_id: number | null }[]>`
+      select menu, parent_id from navigation_items where label_en = 'A child of its parent'`;
+    assert.equal(orphan!.menu, "header");
+    assert.equal(orphan!.parent_id, parent.id);
+
+    // No row anywhere points at a parent in a different menu.
+    const [{ n }] = await sql<{ n: number }[]>`
+      select count(*)::int as n
+        from navigation_items child
+        join navigation_items parent on parent.id = child.parent_id
+       where child.menu <> parent.menu`;
+    assert.equal(n, 0, "the stored tree crosses menus");
+
+    const [{ id }] = await sql<{ id: number }[]>`
+      select id from navigation_items where label_en = 'A child of its parent'`;
+    assert.equal(answered(await navAction("deleteNavItem", owner, { id: String(id) })).ok, true);
+  });
+
+  test("C · a footer link cannot be nested under another", async () => {
+    const first = answered(
+      await navAction("saveNavItem", owner, {
+        menu: "footer_company",
+        labelEn: "Footer root one",
+        href: "/about",
+        isPublished: "on",
+      }),
+    );
+    assert.equal(first.ok, true, first.message);
+    const second = answered(
+      await navAction("saveNavItem", owner, {
+        menu: "footer_company",
+        labelEn: "Footer root two",
+        href: "/contact",
+        isPublished: "on",
+      }),
+    );
+    assert.equal(second.ok, true, second.message);
+
+    const [one] = await sql<{ id: number }[]>`
+      select id from navigation_items where label_en = 'Footer root one'`;
+    const [two] = await sql<{ id: number }[]>`
+      select id from navigation_items where label_en = 'Footer root two'`;
+
+    const nested = answered(
+      await navAction("saveNavItem", owner, {
+        id: String(two!.id),
+        menu: "footer_company",
+        labelEn: "Footer root two",
+        href: "/contact",
+        parentId: String(one!.id),
+        isPublished: "on",
+      }),
+    );
+    assert.equal(nested.ok, false, "a footer link was given a parent");
+    assert.match(nested.message ?? "", /only the header menu has sub-links/i);
+
+    assert.equal((await rowById(one!.id)).parent_id, null);
+    assert.equal((await rowById(two!.id)).parent_id, null);
+
+    // …and the same refusal on creation, not only on an edit.
+    const created = answered(
+      await navAction("saveNavItem", owner, {
+        menu: "footer_legal",
+        labelEn: "Nested from birth",
+        href: "/privacy",
+        parentId: String(one!.id),
+        isPublished: "on",
+      }),
+    );
+    assert.equal(created.ok, false);
+    const [absent] = await sql<{ id: number }[]>`
+      select id from navigation_items where label_en = 'Nested from birth'`;
+    assert.equal(absent, undefined);
+
+    for (const row of [one, two]) {
+      assert.equal(
+        answered(await navAction("deleteNavItem", owner, { id: String(row!.id) })).ok,
+        true,
+      );
+    }
+  });
+
+  test("D · a header child under a header root still works", async () => {
+    const roots = (await rowsIn("header")).filter((row) => row.parent_id === null);
+    const root = roots[0]!;
+    const added = answered(
+      await navAction("saveNavItem", owner, {
+        menu: "header",
+        labelEn: "Legitimate sub-link",
+        href: "/services",
+        parentId: String(root.id),
+        isPublished: "on",
+      }),
+    );
+    assert.equal(added.ok, true, added.message);
+    const [row] = await sql<{ parent_id: number | null; menu: string }[]>`
+      select parent_id, menu from navigation_items where label_en = 'Legitimate sub-link'`;
+    assert.equal(row!.parent_id, root.id);
+    assert.equal(row!.menu, "header");
+
+    const [{ id }] = await sql<{ id: number }[]>`
+      select id from navigation_items where label_en = 'Legitimate sub-link'`;
+    assert.equal(answered(await navAction("deleteNavItem", owner, { id: String(id) })).ok, true);
+  });
+
+  test("E · an ordinary footer add and edit still work", async () => {
+    const added = answered(
+      await navAction("saveNavItem", owner, {
+        menu: "footer_services",
+        labelEn: "Ordinary footer link",
+        href: "/services",
+        sortOrder: "3",
+        isPublished: "on",
+      }),
+    );
+    assert.equal(added.ok, true, added.message);
+    const [row] = await sql<{ id: number; sort_order: number }[]>`
+      select id, sort_order from navigation_items where label_en = 'Ordinary footer link'`;
+
+    const edited = answered(
+      await navAction("saveNavItem", owner, {
+        id: String(row!.id),
+        menu: "footer_services",
+        labelEn: "Ordinary footer link, renamed",
+        href: "/contact",
+        isPublished: "on",
+      }),
+    );
+    assert.equal(edited.ok, true, edited.message);
+    const [after] = await sql<{ label_en: string; href: string; sort_order: number }[]>`
+      select label_en, href, sort_order from navigation_items where id = ${row!.id}`;
+    assert.equal(after!.label_en, "Ordinary footer link, renamed");
+    assert.equal(after!.href, "/contact");
+    assert.equal(after!.sort_order, row!.sort_order, "an ordinary footer edit moved the link");
+
+    assert.equal(answered(await navAction("deleteNavItem", owner, { id: String(row!.id) })).ok, true);
+  });
+
+  test("a move with no sibling to swap with says so instead of claiming a save", async () => {
+    const roots = (await rowsIn("header")).filter((row) => row.parent_id === null);
+    const first = roots[0]!;
+    const before = await sql<{ id: number; sort_order: number }[]>`
+      select id, sort_order from navigation_items order by id`;
+
+    const result = answered(
+      await navAction("moveNavItem", owner, { id: String(first.id), direction: "up" }),
+    );
+    assert.match(
+      result.message ?? "",
+      /already first in its group/i,
+      `a no-op move reported: ${JSON.stringify(result.message ?? null)}`,
+    );
+
+    const after = await sql<{ id: number; sort_order: number }[]>`
+      select id, sort_order from navigation_items order by id`;
+    assert.deepEqual(after.map((r) => ({ ...r })), before.map((r) => ({ ...r })));
+  });
+
+  test("a first child is also at the top of its own group", async () => {
+    const roots = (await rowsIn("header")).filter((row) => row.parent_id === null);
+    const root = roots[0]!;
+    assert.equal(
+      answered(
+        await navAction("saveNavItem", owner, {
+          menu: "header",
+          labelEn: "Only child",
+          href: "/about",
+          parentId: String(root.id),
+          isPublished: "on",
+        }),
+      ).ok,
+      true,
+    );
+    const [child] = await sql<{ id: number }[]>`
+      select id from navigation_items where label_en = 'Only child'`;
+
+    /**
+     * The row sits well down the flat list of its menu, so an index taken from
+     * that list would have offered it a Move up. Its sibling group has one
+     * member, and the server says so.
+     */
+    const up = answered(
+      await navAction("moveNavItem", owner, { id: String(child!.id), direction: "up" }),
+    );
+    assert.match(up.message ?? "", /already first in its group/i);
+    const down = answered(
+      await navAction("moveNavItem", owner, { id: String(child!.id), direction: "down" }),
+    );
+    assert.match(down.message ?? "", /already last in its group/i);
+
+    assert.equal(
+      answered(await navAction("deleteNavItem", owner, { id: String(child!.id) })).ok,
+      true,
+    );
   });
 });

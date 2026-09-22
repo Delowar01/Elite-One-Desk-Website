@@ -37,73 +37,97 @@ import { LEGACY_NOTICE, taxonomyState, type TaxonomyState } from "./seed/state";
  * re-running the seed, without touching the site's own content.
  */
 
+/**
+ * Roles, permissions and the default grants between them — in one transaction.
+ *
+ * This is the upgrade path as much as the first run, and the two need opposite
+ * things from it. A brand new installation wants every role filled in from
+ * `ROLE_DEFAULTS`. An installation that has been running wants its grants left
+ * exactly as its owner arranged them, including the ones they took away.
+ *
+ * Two facts are read **before** anything is written, because afterwards neither
+ * can be recovered:
+ *
+ *   `permissionsBefore`  which keys this database already knew about. A key
+ *                        that was not in the catalogue a moment ago cannot be a
+ *                        grant anybody decided against, so it may be given to
+ *                        the roles `ROLE_DEFAULTS` says want it. Once it is in
+ *                        the catalogue, never again.
+ *   `rolesBefore`        which roles already existed. This is the *only* sound
+ *                        test for "did this run create the role", and getting
+ *                        it wrong is how the previous version expanded access:
+ *                        it asked whether the role currently holds no grants,
+ *                        which is also true of a role an owner has deliberately
+ *                        emptied. The next deploy handed the whole default set
+ *                        back.
+ *
+ * One transaction, because the two halves only make sense together. The catalogue
+ * insert used to commit on its own: if the process then died before the grants,
+ * a second run would find the new key already present, conclude it was not
+ * introduced, and leave it in the catalogue guarding something with nobody
+ * holding it. Now either both land or neither does.
+ *
+ * The owner role is deliberately not special-cased here. Its protection is where
+ * it has always been — the Roles screen refuses to narrow it — and inventing a
+ * second owner-permission model in the seed would be a way for the two to
+ * disagree.
+ */
 async function seedRolesAndPermissions() {
-  /**
-   * Which keys this database already knew about, read *before* the catalogue is
-   * written — the one moment it is possible to tell a permission that is new to
-   * this installation from one whose grants are somebody's decision.
-   *
-   * It is what lets a release add a permission to an existing site. The grant
-   * loop below only fills a role that has none at all, so on a database that has
-   * been running, a new key would land in the catalogue and reach nobody: every
-   * role would silently lose whatever the new key now guards. Backfilling by
-   * "is it missing?" instead would undo every grant an owner had removed, every
-   * time the seed ran.
-   */
-  const before = new Set(
-    (await db.select({ key: permissionsTable.key }).from(permissionsTable)).map((row) => row.key),
-  );
-
-  for (const permission of PERMISSIONS) {
-    await db
-      .insert(permissionsTable)
-      .values({ key: permission.key, label: permission.label, groupName: permission.group })
-      .onConflictDoUpdate({
-        target: permissionsTable.key,
-        set: { label: permission.label, groupName: permission.group },
-      });
-  }
-
-  const introduced = PERMISSIONS.map((p) => p.key).filter((key) => !before.has(key));
-
-  for (const [key, grants] of Object.entries(ROLE_DEFAULTS)) {
-    const labels = ROLE_LABELS[key]!;
-    await db
-      .insert(roles)
-      .values({
-        key: key as "owner" | "admin" | "editor" | "viewer",
-        name: labels.name,
-        description: labels.description,
-        isSystem: true,
-      })
-      .onConflictDoNothing({ target: roles.key });
-
-    const [role] = await db.select().from(roles).where(eq(roles.key, key as "owner")).limit(1);
-    if (!role) continue;
-
-    const existing = await db
-      .select({ id: rolePermissions.permissionId })
-      .from(rolePermissions)
-      .where(eq(rolePermissions.roleId, role.id));
-
-    // Only fill in grants that are missing, so an owner who removed one from a
-    // role in the panel does not get it back on the next deploy.
-    //
-    // `introduced` is the exception, and a narrow one: a key this database had
-    // never heard of until a moment ago cannot be a grant anybody decided
-    // against, so the role that was always meant to have it gets it. Once the
-    // key is in the catalogue this never fires again.
-    const wanted = new Set<string>(
-      existing.length === 0 ? grants : grants.filter((grant) => introduced.includes(grant)),
+  await db.transaction(async (tx) => {
+    const permissionsBefore = new Set(
+      (await tx.select({ key: permissionsTable.key }).from(permissionsTable)).map((row) => row.key),
     );
-    if (wanted.size) {
-      const rows = await db.select().from(permissionsTable);
-      const values = rows
-        .filter((p) => wanted.has(p.key))
-        .map((p) => ({ roleId: role.id, permissionId: p.id }));
-      if (values.length) await db.insert(rolePermissions).values(values).onConflictDoNothing();
+    const rolesBefore = new Set(
+      (await tx.select({ key: roles.key }).from(roles)).map((row) => row.key as string),
+    );
+
+    for (const permission of PERMISSIONS) {
+      await tx
+        .insert(permissionsTable)
+        .values({ key: permission.key, label: permission.label, groupName: permission.group })
+        .onConflictDoUpdate({
+          target: permissionsTable.key,
+          set: { label: permission.label, groupName: permission.group },
+        });
     }
-  }
+
+    const introduced = new Set(
+      PERMISSIONS.map((p) => p.key).filter((key) => !permissionsBefore.has(key)),
+    );
+    const catalogue = await tx.select().from(permissionsTable);
+
+    for (const [key, grants] of Object.entries(ROLE_DEFAULTS)) {
+      const labels = ROLE_LABELS[key]!;
+      await tx
+        .insert(roles)
+        .values({
+          key: key as "owner" | "admin" | "editor" | "viewer",
+          name: labels.name,
+          description: labels.description,
+          isSystem: true,
+        })
+        .onConflictDoNothing({ target: roles.key });
+
+      const [role] = await tx.select().from(roles).where(eq(roles.key, key as "owner")).limit(1);
+      if (!role) continue;
+
+      /**
+       * A role this run created is being initialised and gets its whole default
+       * set. A role that was already here keeps every decision made about it and
+       * receives only the keys this run introduced — and only those its defaults
+       * name, so a permission added for admins does not arrive on the viewer.
+       */
+      const wanted = rolesBefore.has(key)
+        ? grants.filter((grant) => introduced.has(grant))
+        : grants;
+      if (!wanted.length) continue;
+
+      const values = catalogue
+        .filter((permission) => (wanted as readonly string[]).includes(permission.key))
+        .map((permission) => ({ roleId: role.id, permissionId: permission.id }));
+      if (values.length) await tx.insert(rolePermissions).values(values).onConflictDoNothing();
+    }
+  });
   console.log("· roles and permissions");
 }
 
