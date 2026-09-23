@@ -72,52 +72,71 @@ export function SectionForm({
   const [notice, setNotice] = useState<string | null>(null);
 
   /**
-   * What this screen currently believes the row to be.
+   * One server state, held as one value — the fix for a pairing this screen
+   * could otherwise get wrong.
    *
-   * Seeded from the server render and then moved by the actions themselves,
-   * because the re-render that should have moved it is not guaranteed to
-   * arrive: the server produces it correctly every time, and the router applies
-   * it *nearly* every time — two of twelve consecutive saves left this
-   * component un-rendered while the row had moved on. The consequence was not
-   * cosmetic. The next save named the revision this screen was built with, the
-   * server saw a row that had moved past it, and an editor who had just saved
-   * successfully was told somebody else had changed the section.
+   * Everything below is derived from a single row as the server read it: the
+   * words in the fields, the entrance in the menu, which draft is pending, and
+   * the revision the save names. A save is only safe when those travel
+   * together. Splitting them — revision in one state, values in another —
+   * admitted a state nothing else on the screen announces: old words on screen,
+   * new revision in the hidden input. The server checks the revision and
+   * nothing else, so such a save would be accepted, and an edit somebody else
+   * had just made would be overwritten by wording this editor never saw.
    *
-   * So each action returns what it wrote, and that answer — which travels with
-   * the message, through the one channel that cannot be dropped — is what the
-   * hidden revision, the draft banner and the Publish and Discard controls
-   * read. The server's own view still wins whenever it is ahead, so a change
-   * made in the Visual Editor or another tab is adopted as soon as the
-   * re-render lands.
+   * So there is one object, and exactly one thing moves it: an action of this
+   * screen's own that succeeded and reported what it wrote. That is the one
+   * case where the pair is still honest — the words on screen are the words
+   * this tab just sent, and the revision is the one the server gave them.
+   *
+   * It is moved that way, rather than by the re-render, because the re-render
+   * is not guaranteed to arrive: the server produces it correctly every time,
+   * and the router applies it *nearly* every time — two of twelve consecutive
+   * saves left this component un-rendered while the row had moved on. The next
+   * save then named a revision the row had passed, and an editor who had just
+   * saved successfully was told somebody else had changed the section.
+   *
+   * A newer server state is deliberately NOT adopted here. When the Visual
+   * Editor, a second tab or a colleague moves the row, this screen keeps
+   * showing what it has, its save is refused with the banner below, and the
+   * editor reloads — which remounts this component and brings words and
+   * revision forward together. Adopting only the revision would silently arm
+   * the overwrite described above; adopting the values too would delete
+   * whatever is half-typed in the fields. Refusing is the only answer that
+   * loses nothing.
    */
-  const [live, setLive] = useState({
+  const [screen, setScreen] = useState({
+    /**
+     * Bumped only when a write replaced what the fields should hold — a
+     * discard, putting the published wording back. A save must not bump it:
+     * the fields already hold what was typed, and rebuilding them would move
+     * the caret.
+     */
+    token: 0,
+    id: section.id,
     revision: section.revision,
     draftKind: section.draftKind,
     animation: section.animation,
     isDraftOnly: section.isDraftOnly,
+    values: section.values,
   });
-  /** Bumped only when a write replaced what the fields should hold. */
-  const [seed, setSeed] = useState({ token: 0, values: section.values });
-
-  if (section.revision > live.revision) {
-    setLive({
-      revision: section.revision,
-      draftKind: section.draftKind,
-      animation: section.animation,
-      isDraftOnly: section.isDraftOnly,
-    });
-  }
 
   const adopt = useCallback((state: ActionState) => {
     const next = state.section;
     if (!next) return;
-    setLive({
+    setScreen((current) => ({
+      ...current,
+      // `values` present means the write replaced them, so the fields must be
+      // rebuilt from it; absent means the fields already hold what was sent.
+      // Either way the revision that arrives with them is the one those exact
+      // values now carry.
+      token: next.values ? current.token + 1 : current.token,
       revision: next.revision,
       draftKind: next.draftKind,
       animation: next.animation,
       isDraftOnly: next.isDraftOnly,
-    });
-    if (next.values) setSeed((current) => ({ token: current.token + 1, values: next.values! }));
+      values: next.values ?? current.values,
+    }));
   }, []);
 
   const onResult = useCallback(
@@ -130,7 +149,7 @@ export function SectionForm({
 
   return (
     <div className="space-y-5">
-      {live.isDraftOnly ? (
+      {screen.isDraftOnly ? (
         <div className="admin-card flex flex-wrap items-center gap-3 p-4">
           <span className="admin-badge" style={{ color: "#5ad19a" }}>
             New section
@@ -146,7 +165,7 @@ export function SectionForm({
         </div>
       ) : null}
 
-      {hasDraft(live.draftKind) && !live.isDraftOnly ? (
+      {hasDraft(screen.draftKind) && !screen.isDraftOnly ? (
         <div className="admin-card flex flex-wrap items-center gap-3 p-4">
           <span className="admin-badge" style={{ color: "#ffd166" }}>
             Unpublished draft
@@ -158,8 +177,8 @@ export function SectionForm({
               both, so an editor about to press either should know what is in
               the pile.
             */}
-            {DRAFT_LABEL[live.draftKind]}. The live site still shows the previous version.
-            {live.draftKind === "style"
+            {DRAFT_LABEL[screen.draftKind]}. The live site still shows the previous version.
+            {screen.draftKind === "style"
               ? " Styles are edited in the Visual Editor."
               : ""}
           </p>
@@ -176,7 +195,7 @@ export function SectionForm({
           */}
           <InlineAction
             action={publishSection}
-            hidden={{ _csrf: csrf, id: section.id, expectedRevision: live.revision }}
+            hidden={{ _csrf: csrf, id: screen.id, expectedRevision: screen.revision }}
             onResult={onResult}
           >
             <ConfirmSubmit
@@ -189,7 +208,7 @@ export function SectionForm({
           </InlineAction>
           <InlineAction
             action={discardDraft}
-            hidden={{ _csrf: csrf, id: section.id, expectedRevision: live.revision }}
+            hidden={{ _csrf: csrf, id: screen.id, expectedRevision: screen.revision }}
             onResult={onResult}
           >
             <ConfirmSubmit className="admin-btn-sm" message="Discard this draft and keep the live version?">
@@ -217,21 +236,22 @@ export function SectionForm({
         onSaved={onResult}
       >
         <input type="hidden" name="_csrf" value={csrf} />
-        <input type="hidden" name="id" value={section.id} />
+        <input type="hidden" name="id" value={screen.id} />
         {/*
-          The revision this screen was built from. Saving names it, so a save
+          The revision the words below came from. Saving names it, so a save
           that has been overtaken — by the Visual Editor, by a second tab, by a
-          colleague — is refused rather than silently winning.
+          colleague — is refused rather than silently winning. It moves only
+          with them, never on its own; see `screen` above.
         */}
-        <input type="hidden" name="expectedRevision" value={live.revision} />
+        <input type="hidden" name="expectedRevision" value={screen.revision} />
 
         {/*
-          `seed.token` changes only when an action replaced the values — a
+          `screen.token` changes only when an action replaced the values — a
           discard putting the published wording back. A save must not remount
           this: the fields already hold what was typed, and rebuilding them
           would move the caret.
         */}
-        <BlockEditor key={seed.token} block={block} initial={seed.values} media={media} />
+        <BlockEditor key={screen.token} block={block} initial={screen.values} media={media} />
 
         <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
           <label className="admin-label" htmlFor="animation">
@@ -240,8 +260,8 @@ export function SectionForm({
           <select
             id="animation"
             name="animation"
-            key={`motion-${live.animation}-${seed.token}`}
-            defaultValue={live.animation}
+            key={`motion-${screen.animation}-${screen.token}`}
+            defaultValue={screen.animation}
             className="admin-select max-w-sm"
           >
             {MOTION_PRESETS.map((preset) => (
@@ -264,7 +284,7 @@ export function SectionForm({
 
         <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--admin-line)] pt-5">
           <SubmitButton variant="ghost">Save draft</SubmitButton>
-          {live.isDraftOnly ? null : (
+          {screen.isDraftOnly ? null : (
             <AlternateSubmit pendingLabel="Publishing…">Save and publish</AlternateSubmit>
           )}
           <a href={previewHref} target="_blank" rel="noopener" className="admin-btn">

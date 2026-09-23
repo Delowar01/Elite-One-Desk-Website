@@ -161,6 +161,35 @@ export async function recordRestorePointIn(
   return { versionId, pruned };
 }
 
+/**
+ * The order restore points are in — by **id**, and not by when they say they
+ * were taken.
+ *
+ * `created_at` is `defaultNow()`, and Postgres's `now()` is the *transaction*
+ * timestamp: the moment the transaction executed its first statement, not the
+ * moment this row was written. Every restore point is inserted while holding
+ * the page row `FOR UPDATE` (see `recordRestorePointIn`), so publications
+ * serialize — but a transaction can begin well before it reaches that lock.
+ * Two publications of one page can therefore begin in one order and serialize
+ * in the other, and then the later publication's row carries the earlier
+ * timestamp.
+ *
+ * Demonstrated rather than reasoned about: with A's transaction begun first and
+ * B's allowed to take the lock first, B inserted `id = 1` stamped 20:41:51.449
+ * and A inserted `id = 2` stamped 20:41:51.439 — ten milliseconds *earlier*
+ * than the row written before it. Ordering by time then called B the newest
+ * restore point when A was, which is how a concurrent publication could offer
+ * an intermediate state as the page's starting point.
+ *
+ * `id` is a `serial`, allocated by the INSERT itself, and every INSERT happens
+ * under the page lock — so for one page it is exactly publication order. That
+ * invariant is what makes this sound, and it is asserted in the tests: if a
+ * history writer ever appears that does not hold the lock, the ordering has to
+ * be reconsidered rather than the invariant quietly broken.
+ *
+ * `created_at` stays, and is still what the panel shows an editor. It is a
+ * timestamp for reading, not for sorting.
+ */
 export async function listPageVersions(pageId: number, limit = 20) {
   return db
     .select({
@@ -171,7 +200,7 @@ export async function listPageVersions(pageId: number, limit = 20) {
     })
     .from(pageVersions)
     .where(eq(pageVersions.pageId, pageId))
-    .orderBy(desc(pageVersions.createdAt), desc(pageVersions.id))
+    .orderBy(desc(pageVersions.id))
     .limit(limit);
 }
 
@@ -241,10 +270,11 @@ export async function prunePageVersionsIn(
     .select({ id: pageVersions.id })
     .from(pageVersions)
     .where(eq(pageVersions.pageId, pageId))
-    // Newest first, id as the tiebreaker: two rows written inside one clock
-    // tick are indistinguishable by time, and a history whose order depends on
-    // timestamp resolution would prune a different row on a faster machine.
-    .orderBy(desc(pageVersions.createdAt), desc(pageVersions.id));
+    // The same order the history list uses, and it has to be: a ceiling that
+    // counted from one end while the screen counted from the other would throw
+    // away a restore point an editor could see, and keep one they could not.
+    // See `listPageVersions` for why that order is the id.
+    .orderBy(desc(pageVersions.id));
 
   const doomed = rows.slice(Math.max(0, keep));
   if (!doomed.length) return 0;

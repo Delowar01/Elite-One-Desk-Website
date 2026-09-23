@@ -28,6 +28,7 @@ import { STYLE_DOCUMENT_VERSION } from "@/lib/cms/styles";
 import {
   KEEP_PAGE_VERSIONS,
   type PageActionResult,
+  type PageHistoryView,
   type PageSummaryView,
 } from "@/lib/visual-editor/publish";
 
@@ -85,10 +86,43 @@ const sectionById = async (id: number): Promise<SectionRow | null> => {
 const versionCount = async (pageId: number): Promise<number> =>
   (await sql<{ n: number }[]>`select count(*)::int as n from page_versions where page_id = ${pageId}`)[0]!.n;
 
-const versionsOf = async (pageId: number) =>
-  sql<{ id: number; label: string; actor_name: string; created_by: number | null }[]>`
-    select id, label, actor_name, created_by from page_versions
-     where page_id = ${pageId} order by created_at desc, id desc`;
+/**
+ * A page's restore points, newest first, in the order the *application* puts
+ * them in.
+ *
+ * Read through `loadPageHistory` — the action behind the Pages screen's history
+ * panel and the Visual Editor's — rather than with an `order by` written here.
+ * It used to sort by `created_at desc, id desc`, which is a second, private
+ * idea of "newest". It agreed with the screen most of the time, and disagreed
+ * exactly when two publications' transaction timestamps did not match the order
+ * they serialized in: the test then called an intermediate state the older one
+ * and failed, intermittently, on a page whose history was in fact correct. A
+ * test that carries its own idea of newest cannot check the real one.
+ *
+ * The columns the view does not carry are read by id afterwards and returned in
+ * the order the view gave.
+ */
+const versionsOf = async (pageId: number) => {
+  const view = (
+    await callAction<PageHistoryView | null>({
+      origin: server.origin,
+      route: VE_ROUTE,
+      file: VE_ACTIONS,
+      action: "loadPageHistory",
+      args: [pageId],
+      cookie: owner.cookie,
+    })
+  ).value;
+  assert.ok(view, "the history action answered with nothing");
+  const rows = await sql<{ id: number; label: string; actor_name: string; created_by: number | null }[]>`
+    select id, label, actor_name, created_by from page_versions where page_id = ${pageId}`;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return view.versions.map((version) => {
+    const row = byId.get(version.id);
+    assert.ok(row, `the history named version ${version.id}, which is not in the table`);
+    return row;
+  });
+};
 
 const logCount = async (action: string): Promise<number> =>
   (await sql<{ n: number }[]>`select count(*)::int as n from activity_logs where action = ${action}`)[0]!.n;
@@ -760,6 +794,240 @@ describe("history is written by publication and by nothing else", () => {
     const refused = answered(await publish({ id: page.id, revision: 0 }));
     assert.equal(refused.ok, false);
     assert.equal(await logCount("page.changes_published"), before + 1, "a refusal was logged as a publish");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("history is ordered by when a publication happened, not by when it says", () => {
+  /**
+   * `page_versions.created_at` is `defaultNow()`, and Postgres's `now()` is the
+   * *transaction* timestamp — fixed when the transaction began, not when the
+   * row was written. Restore points are written while holding the page row, so
+   * they are written in publication order; but a transaction can begin well
+   * before it reaches that lock, so two publications of one page can begin in
+   * one order and serialize in the other. The one that serialized second then
+   * carries the earlier timestamp. Measured, with the two transactions
+   * interleaved by hand: the row written second was stamped ten milliseconds
+   * before the row written first.
+   *
+   * Reading history by time therefore offered an intermediate state as the
+   * page's starting point, and the retention ceiling counted from a different
+   * end than the list did — intermittently, on a page whose history was in fact
+   * perfectly correct.
+   *
+   * The inversion is written here rather than raced for. The mechanism is
+   * settled; what these tests are for is that the application never reads that
+   * column to decide what happened first.
+   */
+  const snapshotTitle = async (versionId: number, sectionId: number): Promise<string> => {
+    const [row] = await sql<
+      { snapshot: { sections: { sourceSectionId: number; published: Record<string, unknown> }[] } }[]
+    >`select snapshot from page_versions where id = ${versionId}`;
+    const entry = row!.snapshot.sections.find((section) => section.sourceSectionId === sectionId);
+    return (entry?.published.title as { en?: string } | undefined)?.en ?? "";
+  };
+
+  const idsOf = async (pageId: number): Promise<number[]> =>
+    (await sql<{ id: number }[]>`
+      select id from page_versions where page_id = ${pageId} order by id asc`).map((row) => row.id);
+
+  /**
+   * Publish a page twice, so its history holds the state it started in and the
+   * state in between. `first` is the older publication's restore point — the
+   * lower id, written first, holding "State A".
+   */
+  async function twoPublications(slug: string) {
+    const page = await reset(slug);
+    const section = (await sectionsOf(page.id))[0]!;
+    await sql`update page_sections set published = jsonb_set(published, '{title,en}', '"State A"')
+               where id = ${section.id}`;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "State B", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+    assert.equal(answered(await publish(await pageBySlug(slug))).ok, true);
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "State C", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+    assert.equal(answered(await publish(await pageBySlug(slug))).ok, true);
+
+    const ids = await idsOf(page.id);
+    assert.equal(ids.length, 2, `${ids.length} restore points after two publications`);
+    return { page, section, first: ids[0]!, second: ids[1]! };
+  }
+
+  /** Stamp a restore point, in minutes from now — negative is into the past. */
+  const stamp = (versionId: number, minutes: number) =>
+    sql`update page_versions set created_at = now() + make_interval(mins => ${minutes})
+         where id = ${versionId}`;
+
+  test("sequential publications are listed newest first", async () => {
+    const { page, section, first, second } = await twoPublications("privacy");
+    const listed = await versionsOf(page.id);
+    assert.deepEqual(listed.map((version) => version.id), [second, first]);
+    assert.equal(await snapshotTitle(listed[0]!.id, section.id), "State B");
+    assert.equal(await snapshotTitle(listed[1]!.id, section.id), "State A");
+  });
+
+  test("…and are still listed that way when the timestamps say the opposite", async () => {
+    const { page, section, first, second } = await twoPublications("about");
+    assert.equal(await snapshotTitle(first, section.id), "State A");
+    assert.equal(await snapshotTitle(second, section.id), "State B");
+
+    // Exactly what a transaction that began earlier and serialized later leaves
+    // behind: the row written second, stamped before the row written first.
+    await stamp(first, 0);
+    await stamp(second, -1);
+
+    const listed = await versionsOf(page.id);
+    assert.deepEqual(
+      listed.map((version) => version.id),
+      [second, first],
+      "the history followed the timestamps rather than the publications",
+    );
+    assert.equal(
+      await snapshotTitle(listed[0]!.id, section.id),
+      "State B",
+      "the newest restore point is not the state between the two publications",
+    );
+    assert.equal(await snapshotTitle(listed[1]!.id, section.id), "State A");
+  });
+
+  test("the Pages screen lists them in that order too", async () => {
+    // Two restore points that can be told apart in the markup: one written by
+    // a page publication, one by a section publication.
+    const page = await reset("terms");
+    const section = (await sectionsOf(page.id))[0]!;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "By the page", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+    assert.equal(answered(await publish(await pageBySlug("terms"))).ok, true);
+
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "By the section", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("id", String(section.id));
+    form.set("expectedRevision", String((await sectionById(section.id))!.revision));
+    assert.equal(
+      answered(
+        await callAction<{ ok: boolean; message?: string }>({
+          origin: server.origin,
+          route: `/admin/pages/section/${section.id}`,
+          file: PAGE_ACTIONS,
+          action: "publishSection",
+          args: [{ ok: false }, form],
+          cookie: owner.cookie,
+        }),
+      ).ok,
+      true,
+    );
+
+    const [byPage, bySection] = await idsOf(page.id);
+    await stamp(byPage!, 0);
+    await stamp(bySection!, -1);
+
+    const screen = await get(server.origin, "/admin/pages/terms", { cookie: owner.cookie });
+    assert.equal(screen.status, 200);
+    const sectionRow = screen.html.indexOf("Before publishing the");
+    const pageRow = screen.html.indexOf("Before publishing page changes");
+    assert.ok(sectionRow >= 0 && pageRow >= 0, "the screen listed no restore points");
+    assert.ok(
+      sectionRow < pageRow,
+      "the screen offered the page's earlier state as its newest restore point",
+    );
+  });
+
+  test("retention keeps the newest by the same order the list reads", async () => {
+    const { page, section, second } = await twoPublications("disclaimer");
+
+    // Fill history past the ceiling with copies of a real restore point,
+    // stamped in an order that has nothing to do with the order they were
+    // written in — which is the state a busy page's history is genuinely in.
+    const total = KEEP_PAGE_VERSIONS + 9;
+    for (let i = 2; i < total; i += 1) {
+      await sql`
+        insert into page_versions (page_id, label, snapshot, created_by, actor_name, created_at)
+        select page_id, ${`Filler ${i}`}, snapshot, created_by, actor_name,
+               now() - make_interval(mins => ${(i * 37) % 53})
+          from page_versions where id = ${second}`;
+    }
+    const before = await idsOf(page.id);
+    assert.equal(before.length, total);
+
+    // One more publication: it writes a restore point and prunes in the same
+    // transaction.
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "State D", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+    assert.equal(answered(await publish(await pageBySlug("disclaimer"))).ok, true);
+
+    const kept = await idsOf(page.id);
+    const newest = kept[kept.length - 1]!;
+    assert.deepEqual(
+      kept,
+      [...before, newest].slice(-KEEP_PAGE_VERSIONS),
+      "retention counted from a different end than the history list",
+    );
+    const listed = await versionsOf(page.id);
+    assert.deepEqual(
+      listed.map((version) => version.id),
+      [...kept].reverse(),
+      "the list and the table disagree about which restore points exist",
+    );
+    assert.equal(await snapshotTitle(listed[0]!.id, section.id), "State C");
+  });
+
+  test("a misleading timestamp cannot restore the wrong state", async () => {
+    const { page, section, first, second } = await twoPublications("about");
+    await stamp(first, 0);
+    await stamp(second, -1);
+
+    const listed = await versionsOf(page.id);
+    const oldest = listed[listed.length - 1]!;
+    assert.equal(oldest.id, first, "the oldest restore point is not the page's starting state");
+
+    assert.equal(answered(await restore(await pageBySlug("about"), oldest.id)).ok, true);
+    assert.equal(
+      ((await sectionById(section.id))!.draft!.title as { en: string }).en,
+      "State A",
+      "restoring the oldest restore point did not bring the starting state back",
+    );
+    // …and it came back as a draft: the live page has not moved.
+    assert.equal(((await sectionById(section.id))!.published.title as { en: string }).en, "State C");
+  });
+
+  test("a publication that is refused writes no restore point at all", async () => {
+    const page = await reset("privacy");
+    const section = (await sectionsOf(page.id))[0]!;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Never published", ar: "" } })}::jsonb
+               where id = ${section.id}`;
+
+    // Refused before it starts: the editor's page revision has moved.
+    const stale = answered(await publish({ id: page.id, revision: page.revision - 1 }));
+    assert.equal(stale.ok, false);
+    assert.equal(await versionCount(page.id), 0, "a refused publication left a restore point");
+
+    // Refused after the restore point was written: it is written inside the
+    // same transaction as the publication, so it rolls back with it.
+    await sql.unsafe(`
+      create function eodt_late_race() returns trigger as $$
+      begin
+        update page_sections set revision = revision + 50 where id = ${section.id};
+        return new;
+      end $$ language plpgsql;
+      create trigger eodt_late_race after insert on page_versions
+        for each row execute function eodt_late_race();
+    `);
+    try {
+      const refused = answered(await publish(await pageBySlug("privacy")));
+      assert.equal(refused.ok, false, JSON.stringify(refused));
+    } finally {
+      await sql.unsafe(`drop trigger eodt_late_race on page_versions; drop function eodt_late_race();`);
+    }
+    assert.equal(await versionCount(page.id), 0, "a rolled-back publication left a restore point");
+    assert.equal(
+      ((await sectionById(section.id))!.published.title as { en?: string } | undefined)?.en !==
+        "Never published",
+      true,
+      "a refused publication reached the live page",
+    );
   });
 });
 
@@ -1774,5 +2042,282 @@ describe("a section screen is told what it wrote", () => {
     );
     assert.equal(refused.ok, false);
     assert.ok(!refused.section, "a refusal must not move the screen on");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("the revision a section screen submits belongs to the values it is showing", () => {
+  /**
+   * The pairing this is about, stated once: **the revision the form submits
+   * must be the revision of the exact server state the values in that form came
+   * from.** The single exception is a write this screen itself made and was
+   * answered for — then the values on screen are the ones it just sent, and the
+   * revision that came back with the answer is theirs.
+   *
+   * The state that must never exist is old values beside a new revision. The
+   * server checks the revision and nothing else — it cannot tell that the words
+   * arriving with a current revision were read from an older one — so such a
+   * save is accepted and silently overwrites whatever the other writer did.
+   * That is asserted at the bottom of this block, deliberately: it is the
+   * reason the screen is built the way it is, and if it ever stops being true
+   * the comment explaining the design needs rewriting.
+   *
+   * The screen's half of it — `SectionForm` holding one server state as one
+   * value, and moving it only on its own answered write — is asserted from the
+   * source in `invariants.test.ts` and driven in a real browser by the
+   * `admin-section` probe.
+   */
+  const revisionsIn = (html: string): number[] =>
+    [...html.matchAll(/name="expectedRevision"[^>]*value="(\d+)"/g)].map((match) =>
+      Number(match[1]),
+    );
+
+  const titleIn = (html: string): string => {
+    const match = /id="field-title-en"[^>]*\svalue="([^"]*)"/.exec(html);
+    assert.ok(match, "the section screen rendered no English title field");
+    return match[1]!;
+  };
+
+  const screenFor = async (sectionId: number, session = owner) =>
+    get(server.origin, `/admin/pages/section/${sectionId}`, { cookie: session.cookie });
+
+  const save = (
+    action: string,
+    values: Record<string, string>,
+    session = owner,
+  ) => {
+    const form = new FormData();
+    form.set("_csrf", session.csrfToken);
+    for (const [key, value] of Object.entries(values)) form.set(key, value);
+    return callAction<{
+      ok: boolean;
+      message?: string;
+      section?: { revision: number; draftKind: string; values?: Record<string, unknown> };
+    }>({
+      origin: server.origin,
+      route: `/admin/pages/section/${values.id}`,
+      file: PAGE_ACTIONS,
+      action,
+      args: [{ ok: false }, form],
+      cookie: session.cookie,
+    });
+  };
+
+  test("the screen is rendered with the revision of the words it is rendered with", async () => {
+    const page = await reset("privacy");
+    const section = (await sectionsOf(page.id))[0]!;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "As rendered", ar: "" } })}::jsonb,
+                    revision = revision + 1
+               where id = ${section.id}`;
+    const row = (await sectionById(section.id))!;
+
+    const screen = await screenFor(section.id);
+    assert.equal(screen.status, 200);
+    assert.equal(titleIn(screen.html), "As rendered");
+    const revisions = revisionsIn(screen.html);
+    // Three: the editor's own, and the Publish and Discard controls beside it.
+    assert.equal(revisions.length, 3, `${revisions.length} revision inputs`);
+    for (const revision of revisions) {
+      assert.equal(revision, row.revision, "a control on the screen named a different revision");
+    }
+  });
+
+  test("a write this screen made comes back with the revision its own words now carry", async () => {
+    const page = await reset("terms");
+    const section = (await sectionsOf(page.id))[0]!;
+
+    const saved = answered(
+      await save("saveSectionDraft", {
+        id: String(section.id),
+        expectedRevision: String(section.revision),
+        values: JSON.stringify({ title: { en: "Typed here", ar: "" } }),
+      }),
+    );
+    assert.equal(saved.ok, true, saved.message);
+    const row = (await sectionById(section.id))!;
+    assert.equal(saved.section!.revision, row.revision, "the answer named a revision the row is not at");
+    assert.equal((row.draft!.title as { en: string }).en, "Typed here");
+    assert.ok(
+      !saved.section!.values,
+      "a save handed the fields values back, which would rebuild them mid-edit",
+    );
+
+    // Which is the whole point: that revision is the one the next save needs.
+    const again = answered(
+      await save("saveSectionDraft", {
+        id: String(section.id),
+        expectedRevision: String(saved.section!.revision),
+        values: JSON.stringify({ title: { en: "And again", ar: "" } }),
+      }),
+    );
+    assert.equal(again.ok, true, again.message);
+  });
+
+  test("a discard hands back the values and the revision together, or neither", async () => {
+    const page = await reset("disclaimer");
+    const section = (await sectionsOf(page.id))[0]!;
+    const live = (section.published.title as { en?: string } | undefined)?.en ?? "";
+
+    const saved = answered(
+      await save("saveSectionDraft", {
+        id: String(section.id),
+        expectedRevision: String(section.revision),
+        values: JSON.stringify({ title: { en: "Thought better of", ar: "" } }),
+      }),
+    );
+    assert.equal(saved.ok, true, saved.message);
+
+    const discarded = answered(
+      await save("discardDraft", {
+        id: String(section.id),
+        expectedRevision: String(saved.section!.revision),
+      }),
+    );
+    assert.equal(discarded.ok, true, discarded.message);
+    const row = (await sectionById(section.id))!;
+    assert.ok(discarded.section!.values, "a discard replaced the fields with nothing");
+    assert.equal(
+      (discarded.section!.values!.title as { en?: string } | undefined)?.en,
+      live,
+      "the values handed back are not the ones the page is publishing",
+    );
+    assert.equal(
+      discarded.section!.revision,
+      row.revision,
+      "the values handed back carry a revision the row is not at",
+    );
+  });
+
+  test("a refused write answers with no row, so nothing can move on its own", async () => {
+    const page = await reset("about");
+    const section = (await sectionsOf(page.id))[0]!;
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Pending", ar: "" } })}::jsonb,
+                    revision = revision + 1
+               where id = ${section.id}`;
+    const row = (await sectionById(section.id))!;
+    const stale = String(row.revision - 1);
+
+    for (const [action, extra] of [
+      ["saveSectionDraft", { values: JSON.stringify({ title: { en: "No", ar: "" } }) }],
+      ["saveSectionAndPublish", { values: JSON.stringify({ title: { en: "No", ar: "" } }) }],
+      ["publishSection", {}],
+      ["discardDraft", {}],
+    ] as const) {
+      const refused = answered(
+        await save(action, { id: String(section.id), expectedRevision: stale, ...extra }),
+      );
+      assert.equal(refused.ok, false, `${action} accepted a stale revision`);
+      assert.ok(!refused.section, `${action} moved the screen on after refusing it`);
+    }
+    // …and the row is exactly where it was.
+    assert.deepEqual(await sectionById(section.id), row);
+  });
+
+  test("an external write is not overwritten by the screen that was open before it", async () => {
+    const page = await reset("privacy");
+    const section = (await sectionsOf(page.id))[0]!;
+    const screen = await screenFor(section.id);
+    const [shown] = revisionsIn(screen.html);
+    const words = titleIn(screen.html);
+
+    // Somebody else — another tab, the Visual Editor, a colleague — writes.
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Written by somebody else", ar: "" } })}::jsonb,
+                    revision = revision + 1
+               where id = ${section.id}`;
+
+    // The screen submits what it is showing, named by the revision it was
+    // shown with. That is refused, and the other write stands.
+    const refused = answered(
+      await save("saveSectionDraft", {
+        id: String(section.id),
+        expectedRevision: String(shown),
+        values: JSON.stringify({ title: { en: words, ar: "" } }),
+      }),
+    );
+    assert.equal(refused.ok, false, "a screen built before the other write was allowed to overwrite it");
+    assert.match(refused.message ?? "", /changed while you were editing|reload/i);
+    assert.equal(
+      ((await sectionById(section.id))!.draft!.title as { en: string }).en,
+      "Written by somebody else",
+    );
+
+    // Reloading brings both forward at once, and then the save lands.
+    const reloaded = await screenFor(section.id);
+    assert.equal(titleIn(reloaded.html), "Written by somebody else");
+    const [fresh] = revisionsIn(reloaded.html);
+    assert.equal(fresh, (await sectionById(section.id))!.revision);
+    assert.notEqual(fresh, shown);
+    const accepted = answered(
+      await save("saveSectionDraft", {
+        id: String(section.id),
+        expectedRevision: String(fresh),
+        values: JSON.stringify({ title: { en: "Edited on top of theirs", ar: "" } }),
+      }),
+    );
+    assert.equal(accepted.ok, true, accepted.message);
+  });
+
+  test("Publish and Discard carry that revision too, so neither acts on a draft it never saw", async () => {
+    const page = await reset("terms");
+    const section = (await sectionsOf(page.id))[0]!;
+    const screen = await screenFor(section.id);
+    const [shown] = revisionsIn(screen.html);
+
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Theirs, not mine", ar: "" } })}::jsonb,
+                    revision = revision + 1
+               where id = ${section.id}`;
+
+    for (const action of ["publishSection", "discardDraft"] as const) {
+      const refused = answered(
+        await save(action, { id: String(section.id), expectedRevision: String(shown) }),
+      );
+      assert.equal(refused.ok, false, `${action} acted on a draft the screen never saw`);
+    }
+    assert.equal(
+      ((await sectionById(section.id))!.draft!.title as { en: string }).en,
+      "Theirs, not mine",
+      "a refused publish or discard touched the draft anyway",
+    );
+  });
+
+  test("the server cannot catch old words carrying a current revision — which is why the screen must never make one", async () => {
+    /**
+     * Characterising the hazard rather than hiding it. `updateSectionGuarded`
+     * compares one number; it has no way to know the words beside it were read
+     * from an older state of the row. So a form holding stale values and a
+     * fresh revision is not refused anywhere on the server — it is a silent
+     * overwrite of whoever wrote in between.
+     *
+     * Nothing about this is a defect in the guard: a revision is what makes
+     * "has this moved?" answerable at all, and comparing content instead would
+     * be a merge. The conclusion is about where the invariant lives — on the
+     * screen, in one state value that carries the words and the revision
+     * together. This test fails the day that stops being the server's
+     * behaviour, which is the day the reasoning has to be revisited.
+     */
+    const page = await reset("about");
+    const section = (await sectionsOf(page.id))[0]!;
+    const screen = await screenFor(section.id);
+    const stale = titleIn(screen.html);
+
+    await sql`update page_sections set draft = ${sql.json({ title: { en: "Their work", ar: "" } })}::jsonb,
+                    revision = revision + 1
+               where id = ${section.id}`;
+    const current = (await sectionById(section.id))!.revision;
+
+    const accepted = answered(
+      await save("saveSectionDraft", {
+        id: String(section.id),
+        expectedRevision: String(current),
+        values: JSON.stringify({ title: { en: stale, ar: "" } }),
+      }),
+    );
+    assert.equal(accepted.ok, true, "the guard has grown a second check — see the comment above");
+    assert.equal(
+      ((await sectionById(section.id))!.draft!.title as { en: string }).en,
+      stale,
+      "the guard has grown a second check — see the comment above",
+    );
   });
 });

@@ -69,7 +69,16 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
       />
 
       <div className="max-w-4xl">
+        {/*
+          Keyed on the row, so editing a different section gets a different
+          component rather than the last one's state. The form holds its server
+          state — words and revision together — from the moment it mounts and
+          moves it only by writing; a React instance carried across two
+          different sections would pair one row's id with another row's
+          revision, which is exactly the pairing that form exists to prevent.
+        */}
         <SectionForm
+          key={row.section.id}
           csrf={session.csrfToken}
           block={block}
           media={library}
