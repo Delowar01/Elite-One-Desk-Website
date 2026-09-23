@@ -13,7 +13,7 @@
  * runs beside everything else.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, test } from "node:test";
 
@@ -22,10 +22,69 @@ import { REPO_ROOT } from "./helpers/env";
 const read = (file: string): string => readFileSync(path.join(REPO_ROOT, file), "utf8");
 
 const VERSIONS = "src/lib/versions.ts";
+const REVISION = "src/lib/db/revision.ts";
 const PUBLISH_SERVICE = "src/lib/cms/publish-service.ts";
 const PAGE_ACTIONS = "src/app/(backoffice)/admin/(shell)/pages/actions.ts";
 const SECTION_FORM = "src/app/(backoffice)/admin/(shell)/pages/section/[id]/section-form.tsx";
 const SECTION_PAGE = "src/app/(backoffice)/admin/(shell)/pages/section/[id]/page.tsx";
+
+/**
+ * Every application source file, so these rules are about the application and
+ * not about the two or three files somebody remembered to list.
+ *
+ * The first version of this checked `versions.ts` and two named callers, and
+ * concluded from their silence that no other writer existed. That is not a
+ * proof, it is a restatement of the assumption — and the thing it missed was
+ * sitting in the file it did read.
+ */
+const SOURCES: { file: string; source: string }[] = readdirSync(path.join(REPO_ROOT, "src"), {
+  recursive: true,
+  encoding: "utf8",
+})
+  .filter((entry) => /\.tsx?$/.test(entry))
+  .map((entry) => {
+    const file = path.posix.join("src", entry.split(path.sep).join("/"));
+    return { file, source: read(file) };
+  });
+
+/**
+ * Source with its prose removed, so a comment naming a writer is not read as a
+ * call to one.
+ *
+ * Only block comments and whole-line `//` comments go. String literals are left
+ * exactly as they are: stripping more would risk hiding a real call behind a
+ * quotation mark, and these rules have to fail closed on executable code even
+ * at the cost of being strict about where a comment may sit.
+ */
+const code = (source: string): string =>
+  source.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/^[ \t]*\/\/.*$/gm, " ");
+
+/** A declaration's body, by brace matching from its opening `{`. */
+function bodyOf(source: string, declaration: string): string {
+  const start = source.indexOf(declaration);
+  assert.ok(start >= 0, `${declaration} is no longer in the source`);
+  const open = source.indexOf("{", start);
+  assert.ok(open > start, `${declaration} has no body`);
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(open, i + 1);
+    }
+  }
+  throw new Error(`${declaration} has an unbalanced body`);
+}
+
+/** Every top-level `export` in a module, with the chunk of source it owns. */
+function exportedChunks(source: string): { name: string; chunk: string }[] {
+  const text = code(source);
+  const heads = [...text.matchAll(/^export\s+(?:async\s+)?(?:function|const)\s+(\w+)/gm)];
+  return heads.map((head, index) => ({
+    name: head[1]!,
+    chunk: text.slice(head.index!, heads[index + 1]?.index ?? text.length),
+  }));
+}
 
 /* -------------------------------------------------------------------------- */
 
@@ -40,60 +99,124 @@ describe("a restore point's id is the order it was published in", () => {
    * transaction timestamp, so a publication that began earlier and serialized
    * later carries the earlier stamp.
    *
-   * So a history writer that does not take the lock does not merely race — it
-   * silently breaks the order the whole screen is built on, and no test of the
-   * running application would see it except intermittently. This is the check
-   * that a new one cannot appear quietly.
+   * A history writer that does not take the lock therefore does not merely
+   * race — it silently breaks the order the whole screen is built on, and no
+   * test of the running application would see it except intermittently. These
+   * rules exist so that writer cannot be added, or left lying about, quietly.
    */
-  test("history is inserted in exactly one place", () => {
-    const source = read(VERSIONS);
-    const inserts = [...source.matchAll(/\.insert\(pageVersions\)/g)];
-    assert.equal(inserts.length, 1, `${inserts.length} places insert a page version`);
+  const AUDITED_CALLERS = [PAGE_ACTIONS, PUBLISH_SERVICE];
 
-    const body = source.slice(source.indexOf("export async function savePageVersionIn"));
-    assert.ok(
-      body.includes(".insert(pageVersions)"),
-      "the insert is no longer inside savePageVersionIn",
+  test("the application inserts a page version in exactly one place", () => {
+    const inserting = SOURCES.filter(({ source }) => code(source).includes(".insert(pageVersions)"));
+    assert.deepEqual(
+      inserting.map(({ file }) => file),
+      [VERSIONS],
+      "a page version is inserted outside versions.ts",
     );
-
-    // …and nowhere else in the application writes that table directly.
-    for (const file of [PUBLISH_SERVICE, PAGE_ACTIONS]) {
-      assert.ok(
-        !read(file).includes(".insert(pageVersions)"),
-        `${file} inserts a page version without going through savePageVersionIn`,
-      );
-    }
+    assert.equal(
+      [...code(read(VERSIONS)).matchAll(/\.insert\(pageVersions\)/g)].length,
+      1,
+      "versions.ts inserts a page version in more than one place",
+    );
   });
 
-  test("every writer holds the page before it writes one", () => {
-    // `recordRestorePointIn` is the only way in, and both of its callers must
-    // already be inside a transaction that has taken the page row.
-    const callers = [
-      { file: PUBLISH_SERVICE, lock: /readPage\(tx, pageId, true\)/ },
-      { file: PAGE_ACTIONS, lock: /lockPageForWrite\(tx, [^)]+\)/ },
-    ];
-    for (const caller of callers) {
-      const source = read(caller.file);
-      const calls = [...source.matchAll(/await recordRestorePointIn\(/g)];
-      assert.ok(calls.length > 0, `${caller.file} no longer writes a restore point`);
+  test("…inside a primitive no other module can reach", () => {
+    const source = read(VERSIONS);
+    assert.ok(
+      bodyOf(source, "async function savePageVersionIn").includes(".insert(pageVersions)"),
+      "the insert has moved out of savePageVersionIn",
+    );
+
+    // Private: not exported at its declaration, and not re-exported later.
+    assert.ok(
+      !/export\s+(?:async\s+)?function\s+savePageVersionIn\b/.test(code(source)),
+      "savePageVersionIn is exported again — any module could then write history unlocked",
+    );
+    assert.ok(
+      !/export\s*\{[^}]*\bsavePageVersionIn\b/.test(code(source)),
+      "savePageVersionIn is re-exported through an export list",
+    );
+
+    // …and nothing outside the module names it, which is what makes the
+    // previous assertion worth making.
+    assert.deepEqual(
+      SOURCES.filter(
+        ({ file, source: other }) => file !== VERSIONS && code(other).includes("savePageVersionIn"),
+      ).map(({ file }) => file),
+      [],
+      "another module reaches the private version writer",
+    );
+  });
+
+  test("no exported helper reaches that primitive except recordRestorePointIn", () => {
+    /**
+     * The escape hatch this replaced: `export const savePageVersion = (input) =>
+     * savePageVersionIn(db, input)` — the pool, no transaction, no lock. It had
+     * no production caller, which is why nothing failed; it was reachable, which
+     * is why the ordering invariant was a convention rather than a property of
+     * the module.
+     */
+    const reaching = exportedChunks(read(VERSIONS))
+      .filter(({ chunk }) =>
+        // The declaration itself is not a call to itself.
+        chunk
+          .replace(/(?:export\s+)?(?:async\s+)?function\s+savePageVersionIn\s*\([^)]*\)/g, " ")
+          .includes("savePageVersionIn("),
+      )
+      .map(({ name }) => name);
+    assert.deepEqual(
+      reaching,
+      ["recordRestorePointIn"],
+      "an exported helper other than recordRestorePointIn can create a restore point",
+    );
+    assert.ok(
+      !/\bsavePageVersion\b\s*[=(]/.test(code(read(VERSIONS)).replace(/savePageVersionIn/g, " ")),
+      "a pool-level savePageVersion exists again",
+    );
+  });
+
+  test("every production caller is enumerated, and a new one fails this test", () => {
+    const callers = SOURCES.filter(
+      ({ file, source }) => file !== VERSIONS && /\brecordRestorePointIn\s*\(/.test(code(source)),
+    );
+    assert.deepEqual(
+      callers.map(({ file }) => file).sort(),
+      [...AUDITED_CALLERS].sort(),
+      "a restore-point writer appeared or disappeared: audit its transaction and its " +
+        "lock, then list it in AUDITED_CALLERS — the id ordering depends on it",
+    );
+  });
+
+  test("…and each one writes inside a transaction that already holds the page", () => {
+    for (const file of AUDITED_CALLERS) {
+      const text = code(read(file));
+      const calls = [...text.matchAll(/\brecordRestorePointIn\s*\(/g)];
+      assert.ok(calls.length > 0, `${file} no longer writes a restore point`);
       for (const call of calls) {
-        const opened = source.lastIndexOf("db.transaction(", call.index);
-        assert.ok(opened >= 0, `a restore point is written outside a transaction in ${caller.file}`);
-        const preamble = source.slice(opened, call.index);
+        const opened = text.lastIndexOf(".transaction(", call.index);
+        assert.ok(opened >= 0, `a restore point is written outside a transaction in ${file}`);
+        const preamble = text.slice(opened, call.index);
         assert.match(
           preamble,
-          caller.lock,
-          `a restore point is written before the page is locked in ${caller.file}`,
+          /lockPageForWrite\(|readPage\([^,]+,[^,]+,\s*true\)/,
+          `a restore point is written before the page is locked in ${file}`,
         );
       }
     }
+  });
 
-    // And the lock itself still takes the page row first, which is what makes
-    // the id an order rather than a coincidence.
+  test("the lock itself still takes the page row before the section rows", () => {
+    // Which is what makes the id an order rather than a coincidence: the page
+    // row is the one thing every publication of that page queues on.
+    const body = bodyOf(read(REVISION), "export async function lockPageForWrite");
+    const page = body.indexOf("from(pages)");
+    const sections = body.indexOf("from(pageSections)");
+    assert.ok(page > 0, "lockPageForWrite no longer locks the page row");
+    assert.ok(sections > page, "the section rows are locked before the page row");
     assert.match(
-      read("src/lib/db/revision.ts"),
-      /export async function lockPageForWrite/,
-      "lockPageForWrite has moved; the ordering invariant needs re-checking",
+      body.slice(page, sections),
+      /\.for\("update"\)/,
+      "the page row is read without FOR UPDATE",
     );
   });
 });

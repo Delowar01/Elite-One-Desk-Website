@@ -304,6 +304,28 @@ process.exit(0);
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A restore point, written inside a probe the way production writes one.
+ *
+ * `versions.ts` has no pool-level version writer to call: ordering history by
+ * `id` is sound only while every row for one page is inserted after that
+ * transaction has taken the page row, so the INSERT is private and
+ * `recordRestorePointIn` — which takes an executor, not the pool — is the only
+ * way in. These fixtures therefore open the transaction and take the lock
+ * themselves, which is also a more faithful fixture than the pool write it
+ * replaced.
+ */
+const SAVE_VERSION = `
+import { lockPageForWrite } from "@/lib/db/revision";
+import { recordRestorePointIn, type VersionInput } from "@/lib/versions";
+
+const savePageVersion = async (input: VersionInput): Promise<number> =>
+  db.transaction(async (tx) => {
+    await lockPageForWrite(tx, input.pageId);
+    return (await recordRestorePointIn(tx, input)).versionId;
+  });
+`;
+
 describe("restoring a version puts nothing on the live site", () => {
   test("history comes back as a draft, and the published page is untouched", async () => {
     const name = giveFresh("versions_restore");
@@ -337,8 +359,8 @@ import {
   listPageVersions,
   prunePageVersions,
   restoreVersionToDraft,
-  savePageVersion,
 } from "@/lib/versions";
+${SAVE_VERSION}
 
 const pageId = ${page!.id};
 const read = () =>
@@ -468,7 +490,8 @@ import { asc, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
-import { restoreVersionToDraft, savePageVersion } from "@/lib/versions";
+import { restoreVersionToDraft } from "@/lib/versions";
+${SAVE_VERSION}
 
 const [home] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
 const [about] = await db.select().from(pages).where(eq(pages.slug, "about")).limit(1);
@@ -689,7 +712,8 @@ import { asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { updatePageGuarded, updateSectionGuarded } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
-import { restoreVersionToDraft, savePageVersion } from "@/lib/versions";
+import { restoreVersionToDraft } from "@/lib/versions";
+${SAVE_VERSION}
 
 const [page] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
 const [section] = await db
@@ -1079,7 +1103,8 @@ import { asc, eq } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
-import { capturePageSnapshot, restoreVersionToDraft, savePageVersion } from "@/lib/versions";
+import { capturePageSnapshot, restoreVersionToDraft } from "@/lib/versions";
+${SAVE_VERSION}
 
 const [page] = await db.select().from(pages).where(eq(pages.slug, "home")).limit(1);
 const live = await db

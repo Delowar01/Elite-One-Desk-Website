@@ -127,7 +127,24 @@ export type VersionInput = {
   actorName?: string;
 };
 
-export async function savePageVersionIn(on: Executor, input: VersionInput): Promise<number> {
+/**
+ * The INSERT, and the only one — module-private on purpose.
+ *
+ * Ordering history by `id` is only sound while every row for one page is
+ * inserted after that transaction has taken the page row `FOR UPDATE`, because
+ * that is what makes the serial an order rather than a coincidence. A caller
+ * that could reach this primitive on the pool would write a row outside that
+ * serialization and break the ordering silently — no error, no failing test,
+ * just a history that is occasionally in the wrong sequence.
+ *
+ * So there is no pool-level wrapper and no export: the only way to create a
+ * restore point is `recordRestorePointIn`, which takes the executor of a
+ * transaction the caller has already locked the page in. There used to be an
+ * exported `savePageVersion` that used the pool directly. It had no production
+ * caller — it was reachable, which was enough to make the invariant a
+ * convention rather than a property of the module.
+ */
+async function savePageVersionIn(on: Executor, input: VersionInput): Promise<number> {
   const snapshot = await capturePageSnapshotIn(on, input.pageId);
   const [row] = await on
     .insert(pageVersions)
@@ -142,15 +159,20 @@ export async function savePageVersionIn(on: Executor, input: VersionInput): Prom
   return row!.id;
 }
 
-export const savePageVersion = (input: VersionInput): Promise<number> =>
-  savePageVersionIn(db, input);
-
 /**
- * One restore point, written and pruned together.
+ * One restore point, written and pruned together — the only way to create one.
  *
  * The pair every publication path calls, so "publishing writes history" has one
  * implementation and the retention cannot be observed at a different ceiling
  * depending on which button was pressed.
+ *
+ * It takes an executor rather than opening its own transaction, and that is the
+ * contract: the caller is already inside a transaction that has taken the page
+ * row through `lockPageForWrite`, so the row this writes is serialized against
+ * every other publication of the same page and its `id` is publication order.
+ * A caller that cannot satisfy that has no business writing history.
+ * `tests/invariants.test.ts` enumerates the call sites and checks the lock, so
+ * a third one fails the suite until somebody has looked at its locking.
  */
 export async function recordRestorePointIn(
   on: Executor,
