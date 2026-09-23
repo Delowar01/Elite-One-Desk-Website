@@ -59,8 +59,9 @@ export function items(
       if (typeof row !== "object" || row === null) return null;
       const record = row as Record<string, unknown>;
       const out: BlockItem = {};
-      // The row's stable id, read back so a later batch can address it. No
-      // renderer uses it, and nothing about it reaches the page.
+      // The row's stable id, read back so the editor can address the row and
+      // file a style override under it. No renderer uses it, and nothing about
+      // it reaches the page.
       if (typeof record[ITEM_ID_KEY] === "string") out[ITEM_ID_KEY] = record[ITEM_ID_KEY];
       for (const field of fields) {
         const value = record[field.name];

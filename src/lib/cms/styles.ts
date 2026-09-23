@@ -144,10 +144,34 @@ const step = (max: number): Check => (raw) => {
   return value;
 };
 
+/**
+ * A value on a fixed grid, spelled the one way the grid spells it.
+ *
+ * `Math.round(raw / snap) * snap` lands on the right *number* and the wrong
+ * *representation*: with a snap of 0.05, twelve steps up from zero is
+ * `0.6000000000000001`, because neither 0.05 nor 0.6 is exact in binary
+ * floating point and the multiply carries the error. That value is on the grid
+ * by any sane reading, and it was being stored, exported and compared as
+ * something else — two documents holding the same opacity would not be equal,
+ * and a validated document was not equal to itself validated twice.
+ *
+ * Counting steps and dividing back gives the shortest decimal that round-trips,
+ * which for every step of this grid is the one a person would write: 0.2, 0.25,
+ * … 0.95, 1. It is still a number — nothing here turns a style token into a
+ * string — and it is idempotent by construction, because the canonical value
+ * lands on the same step it came from.
+ *
+ * `Number.EPSILON` is not involved: the fix is to stop generating the artefact,
+ * not to tolerate it afterwards. A stored `0.6000000000000001` from before this
+ * existed normalises to `0.6` the next time the document is validated, without
+ * a migration.
+ */
 const ratio = (min: number, max: number, snap: number): Check => (raw) => {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
   if (raw < min || raw > max) return undefined;
-  return Math.round(raw / snap) * snap;
+  const steps = Math.round(raw / snap);
+  const places = Math.max(0, (String(snap).split(".")[1] ?? "").length);
+  return Number((steps * snap).toFixed(places));
 };
 
 const percent = (): Check => (raw) => {

@@ -112,6 +112,7 @@ export function InspectorPanel({
   onRevert,
   onTakeLatest,
   onClear,
+  onSelect,
 }: {
   node: EditorNodeMeta | null;
   sections: EditorSectionMeta[];
@@ -132,11 +133,22 @@ export function InspectorPanel({
   onRevert: (domain: EditDomain) => void;
   onTakeLatest: () => void;
   onClear: () => void;
+  /** Select something else on the canvas — used to step back out of a field. */
+  onSelect: (address: string) => void;
 }) {
   const section = node ? sections.find((row) => row.sectionId === node.sectionId) : undefined;
   const described = node ? describeAddress(node.blockType, node.relativePath, node.text) : null;
   const block = node ? getBlock(node.blockType) : null;
   const pending = buffer ? draftKindOfData(buffer.data) : "none";
+  /**
+   * One step out: the same address with its last segment dropped. `null` on a
+   * section, which is already the outermost thing there is.
+   */
+  const parentAddress = (() => {
+    if (!node) return null;
+    const cut = node.address.lastIndexOf("/");
+    return cut > 0 ? node.address.slice(0, cut) : null;
+  })();
 
   return (
     <aside
@@ -159,6 +171,26 @@ export function InspectorPanel({
               <p className="mt-1 text-[0.7rem] leading-relaxed text-muted">
                 {described.crumbs.join(" → ")}
               </p>
+              {/*
+                The way back out.
+                
+                Pointing at a card selects the most precise thing under the
+                pointer, which for a card whose picture fills it is the picture.
+                That is what an editor means by clicking a photograph — but the
+                card itself is still a thing with its own styles and its own
+                visibility, and without this it would have no gesture at all.
+                One step, to whatever contains this; pressing it again walks out
+                to the section.
+              */}
+              {parentAddress ? (
+                <button
+                  type="button"
+                  onClick={() => onSelect(parentAddress)}
+                  className="admin-btn admin-btn-sm mt-2"
+                >
+                  Select what contains this
+                </button>
+              ) : null}
             </div>
 
             <p className="flex flex-wrap items-center gap-1.5 text-[0.72rem] text-muted">

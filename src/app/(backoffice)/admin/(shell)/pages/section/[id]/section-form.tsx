@@ -70,15 +70,67 @@ export function SectionForm({
   previewHref: string;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
+
+  /**
+   * What this screen currently believes the row to be.
+   *
+   * Seeded from the server render and then moved by the actions themselves,
+   * because the re-render that should have moved it is not guaranteed to
+   * arrive: the server produces it correctly every time, and the router applies
+   * it *nearly* every time — two of twelve consecutive saves left this
+   * component un-rendered while the row had moved on. The consequence was not
+   * cosmetic. The next save named the revision this screen was built with, the
+   * server saw a row that had moved past it, and an editor who had just saved
+   * successfully was told somebody else had changed the section.
+   *
+   * So each action returns what it wrote, and that answer — which travels with
+   * the message, through the one channel that cannot be dropped — is what the
+   * hidden revision, the draft banner and the Publish and Discard controls
+   * read. The server's own view still wins whenever it is ahead, so a change
+   * made in the Visual Editor or another tab is adopted as soon as the
+   * re-render lands.
+   */
+  const [live, setLive] = useState({
+    revision: section.revision,
+    draftKind: section.draftKind,
+    animation: section.animation,
+    isDraftOnly: section.isDraftOnly,
+  });
+  /** Bumped only when a write replaced what the fields should hold. */
+  const [seed, setSeed] = useState({ token: 0, values: section.values });
+
+  if (section.revision > live.revision) {
+    setLive({
+      revision: section.revision,
+      draftKind: section.draftKind,
+      animation: section.animation,
+      isDraftOnly: section.isDraftOnly,
+    });
+  }
+
+  const adopt = useCallback((state: ActionState) => {
+    const next = state.section;
+    if (!next) return;
+    setLive({
+      revision: next.revision,
+      draftKind: next.draftKind,
+      animation: next.animation,
+      isDraftOnly: next.isDraftOnly,
+    });
+    if (next.values) setSeed((current) => ({ token: current.token + 1, values: next.values! }));
+  }, []);
+
   const onResult = useCallback(
-    (state: ActionState) =>
-      setNotice(state.ok ? null : (state.message ?? "That did not work. Reload the page.")),
-    [],
+    (state: ActionState) => {
+      setNotice(state.ok ? null : (state.message ?? "That did not work. Reload the page."));
+      adopt(state);
+    },
+    [adopt],
   );
 
   return (
     <div className="space-y-5">
-      {section.isDraftOnly ? (
+      {live.isDraftOnly ? (
         <div className="admin-card flex flex-wrap items-center gap-3 p-4">
           <span className="admin-badge" style={{ color: "#5ad19a" }}>
             New section
@@ -94,7 +146,7 @@ export function SectionForm({
         </div>
       ) : null}
 
-      {hasDraft(section.draftKind) && !section.isDraftOnly ? (
+      {hasDraft(live.draftKind) && !live.isDraftOnly ? (
         <div className="admin-card flex flex-wrap items-center gap-3 p-4">
           <span className="admin-badge" style={{ color: "#ffd166" }}>
             Unpublished draft
@@ -106,8 +158,8 @@ export function SectionForm({
               both, so an editor about to press either should know what is in
               the pile.
             */}
-            {DRAFT_LABEL[section.draftKind]}. The live site still shows the previous version.
-            {section.draftKind === "style"
+            {DRAFT_LABEL[live.draftKind]}. The live site still shows the previous version.
+            {live.draftKind === "style"
               ? " Styles are edited in the Visual Editor."
               : ""}
           </p>
@@ -124,7 +176,7 @@ export function SectionForm({
           */}
           <InlineAction
             action={publishSection}
-            hidden={{ _csrf: csrf, id: section.id, expectedRevision: section.revision }}
+            hidden={{ _csrf: csrf, id: section.id, expectedRevision: live.revision }}
             onResult={onResult}
           >
             <ConfirmSubmit
@@ -137,7 +189,7 @@ export function SectionForm({
           </InlineAction>
           <InlineAction
             action={discardDraft}
-            hidden={{ _csrf: csrf, id: section.id, expectedRevision: section.revision }}
+            hidden={{ _csrf: csrf, id: section.id, expectedRevision: live.revision }}
             onResult={onResult}
           >
             <ConfirmSubmit className="admin-btn-sm" message="Discard this draft and keep the live version?">
@@ -162,6 +214,7 @@ export function SectionForm({
         action={saveSectionDraft}
         alternate={saveSectionAndPublish}
         className="admin-card p-5"
+        onSaved={onResult}
       >
         <input type="hidden" name="_csrf" value={csrf} />
         <input type="hidden" name="id" value={section.id} />
@@ -170,9 +223,15 @@ export function SectionForm({
           that has been overtaken — by the Visual Editor, by a second tab, by a
           colleague — is refused rather than silently winning.
         */}
-        <input type="hidden" name="expectedRevision" value={section.revision} />
+        <input type="hidden" name="expectedRevision" value={live.revision} />
 
-        <BlockEditor block={block} initial={section.values} media={media} />
+        {/*
+          `seed.token` changes only when an action replaced the values — a
+          discard putting the published wording back. A save must not remount
+          this: the fields already hold what was typed, and rebuilding them
+          would move the caret.
+        */}
+        <BlockEditor key={seed.token} block={block} initial={seed.values} media={media} />
 
         <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
           <label className="admin-label" htmlFor="animation">
@@ -181,7 +240,8 @@ export function SectionForm({
           <select
             id="animation"
             name="animation"
-            defaultValue={section.animation}
+            key={`motion-${live.animation}-${seed.token}`}
+            defaultValue={live.animation}
             className="admin-select max-w-sm"
           >
             {MOTION_PRESETS.map((preset) => (
@@ -204,7 +264,7 @@ export function SectionForm({
 
         <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--admin-line)] pt-5">
           <SubmitButton variant="ghost">Save draft</SubmitButton>
-          {section.isDraftOnly ? null : (
+          {live.isDraftOnly ? null : (
             <AlternateSubmit pendingLabel="Publishing…">Save and publish</AlternateSubmit>
           )}
           <a href={previewHref} target="_blank" rel="noopener" className="admin-btn">

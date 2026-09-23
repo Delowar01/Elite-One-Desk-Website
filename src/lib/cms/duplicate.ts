@@ -12,8 +12,8 @@ import { validateStyleDocument, type StyleDocument } from "./styles";
  *
  * An id is an identity. Two rows in the database claiming the same one is a
  * coincidence that holds only as long as nothing ever compares them across
- * sections — a copy between pages, a log keyed by row, an analytics event, a
- * later batch that merges two structures. Each of those would be correct today
+ * sections — a copy between pages, a log keyed by row, an analytics event,
+ * anything that merges two structures. Each of those would be correct today
  * and wrong the moment the coincidence was relied on, and the failure would
  * look like one card's styling appearing on another card in another section.
  *

@@ -1656,6 +1656,7 @@ export function VisualEditorShell({
           onRevert={revert}
           onTakeLatest={takeLatest}
           onClear={() => ask(null)}
+          onSelect={ask}
         />
       </div>
     </div>

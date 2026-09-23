@@ -625,8 +625,8 @@ function ItemsField({
  *
  * The id is minted here rather than waiting for the server so the row has a
  * stable address from the moment it appears: it is the React key, it is what a
- * selection on the canvas will point at, and it is what a style override in a
- * later batch will be filed under. `ensureItemIds` still checks it on the way
+ * selection on the canvas will point at, and it is what a style override is
+ * filed under. `ensureItemIds` still checks it on the way
  * in — same alphabet, same uniqueness rule — and replaces anything it would not
  * have produced itself, so minting it in the browser buys convenience without
  * buying trust.

@@ -1,6 +1,38 @@
 import "server-only";
 
 import { AccessError } from "@/lib/auth/guard";
+import type { DraftKind } from "@/lib/cms/drafts";
+
+/**
+ * What a section screen must adopt after a write that succeeded.
+ *
+ * Returned by the action itself, through the same channel as the message,
+ * because that channel is the only one that cannot be lost. The re-rendered
+ * page Next includes in a Server Action's response is applied to the router
+ * best-effort, and measurably is not always applied: twelve consecutive saves
+ * on the section editor, two of them left the screen on the previous revision
+ * while the server had rendered the new one twice. The screen then submitted a
+ * revision the row had moved past and was told it had been overtaken — by
+ * itself.
+ *
+ * So the authoritative facts come back with the answer: what the row is now,
+ * what kind of draft it has, which entrance it is showing, and — where the
+ * write replaced what the form should display — the values to show.
+ */
+export type SectionSnapshot = {
+  revision: number;
+  draftKind: DraftKind;
+  /** The preset this screen should now show: the motion draft, or the live one. */
+  animation: string;
+  isDraftOnly: boolean;
+  /**
+   * Present only when the write changed what the fields should hold — a
+   * discard, which puts the published wording back. A save must not send them:
+   * replacing the fields with the server's copy of what was just typed would
+   * move the caret and lose an in-progress edit.
+   */
+  values?: Record<string, unknown>;
+};
 
 /** The shape every admin Server Action returns, so one client hook reads them all. */
 export type ActionState = {
@@ -10,6 +42,8 @@ export type ActionState = {
   errors?: Record<string, string>;
   /** Echoed back so a client can act on what was created. */
   id?: number;
+  /** The row this action wrote, for a screen that must stay authoritative. */
+  section?: SectionSnapshot;
 };
 
 export const ok = (message?: string, id?: number): ActionState => ({ ok: true, message, id });

@@ -23,8 +23,10 @@ import type { EditorNodeKind } from "./render";
  *     travels in a payload or an iframe URL. A `postMessage` is readable by any
  *     script in the receiving document.
  *   · **Finished.** Version 2 adds selection: what the page is made of, what
- *     the pointer is over, what is selected and where it sits. Content, style
- *     and motion commands arrive in later batches and will raise it again.
+ *     the pointer is over, what is selected and where it sits. That is the
+ *     whole vocabulary of V1 — content, style and motion are edited through
+ *     Server Actions and never travel over this channel, so nothing in the
+ *     finished editor raised it again.
  *
  * Both ends check origin and source as well as the fields below; neither alone
  * is enough. See `bridgeOrigin` for why the origin is the window's own.

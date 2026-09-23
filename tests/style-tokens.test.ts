@@ -29,6 +29,9 @@ import {
   BORDERS,
   FONT_SIZES,
   MAX_WIDTHS,
+  OPACITY_MAX,
+  OPACITY_MIN,
+  OPACITY_SNAP,
   RADII,
   SHADOWS,
   RESPONSIVE_BREAKPOINTS,
@@ -1107,5 +1110,110 @@ describe("a Base hide leaves a way back", () => {
       describeStoredPath("quick-links", "field:links/item:i_aaaaaaaaaa", values, "ar").label,
       "خطّط لرحلة",
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a style number has one spelling", () => {
+  /**
+   * `Math.round(raw / snap) * snap` lands on the right value and writes it
+   * wrongly: twelve steps of 0.05 is `0.6000000000000001`, because neither
+   * 0.05 nor 0.6 is exact in binary floating point and the multiply carries the
+   * error. Stored, exported and compared, that is a different value from the
+   * 0.6 the panel offered — two documents with the same opacity were not equal,
+   * and a validated document was not equal to itself validated again.
+   */
+  const OPACITY_PATH = { v: 1, nodes: { root: { base: { opacity: 0 } } } };
+  const withOpacity = (value: number) => ({
+    ...OPACITY_PATH,
+    nodes: { root: { base: { opacity: value } } },
+  });
+  const opacityOf = (doc: StyleDocument) => doc.nodes.root?.base?.opacity;
+
+  /** The grid, counted rather than accumulated — adding 0.05 seventeen times
+   *  overshoots 1 by an ulp, which is the very artefact under test. */
+  const STEPS = Math.round((OPACITY_MAX - OPACITY_MIN) / OPACITY_SNAP);
+  const gridValues = Array.from({ length: STEPS + 1 }, (_, index) => {
+    // Deliberately the naive arithmetic: this is what the panel sends.
+    let value = OPACITY_MIN;
+    for (let n = 0; n < index; n += 1) value += OPACITY_SNAP;
+    return Math.min(value, OPACITY_MAX);
+  });
+
+  test("every step of the grid is written the way a person would write it", () => {
+    const seen: number[] = [];
+    for (const value of gridValues) {
+      const stored = opacityOf(validateStyleDocument(withOpacity(value)));
+      assert.equal(typeof stored, "number", `${value} was not stored as a number`);
+      seen.push(stored!);
+      assert.ok(
+        String(stored).length <= 4,
+        `${value} was stored as ${stored} — a floating-point artefact`,
+      );
+      // On the grid, to the step, and inside the range.
+      assert.ok(stored! >= OPACITY_MIN && stored! <= OPACITY_MAX);
+      assert.equal(Math.round(stored! / OPACITY_SNAP) * OPACITY_SNAP - stored! < 1e-9, true);
+    }
+    assert.equal(seen.length, 17, `${seen.length} steps`);
+    assert.deepEqual(seen.slice(0, 4), [0.2, 0.25, 0.3, 0.35]);
+    assert.equal(seen.at(-1), 1);
+  });
+
+  test("an artefact already in the database normalises without a migration", () => {
+    for (const [artefact, canonical] of [
+      [0.6000000000000001, 0.6],
+      [0.7000000000000001, 0.7],
+      [0.35000000000000003, 0.35],
+      [0.30000000000000004, 0.3],
+    ] as const) {
+      assert.equal(
+        opacityOf(validateStyleDocument(withOpacity(artefact))),
+        canonical,
+        `${artefact} did not become ${canonical}`,
+      );
+    }
+  });
+
+  test("a value between steps still snaps to the nearest one", () => {
+    assert.equal(opacityOf(validateStyleDocument(withOpacity(0.61))), 0.6);
+    assert.equal(opacityOf(validateStyleDocument(withOpacity(0.639))), 0.65);
+    assert.equal(opacityOf(validateStyleDocument(withOpacity(0.2001))), 0.2);
+  });
+
+  test("validating twice changes nothing, on every breakpoint", () => {
+    for (const breakpoint of ["base", "tablet", "mobile"] as const) {
+      for (const value of gridValues) {
+        const document = {
+          v: 1,
+          nodes: { "field:body": { [breakpoint]: { opacity: value, padBlock: 3 } } },
+        };
+        const once = validateStyleDocument(document);
+        const twice = validateStyleDocument(JSON.parse(JSON.stringify(once)));
+        assert.deepEqual(twice, once, `${breakpoint} ${value} is not idempotent`);
+        assert.equal(
+          JSON.stringify(twice),
+          JSON.stringify(once),
+          `${breakpoint} ${value} does not serialise identically`,
+        );
+      }
+    }
+  });
+
+  test("the canonical spelling survives a round trip through JSON", () => {
+    const once = validateStyleDocument(withOpacity(0.6000000000000001));
+    const text = JSON.stringify(once);
+    assert.ok(!text.includes("0.6000000000000001"), text);
+    assert.equal(JSON.stringify(validateStyleDocument(JSON.parse(text))), text);
+  });
+
+  test("the range and the step are unchanged", () => {
+    assert.equal(OPACITY_MIN, 0.2);
+    assert.equal(OPACITY_MAX, 1);
+    assert.equal(OPACITY_SNAP, 0.05);
+    assert.equal(opacityOf(validateStyleDocument(withOpacity(0.15))), undefined);
+    assert.equal(opacityOf(validateStyleDocument(withOpacity(1.5))), undefined);
+    assert.equal(opacityOf(validateStyleDocument(withOpacity(Number.NaN))), undefined);
+    assert.equal(opacityOf(validateStyleDocument(withOpacity(Number.POSITIVE_INFINITY))), undefined);
   });
 });

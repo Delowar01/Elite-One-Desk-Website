@@ -412,21 +412,63 @@ export function EditorBridge({
     /* Listeners                                                         */
     /* ---------------------------------------------------------------- */
 
-    const closestNode = (target: EventTarget | null): Element | null => {
+    /**
+     * Which editable thing is under the pointer.
+     *
+     * The nearest annotated ancestor wins, which is what makes selection feel
+     * precise: the card's title rather than the card, the card rather than the
+     * section. That is the whole rule for markup where what you see is what you
+     * hit.
+     *
+     * It is not the whole rule for a card built in layers. A Quick Links card
+     * paints its picture in an absolutely positioned frame and then lays the
+     * text over the top of it in a sibling that fills the card — so a click
+     * anywhere on the picture lands on the text layer, which carries no address
+     * of its own, and walking up from it finds the *item*. The picture was
+     * therefore selectable from the Layers tree and unreachable by pointing at
+     * it, which is the one gesture an editor actually uses.
+     *
+     * So when walking up lands on something that contains other editable
+     * things, the elements genuinely occupying that point are consulted and the
+     * most precise one that belongs to it is preferred. Two rules keep this
+     * from becoming clever:
+     *
+     *   - a foreground hit always wins. Pointing at the title selects the
+     *     title, because the walk up from it already ends at the title and the
+     *     search stops the moment it reaches what was clicked.
+     *   - only a descendant of what was found is eligible. Nothing behind or
+     *     beside it can be selected by pointing somewhere it does not cover.
+     *
+     * Blocks whose markup does not stack — which is nearly all of them — never
+     * reach the second half: the first `closest()` already returns something
+     * with no editable descendants, and the extra work is one scoped query.
+     */
+    const closestNode = (target: EventTarget | null, point?: { x: number; y: number }): Element | null => {
       if (!(target instanceof Element)) return null;
-      // The nearest one wins, which is what makes selection feel precise: the
-      // card's title rather than the card, the card rather than the section.
-      return target.closest(SELECTABLE);
+      const direct = target.closest(SELECTABLE);
+      if (!direct || !point) return direct;
+      // Cheap gate: only a node with editable things inside it can be refined.
+      if (!direct.querySelector(SELECTABLE)) return direct;
+
+      for (const candidate of document.elementsFromPoint(point.x, point.y)) {
+        // Front to back. Reaching what was clicked means nothing in front of it
+        // was more precise, and anything after it is behind.
+        if (candidate === direct) break;
+        const inside: Element | null = candidate.closest(SELECTABLE);
+        if (inside && inside !== direct && direct.contains(inside)) return inside;
+      }
+      return direct;
     };
 
-    const onPointerMove = (event: PointerEvent) => setHover(closestNode(event.target));
+    const onPointerMove = (event: PointerEvent) =>
+      setHover(closestNode(event.target, { x: event.clientX, y: event.clientY }));
     const onPointerLeave = () => setHover(null);
 
     const onClick = (event: MouseEvent) => {
       // A modified click is the browser's, not ours: open-in-new-tab still
       // means open in a new tab, even in here.
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      const element = closestNode(event.target);
+      const element = closestNode(event.target, { x: event.clientX, y: event.clientY });
       if (!element) return;
       // Inside the canvas a click on something editable means "select this".
       // Following the link as well would take the editor off the page they are

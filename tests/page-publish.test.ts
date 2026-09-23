@@ -1578,3 +1578,201 @@ describe("a reader may see a page's history and may not change anything", () => 
     }
   });
 });
+
+/* -------------------------------------------------------------------------- */
+
+describe("a section screen is told what it wrote", () => {
+  /**
+   * The normal Admin section editor has to be authoritative for its *next*
+   * action: the revision it submits is the one it was built with, so if it
+   * never learns the new one, the next save is refused as a conflict by a
+   * screen that had just saved successfully.
+   *
+   * It used to learn it only from the page Next re-renders as part of the
+   * action's response — and that tree is applied best-effort. When the router
+   * dropped it, it dropped the action's own returned state with it, so
+   * `useActionState` never fired at all: two to seven of twelve consecutive
+   * saves, measured, with the server having rendered the right revision twice
+   * each time. Two things changed. The write's answer now carries the row, and
+   * the revalidation that was poisoning that answer happens in `after()`, once
+   * the response has already gone.
+   *
+   * What is asserted here is the first half — the answer itself. The second is
+   * `admin-section.mts`, which drives the real screen.
+   */
+  const sectionForm = (
+    session: TestSession,
+    values: Record<string, string>,
+  ) => {
+    const form = new FormData();
+    form.set("_csrf", session.csrfToken);
+    for (const [key, value] of Object.entries(values)) form.set(key, value);
+    return form;
+  };
+
+  const sectionAction = (action: string, form: FormData, session = owner) =>
+    callAction<{
+      ok: boolean;
+      message?: string;
+      section?: {
+        revision: number;
+        draftKind: string;
+        animation: string;
+        isDraftOnly: boolean;
+        values?: Record<string, unknown>;
+      };
+    }>({
+      origin: server.origin,
+      route: "/admin/pages/section/1",
+      file: PAGE_ACTIONS,
+      action,
+      args: [{ ok: false }, form],
+      cookie: session.cookie,
+    });
+
+  test("a draft save answers with the row it just wrote", async () => {
+    const page = await reset("privacy");
+    const [section] = await sectionsOf(page.id);
+    const before = section!.revision;
+
+    const saved = answered(
+      await sectionAction(
+        "saveSectionDraft",
+        sectionForm(owner, {
+          id: String(section!.id),
+          expectedRevision: String(before),
+          values: JSON.stringify({ title: { en: "Told to the screen", ar: "" } }),
+        }),
+      ),
+    );
+    assert.equal(saved.ok, true, saved.message);
+    assert.ok(saved.section, "the answer carried no row");
+    assert.equal(saved.section!.revision, before + 1, "the answer named the old revision");
+    assert.equal(saved.section!.draftKind, "content");
+    assert.equal(saved.section!.isDraftOnly, false);
+    assert.ok(!saved.section!.values, "a save must not replace the fields");
+
+    // …and the revision it named is the one the next write must use.
+    const again = answered(
+      await sectionAction(
+        "saveSectionDraft",
+        sectionForm(owner, {
+          id: String(section!.id),
+          expectedRevision: String(saved.section!.revision),
+          values: JSON.stringify({ title: { en: "And again", ar: "" } }),
+        }),
+      ),
+    );
+    assert.equal(again.ok, true, again.message);
+    assert.equal(again.section!.revision, before + 2);
+  });
+
+  test("the revision it named is the only one the next write accepts", async () => {
+    const page = await reset("terms");
+    const [section] = await sectionsOf(page.id);
+    const before = section!.revision;
+    const saved = answered(
+      await sectionAction(
+        "saveSectionDraft",
+        sectionForm(owner, {
+          id: String(section!.id),
+          expectedRevision: String(before),
+          values: JSON.stringify({ title: { en: "First", ar: "" } }),
+        }),
+      ),
+    );
+    assert.equal(saved.ok, true);
+
+    // Submitting the revision the screen was *built* with — what a screen that
+    // never learned the answer would send.
+    const stale = answered(
+      await sectionAction(
+        "saveSectionDraft",
+        sectionForm(owner, {
+          id: String(section!.id),
+          expectedRevision: String(before),
+          values: JSON.stringify({ title: { en: "Second", ar: "" } }),
+        }),
+      ),
+    );
+    assert.equal(stale.ok, false, "a stale revision was accepted");
+    const [row] = await sql<{ draft: { title?: { en?: string } } | null }[]>`
+      select draft from page_sections where id = ${section!.id}`;
+    assert.equal(row!.draft?.title?.en, "First", "the refused write landed anyway");
+  });
+
+  test("a discard answers with the values the fields must go back to", async () => {
+    const page = await reset("disclaimer");
+    const [section] = await sectionsOf(page.id);
+    const published = (
+      await sql<{ published: { title?: { en?: string } } }[]>`
+        select published from page_sections where id = ${section!.id}`
+    )[0]!.published;
+
+    const saved = answered(
+      await sectionAction(
+        "saveSectionDraft",
+        sectionForm(owner, {
+          id: String(section!.id),
+          expectedRevision: String(section!.revision),
+          values: JSON.stringify({ title: { en: "Thought better of", ar: "" } }),
+        }),
+      ),
+    );
+    assert.equal(saved.ok, true, saved.message);
+
+    const discarded = answered(
+      await sectionAction(
+        "discardDraft",
+        sectionForm(owner, {
+          id: String(section!.id),
+          expectedRevision: String(saved.section!.revision),
+        }),
+      ),
+    );
+    assert.equal(discarded.ok, true, discarded.message);
+    assert.equal(discarded.section!.draftKind, "none");
+    assert.ok(discarded.section!.values, "a discard must hand the fields back their values");
+    assert.equal(
+      (discarded.section!.values!.title as { en?: string } | undefined)?.en,
+      published.title?.en,
+      "the fields would have kept the discarded wording",
+    );
+  });
+
+  test("a publication answers with a row that has nothing waiting", async () => {
+    const page = await reset("about");
+    const [section] = await sectionsOf(page.id);
+    const saved = answered(
+      await sectionAction(
+        "saveSectionAndPublish",
+        sectionForm(owner, {
+          id: String(section!.id),
+          expectedRevision: String(section!.revision),
+          values: JSON.stringify({ title: { en: "Straight out", ar: "" } }),
+        }),
+      ),
+    );
+    assert.equal(saved.ok, true, saved.message);
+    assert.equal(saved.section!.draftKind, "none");
+    assert.equal(saved.section!.revision, section!.revision + 1);
+    assert.match(saved.message ?? "", /live now|published/i);
+  });
+
+  test("a refused write answers with no row at all", async () => {
+    const page = await reset("privacy");
+    const [section] = await sectionsOf(page.id);
+    const refused = answered(
+      await sectionAction(
+        "saveSectionDraft",
+        sectionForm(owner, {
+          id: String(section!.id),
+          expectedRevision: String(section!.revision + 99),
+          values: JSON.stringify({ title: { en: "Nope", ar: "" } }),
+        }),
+      ),
+    );
+    assert.equal(refused.ok, false);
+    assert.ok(!refused.section, "a refusal must not move the screen on");
+  });
+});

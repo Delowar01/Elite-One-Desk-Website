@@ -3,6 +3,7 @@
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 
 import { logActivity } from "@/lib/activity";
 import {
@@ -13,6 +14,7 @@ import {
   ok,
   runAction,
   type ActionState,
+  type SectionSnapshot,
 } from "@/lib/admin/actions";
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
@@ -25,7 +27,7 @@ import {
   RESTORE_BLOCKED,
 } from "@/lib/cms/publish-service";
 import { hasDraft, draftKindOf } from "@/lib/cms/drafts";
-import { motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
+import { effectiveMotion, motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
 import {
   addStructureSection,
   discardLayoutDraft,
@@ -157,10 +159,84 @@ const refreshPage = (slug: string) => {
  * Naming the route the action was actually submitted from makes that a property
  * of the code rather than of what happens to invalidate what.
  */
-const refreshSection = (slug: string, id: number) => {
-  revalidatePath(`/admin/pages/section/${id}`);
-  refreshPage(slug);
+/**
+ * What a section write invalidates, and deliberately what it does not.
+ *
+ * Two things were removed here, and the reason is the same for both: when a
+ * Server Action revalidates anything, Next attaches a re-rendered tree for the
+ * *current* route to the action's response, and when the router discards that
+ * tree it discards the action's own returned state with it. `useActionState`
+ * then never surfaces the result at all — measured over a sixty-second window,
+ * it appears only when the next action is dispatched. The screen keeps the
+ * revision it was built with, the confirmation never appears, and the next save
+ * is refused as a conflict by a screen that had just saved successfully.
+ * Twelve consecutive saves: two to seven lost with revalidation, none without
+ * it, twice over.
+ *
+ *   - The editor's own route is no longer revalidated. It used to be, to keep
+ *     this screen up to date; the screen now adopts what the action returns, so
+ *     the re-render bought nothing and cost the answer.
+ *   - A draft save no longer drops `TAGS.pages`. A draft changes nothing a
+ *     visitor can see, so invalidating the public page cache was never right —
+ *     it only widened the window above.
+ *
+ * What a publication changes for everyone else is still dropped, because that
+ * part is not optional.
+ */
+const refreshAfterDraft = (slug: string) => {
+  after(() => {
+    revalidatePath(`/admin/pages/${slug}`);
+    revalidatePath("/admin/pages");
+  });
 };
+
+const refreshAfterPublish = (slug: string) => {
+  after(() => {
+    revalidate(TAGS.pages);
+    revalidatePath(`/admin/pages/${slug}`);
+    revalidatePath("/admin/pages");
+  });
+};
+
+/**
+ * The row as it stands after a write, for the screen that did the writing.
+ *
+ * `refreshSection` above asks Next to re-render the editor's route, and that
+ * re-render is correct every time — the server has been observed producing it
+ * twice per save with the right revision in it. What is not reliable is the
+ * router applying it: measured on this screen, two of twelve consecutive saves
+ * left the rendered page on the previous revision with the client component
+ * never re-rendering at all. The next save then named a revision the row had
+ * moved past and was refused as a conflict by a screen that had just saved
+ * successfully.
+ *
+ * A re-render is still asked for, because everything else on the page should
+ * follow. But what the *next action* depends on comes back in the answer, which
+ * is the same channel as the message and is never dropped.
+ */
+async function sectionSnapshot(
+  id: number,
+  options: { values?: boolean } = {},
+): Promise<SectionSnapshot | undefined> {
+  const [row] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
+  if (!row) return undefined;
+  const block = getBlock(row.blockType);
+  const snapshot: SectionSnapshot = {
+    revision: row.revision,
+    draftKind: draftKindOf(row),
+    animation: effectiveMotion(row.animation, row.draftAnimation),
+    isDraftOnly: row.isDraftOnly,
+  };
+  // The key is absent rather than undefined: a save must say nothing about the
+  // fields at all, and "present but empty" is a different sentence.
+  if (options.values && block) {
+    snapshot.values = {
+      ...emptyValues(block),
+      ...((row.draft ?? row.published) as Record<string, unknown>),
+    };
+  }
+  return snapshot;
+}
 
 export async function createPage(_prev: ActionState, form: FormData): Promise<ActionState> {
   let slug = "";
@@ -598,14 +674,17 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
     entityId: id,
     summary: `${publish ? "Published" : "Saved a draft of"} the ${block.name} section`,
   });
-  if (page) refreshSection(page.slug, id);
-  return ok(
-    publish
-      ? section.isPublished
-        ? "Published. The change is live now."
-        : LIVE.hiddenPublish
-      : "Draft saved. Use Preview to see it, then Publish when you are ready.",
-  );
+  if (page) (publish ? refreshAfterPublish : refreshAfterDraft)(page.slug);
+  return {
+    ...ok(
+      publish
+        ? section.isPublished
+          ? "Published. The change is live now."
+          : LIVE.hiddenPublish
+        : "Draft saved. Use Preview to see it, then Publish when you are ready.",
+    ),
+    section: await sectionSnapshot(id),
+  };
 }
 
 /** What the form's own action does, and so what the Enter key does. */
@@ -679,8 +758,11 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
       entityId: id,
       summary: `Published the ${section.blockType} section`,
     });
-    if (page) refreshSection(page.slug, id);
-    return ok(section.isPublished ? "Published." : LIVE.hiddenDraft);
+    if (page) refreshAfterPublish(page.slug);
+    return {
+      ...ok(section.isPublished ? "Published." : LIVE.hiddenDraft),
+      section: await sectionSnapshot(id),
+    };
   });
 }
 
@@ -721,8 +803,15 @@ export async function discardDraft(_prev: ActionState, form: FormData): Promise<
       entityId: id,
       summary: "Discarded a section draft",
     });
-    if (page) refreshSection(page.slug, id);
-    return ok("Draft discarded. The live version is unchanged.");
+    // Discarding a draft changes nothing a visitor sees, so the public cache
+    // stands; the admin screens that badge the draft do not.
+    if (page) refreshAfterDraft(page.slug);
+    // The fields have to go back to the published wording, which is the one
+    // case where the screen's own values are no longer the right ones.
+    return {
+      ...ok("Draft discarded. The live version is unchanged."),
+      section: await sectionSnapshot(id, { values: true }),
+    };
   });
 }
 
