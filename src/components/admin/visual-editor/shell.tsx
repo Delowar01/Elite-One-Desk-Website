@@ -53,7 +53,7 @@ import {
   type SectionBuffer,
 } from "./inspector";
 import { formatNodePath, parseAddress } from "@/lib/cms/address";
-import { applyTextAt } from "@/lib/visual-editor/tree";
+import { applyTextAt, directEditAt, textAt } from "@/lib/visual-editor/tree";
 import { LayersPanel, type StructuralOps } from "./layers";
 import { PagePanel } from "./page-panel";
 
@@ -211,7 +211,30 @@ export function VisualEditorShell({
   const [loadingId, setLoadingId] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   /** Sections already asked for, so a re-render does not ask again. */
-  const requested = useRef<Set<number>>(new Set());
+  /**
+   * Loads that have been started and not yet answered, by section.
+   *
+   * Replaces the set of "sections we have asked about": a set could say a load
+   * had happened but not hand the answer to a second asker, so a direct-edit
+   * request arriving while a selection load was in flight either started its
+   * own or gave up. A promise per section is the thing both of them can wait
+   * on.
+   */
+  const inflight = useRef<Map<number, Promise<SectionBuffer | null>>>(new Map());
+  /**
+   * The direct-edit session: which request is the live one, and what it began
+   * from.
+   *
+   * `token` rises with every request, so a message arriving from a superseded
+   * session — a canvas that was replaced, an address the editor moved off,
+   * a request the person changed their mind about — is recognised and ignored
+   * rather than applied to whatever is selected now. `started` is the value the
+   * session opened with, which is what Escape restores.
+   */
+  const editToken = useRef(0);
+  const editSession = useRef<
+    { token: number; address: string; sectionId: number; started: string } | null
+  >(null);
   /** Where the selection should go once the canvas comes back from a save. */
   const restoreTo = useRef<{ address: string; fallback: string } | null>(null);
   const [restoreToken, setRestoreToken] = useState(0);
@@ -293,6 +316,17 @@ export function VisualEditorShell({
   /** Which page is being edited, as a value — `page` itself is a new object on every refresh. */
   const pageId = page?.id ?? null;
   pageRef.current = page?.id ?? null;
+  /**
+   * The language and the canvas document, mirrored for the readiness path.
+   *
+   * It has to compare what the editor is showing *now* against what it was
+   * showing when the request was made, and a value captured in a closure would
+   * only ever tell it what things were then.
+   */
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const canvasKeyRef = useRef(canvasKey);
+  canvasKeyRef.current = canvasKey;
 
   /**
    * The one way a buffer changes.
@@ -432,26 +466,6 @@ export function VisualEditorShell({
     [],
   );
 
-  /**
-   * Ask the canvas to start typing into a node, from the panel.
-   *
-   * The node is selected first, so the inspector is showing the same thing the
-   * canvas is about to edit — the two are interfaces onto one buffer, and it
-   * would be strange for one of them to be pointed somewhere else.
-   */
-  const startCanvasEdit = useCallback(
-    (address: string) => {
-      if (!canManageContent) return;
-      setSelectRequest((current) => ({
-        address,
-        scrollIntoView: true,
-        token: (current?.token ?? 0) + 1,
-      }));
-      setEditRequest((current) => ({ address, active: true, token: (current?.token ?? 0) + 1 }));
-    },
-    [canManageContent],
-  );
-
   const ask = useCallback(
     (address: string | null) =>
       setSelectRequest((current) => ({
@@ -475,57 +489,174 @@ export function VisualEditorShell({
    * the row. The page id travels with the request and is checked against the
    * row, so this canvas can only ever edit its own page's sections.
    */
+  /**
+   * One section, loaded once, whoever asked.
+   *
+   * Both the selection effect and a direct-edit request need the row, and
+   * before this they would each have started their own. The map of in-flight
+   * loads is what makes a second asker wait on the first rather than race it,
+   * and the buffer is installed exactly once: if one is already there — because
+   * somebody has been typing into it — the server's answer does not replace it.
+   *
+   * A load that fails stays retryable, and a load whose page has moved on by
+   * the time it lands installs nothing. No placeholder revision is ever
+   * invented, and no buffer is ever built from the canvas.
+   */
+  const ensureSectionBuffer = useCallback(
+    (sectionId: number): Promise<SectionBuffer | null> => {
+      const held = buffersRef.current[sectionId];
+      if (held) return Promise.resolve(held);
+      const already = inflight.current.get(sectionId);
+      if (already) return already;
+
+      const pageId = pageRef.current;
+      if (pageId === null) return Promise.resolve(null);
+
+      setLoadingId(sectionId);
+      setLoadError(null);
+      const load = loadVisualSection(sectionId, pageId)
+        .then((result) => {
+          inflight.current.delete(sectionId);
+          setLoadingId((current) => (current === sectionId ? null : current));
+          if (!result.ok) {
+            setLoadError(result.message);
+            return null;
+          }
+          // The editor moved to another page while this was in flight. Its
+          // buffers were dropped with it; installing this now would put a
+          // stranger's section into the new page's state.
+          if (pageRef.current !== pageId) return null;
+
+          let installed: SectionBuffer | null = null;
+          writeBuffers((prev) => {
+            const existing = prev[sectionId];
+            if (existing) {
+              installed = existing;
+              return prev;
+            }
+            installed = {
+              data: result.section,
+              values: result.section.values,
+              styles: result.section.styles,
+              motion: result.section.motion,
+              contentDirty: false,
+              styleDirty: false,
+              motionDirty: false,
+              saving: null,
+              status: "idle",
+              statusDomain: null,
+            };
+            return { ...prev, [sectionId]: installed };
+          });
+          return installed;
+        })
+        .catch(() => {
+          inflight.current.delete(sectionId);
+          setLoadingId((current) => (current === sectionId ? null : current));
+          setLoadError("The section could not be read. Reload the canvas and try again.");
+          return null;
+        });
+
+      inflight.current.set(sectionId, load);
+      return load;
+    },
+    [writeBuffers],
+  );
+
   useEffect(() => {
     if (activeId === null || !page) return;
-    if (requested.current.has(activeId)) return;
-    requested.current.add(activeId);
+    void ensureSectionBuffer(activeId);
+  }, [activeId, page, ensureSectionBuffer]);
 
-    const wanted = activeId;
-    let cancelled = false;
-    setLoadingId(wanted);
-    setLoadError(null);
+  /**
+   * A direct-edit session belongs to one page, one language and one canvas
+   * document. When any of those changes it is over.
+   *
+   * Explicit rather than left to the token checks alone: those stop a stale
+   * request from *beginning*, and this stops one that already began from
+   * carrying on into a document that is no longer the one it was opened
+   * against. Nothing here waits on a promise — a background load that lands
+   * afterwards finds a token that has moved and returns.
+   */
+  useEffect(() => {
+    editToken.current += 1;
+    const session = editSession.current;
+    editSession.current = null;
+    if (session) setEditRequest({ kind: "cancel", token: session.token });
+  }, [page, locale, canvasKey]);
 
-    loadVisualSection(wanted, page.id)
-      .then((result) => {
-        if (cancelled) return;
-        setLoadingId((current) => (current === wanted ? null : current));
-        if (!result.ok) {
-          // Let a later selection try again rather than remembering a failure.
-          requested.current.delete(wanted);
-          setLoadError(result.message);
-          return;
-        }
-        writeBuffers((prev) =>
-          prev[wanted]
-            ? prev
-            : {
-                ...prev,
-                [wanted]: {
-                  data: result.section,
-                  values: result.section.values,
-                  styles: result.section.styles,
-                  motion: result.section.motion,
-                  contentDirty: false,
-                  styleDirty: false,
-                  motionDirty: false,
-                  saving: null,
-                  status: "idle",
-                  statusDomain: null,
-                },
-              },
-        );
-      })
-      .catch(() => {
-        if (cancelled) return;
-        requested.current.delete(wanted);
-        setLoadingId((current) => (current === wanted ? null : current));
-        setLoadError("The section could not be read. Reload the canvas and try again.");
-      });
+  /**
+   * The one way direct editing ever begins — from the canvas or from Layers.
+   *
+   * The rule it exists to keep: **editing may not begin until the exact server
+   * values and revision that will own the edit are in the buffer.** Before this,
+   * a double-click made the node editable immediately and the shell dropped
+   * whatever was typed if no buffer happened to exist — text on screen that
+   * nothing was going to save — and the text it began from was whatever the
+   * page had rendered, which for an Arabic node with no translation is the
+   * English fallback plus the words of every annotated child inside it.
+   *
+   * So: select, load, check, read the value out of the row, and only then tell
+   * the canvas to begin, handing it the text to begin with. Every step that
+   * could have moved on while the load was in flight is re-checked against the
+   * token: a newer request, a different page, a different language, a reloaded
+   * canvas. A stale one returns without touching anything, and the canvas is
+   * told to stop — it never entered edit mode, so there is nothing to undo.
+   */
+  const requestDirectEdit = useCallback(
+    async (address: string) => {
+      const parsed = parseAddress(address);
+      if (!parsed || !parsed.path.length) return;
+      const sectionId = parsed.sectionId;
+      const relative = formatNodePath(parsed.path);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [activeId, page, writeBuffers]);
+      // Supersede whatever was pending or running, and stop the canvas if it
+      // is mid-session on something else.
+      const token = editToken.current + 1;
+      editToken.current = token;
+      const previous = editSession.current;
+      editSession.current = null;
+      if (previous) setEditRequest({ kind: "cancel", token: previous.token });
+
+      if (!canManageContent) return;
+      // A locked node is protected from the *pointer*; reaching it deliberately
+      // from Layers is still editing, and the canvas refuses the gesture on its
+      // own side. Nothing more is needed here.
+
+      // The inspector should be pointed at what is about to be typed into, and
+      // this is also what loads the section on the ordinary path.
+      setSelectRequest((current) => ({
+        address,
+        scrollIntoView: true,
+        token: (current?.token ?? 0) + 1,
+      }));
+
+      const pageAtRequest = pageRef.current;
+      const localeAtRequest = localeRef.current;
+      const canvasAtRequest = canvasKeyRef.current;
+
+      const buffer = await ensureSectionBuffer(sectionId);
+
+      // Everything that means "this request is no longer the one to honour".
+      if (editToken.current !== token) return;
+      if (pageRef.current !== pageAtRequest) return;
+      if (localeRef.current !== localeAtRequest) return;
+      if (canvasKeyRef.current !== canvasAtRequest) return;
+      if (!buffer) return; // a failed load leaves the canvas exactly as it was
+      // A section that has lost a race is not edited on top of: the existing
+      // Reload latest workflow wins, as it does for every other write.
+      if (buffer.status === "conflict") return;
+      if (!directEditAt(buffer.data.blockType, relative)) return;
+
+      const text = textAt(buffer.values, buffer.data.blockType, relative, localeAtRequest);
+      if (text === null) return;
+
+      editSession.current = { token, address, sectionId, started: text };
+      setEditRequest({ kind: "begin", address, token, text });
+    },
+    [canManageContent, ensureSectionBuffer],
+  );
+
 
   /**
    * A node on the canvas was typed into.
@@ -549,30 +680,43 @@ export function VisualEditorShell({
    * worse than an empty field.
    */
   const onCanvasEdit = useCallback(
-    (edit: { address: string; phase: "start" | "input" | "commit" | "cancel"; text: string }) => {
+    (edit: { address: string; token: number; phase: "input" | "commit" | "cancel"; text: string }) => {
       if (!canManageContent) return;
+      /**
+       * Only the live session, and only its own node.
+       *
+       * A canvas that was replaced, a request that was superseded, an address
+       * the editor has moved off: each can still have a message in flight, and
+       * applying one would write text into whatever is selected now. The token
+       * is what tells them apart — "whatever is currently contenteditable" is
+       * not an identity.
+       */
+      const session = editSession.current;
+      if (!session || session.token !== edit.token || session.address !== edit.address) return;
+
       const parsed = parseAddress(edit.address);
       if (!parsed) return;
       const sectionId = parsed.sectionId;
+      // Cancel restores the value the session began with, in the buffer as
+      // well as on the canvas — a buffer left holding the abandoned text while
+      // the canvas showed the old one would be a dirty state nobody could see.
+      const text = edit.phase === "cancel" ? session.started : edit.text;
+
+      if (edit.phase !== "input") editSession.current = null;
 
       writeBuffers((prev) => {
         const entry = prev[sectionId];
-        // Nothing is loaded for this section yet, so there is no buffer to
-        // write into. The canvas keeps what was typed on screen; selecting the
-        // node loads the section and the inspector shows the stored value. A
-        // buffer invented here would be a second copy of the content.
+        // There is always a buffer by now: the session only exists because one
+        // was loaded before editing was allowed to begin.
         if (!entry) return prev;
-        // A section that has lost a race is not written to again: the editor
-        // has to Reload latest first, which is the existing conflict rule and
-        // direct editing does not get an exemption from it.
         if (entry.status === "conflict") return prev;
 
         const values = applyTextAt(
           entry.values,
           entry.data.blockType,
           formatNodePath(parsed.path),
-          locale,
-          edit.text,
+          localeRef.current,
+          text,
         );
         if (!values) return prev;
 
@@ -589,10 +733,17 @@ export function VisualEditorShell({
         };
       });
 
-      // `start` changes nothing; it only says a node has become editable.
-      if (edit.phase !== "start") scheduleAutosave(sectionId);
+      /**
+       * A cancelled session saves nothing.
+       *
+       * Opening the editor on a node and pressing Escape has to leave the
+       * section exactly as it was — including not having queued a write of the
+       * value it started from, which would spend a revision to store what is
+       * already stored.
+       */
+      if (edit.phase !== "cancel") scheduleAutosave(sectionId);
     },
-    [canManageContent, locale, scheduleAutosave, writeBuffers],
+    [canManageContent, scheduleAutosave, writeBuffers],
   );
 
   const onValues = useCallback(
@@ -1288,7 +1439,7 @@ export function VisualEditorShell({
         }
         return next;
       });
-      requested.current = new Set([...requested.current].filter((id) => !mine.has(id)));
+      for (const id of mine) inflight.current.delete(id);
 
       const latest = await loadPageStructure(pageId);
       if (latest) setStructure(latest);
@@ -1718,7 +1869,7 @@ export function VisualEditorShell({
           ops={ops}
           onSelect={ask}
           onToggleLock={toggleLock}
-          onEditText={startCanvasEdit}
+          onEditText={requestDirectEdit}
         />
 
         <section
@@ -1739,6 +1890,7 @@ export function VisualEditorShell({
               onStructure={onStructure}
               onSelection={onSelection}
               onEdit={onCanvasEdit}
+              onEditRequest={requestDirectEdit}
             />
           </div>
 

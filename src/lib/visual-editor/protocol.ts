@@ -45,13 +45,21 @@ export const EDITOR_CHANNEL = "eod.visual-editor";
  *     the pointer must ignore, and a node being typed into reports what it
  *     now says. Still nothing that writes: `canvas.edit` carries the text a
  *     person typed, and the editor decides which field that belongs in.
+ * 4 — direct editing asks before it begins. A double-click posts
+ *     `canvas.editRequest` and changes nothing; the editor loads the section
+ *     it owns, reads the authoritative text out of that row and answers with
+ *     `editor.editBegin`, which carries the text to put on screen and a token
+ *     for the session. Version 3 let the canvas decide for itself that it was
+ *     editable and seeded from whatever the page had rendered — which meant
+ *     an Arabic node with no translation began editing with the English
+ *     fallback, and the child nodes' text with it.
  *
  * Bumped rather than extended in place: a canvas document served by an older
  * build must not answer a newer editor with a message the editor will read
  * half of. The two simply do not recognise each other, which is the outcome
  * that cannot go subtly wrong.
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /* -------------------------------------------------------------------------- */
 /* Bridge ids                                                                 */
@@ -247,9 +255,20 @@ export type CanvasBounds =
 export type CanvasEdit = {
   type: "canvas.edit";
   address: string;
-  phase: "start" | "input" | "commit" | "cancel";
+  /** The session this belongs to; anything from an older one is ignored. */
+  token: number;
+  phase: "input" | "commit" | "cancel";
   text: string;
 };
+
+/**
+ * A double-click on a node the renderer marked as editable.
+ *
+ * It asks; it does not begin. Nothing on the page changes until the editor has
+ * the row this node belongs to and answers with `editor.editBegin` — which is
+ * what stops a person typing into text that nothing is ready to store.
+ */
+export type CanvasEditRequest = { type: "canvas.editRequest"; address: string };
 
 /** The canvas could not do something. One safe sentence, never an exception. */
 export type CanvasError = { type: "canvas.error"; message: string };
@@ -270,12 +289,33 @@ export type CanvasError = { type: "canvas.error"; message: string };
 export type EditorLocks = { type: "editor.locks"; addresses: string[] };
 
 /**
- * Begin — or end — direct text editing of one node.
+ * Begin typing into a node, with the text to begin from.
  *
- * Sent when an editor asks for it explicitly from the panel. A double-click on
- * the canvas needs no message: the canvas starts it and reports back.
+ * The editor sends this only once it holds the section's server values, so the
+ * text is the row's own — not what the page rendered. That distinction is the
+ * whole reason this message exists: a rendered Arabic heading falls back to
+ * English when there is no translation, and seeding from the page wrote that
+ * English back into the Arabic field, along with the text of every annotated
+ * child inside the element.
+ *
+ * `token` names the session. A canvas that is still holding an older one
+ * ignores what arrives for it, and the editor ignores what comes back from it.
  */
-export type EditorEdit = { type: "editor.edit"; address: string; active: boolean };
+export type EditorEditBegin = {
+  type: "editor.editBegin";
+  address: string;
+  token: number;
+  text: string;
+};
+
+/**
+ * Stop editing, without committing.
+ *
+ * Sent when the request is superseded, the page or language moves, or the
+ * editor decides the node may not be edited after all. The canvas puts the
+ * text back exactly as `editor.editBegin` supplied it.
+ */
+export type EditorEditCancel = { type: "editor.editCancel"; token: number };
 
 export type EditorPing = { type: "editor.ping"; at: number };
 
@@ -292,14 +332,16 @@ export type CanvasMessage =
   | CanvasHover
   | CanvasSelection
   | CanvasBounds
-  | CanvasEdit;
+  | CanvasEdit
+  | CanvasEditRequest;
 
 export type EditorMessage =
   | EditorPing
   | EditorSelect
   | EditorClearSelection
   | EditorLocks
-  | EditorEdit;
+  | EditorEditBegin
+  | EditorEditCancel;
 
 export type Envelope<T> = {
   channel: typeof EDITOR_CHANNEL;
@@ -542,16 +584,24 @@ export function readCanvasMessage(
       // A section root has no text of its own to type into.
       if (!parsed || !parsed.path.length) return null;
       const phase = message.phase;
-      if (phase !== "start" && phase !== "input" && phase !== "commit" && phase !== "cancel") return null;
+      if (phase !== "input" && phase !== "commit" && phase !== "cancel") return null;
       if (typeof message.text !== "string") return null;
+      if (!isInt(message.token)) return null;
       return {
         type: "canvas.edit",
         address: formatAddress(parsed.sectionId, parsed.path),
+        token: message.token,
         phase,
         // Long enough for any field the registry declares as text, and bounded
         // so a runaway canvas cannot post the page into the editor.
         text: message.text.slice(0, 20_000),
       };
+    }
+    case "canvas.editRequest": {
+      if (typeof message.address !== "string") return null;
+      const parsed = parseAddress(message.address);
+      if (!parsed || !parsed.path.length) return null;
+      return { type: "canvas.editRequest", address: formatAddress(parsed.sectionId, parsed.path) };
     }
     case "canvas.bounds": {
       if (typeof message.address !== "string" || !parseAddress(message.address)) return null;
@@ -609,17 +659,21 @@ export function readEditorMessage(
       }
       return { type: "editor.locks", addresses };
     }
-    case "editor.edit": {
+    case "editor.editBegin": {
       if (typeof message.address !== "string") return null;
       const parsed = parseAddress(message.address);
       if (!parsed || !parsed.path.length) return null;
-      if (typeof message.active !== "boolean") return null;
+      if (!isInt(message.token)) return null;
+      if (typeof message.text !== "string") return null;
       return {
-        type: "editor.edit",
+        type: "editor.editBegin",
         address: formatAddress(parsed.sectionId, parsed.path),
-        active: message.active,
+        token: message.token,
+        text: message.text.slice(0, 20_000),
       };
     }
+    case "editor.editCancel":
+      return isInt(message.token) ? { type: "editor.editCancel", token: message.token } : null;
     default:
       return null;
   }

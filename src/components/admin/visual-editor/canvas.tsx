@@ -40,7 +40,10 @@ export type SelectRequest = { address: string | null; scrollIntoView: boolean; t
  * the same node is a real request, and without something that changes, the
  * effect that sends it would not run the second time.
  */
-export type EditRequest = { address: string; active: boolean; token: number } | null;
+export type EditRequest =
+  | { kind: "begin"; address: string; token: number; text: string }
+  | { kind: "cancel"; token: number }
+  | null;
 
 const PING_EVERY_MS = 500;
 const GIVE_UP_AFTER_MS = 20_000;
@@ -85,6 +88,7 @@ export function VisualCanvas({
   onStructure,
   onSelection,
   onEdit,
+  onEditRequest,
 }: {
   slug: string;
   locale: Locale;
@@ -99,7 +103,14 @@ export function VisualCanvas({
   onState: (state: CanvasState) => void;
   onStructure: (sections: EditorSectionMeta[]) => void;
   onSelection: (node: EditorNodeMeta | null) => void;
-  onEdit: (edit: { address: string; phase: "start" | "input" | "commit" | "cancel"; text: string }) => void;
+  onEdit: (edit: {
+    address: string;
+    token: number;
+    phase: "input" | "commit" | "cancel";
+    text: string;
+  }) => void;
+  /** A double-click asked to edit; the editor decides whether it may begin. */
+  onEditRequest: (address: string) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -197,7 +208,15 @@ export function VisualCanvas({
           });
           return;
         case "canvas.edit":
-          onEdit({ address: message.address, phase: message.phase, text: message.text });
+          onEdit({
+            address: message.address,
+            token: message.token,
+            phase: message.phase,
+            text: message.text,
+          });
+          return;
+        case "canvas.editRequest":
+          onEditRequest(message.address);
           return;
         case "canvas.error":
           onState({ status: "error", innerWidth: null, message: message.message });
@@ -277,14 +296,16 @@ export function VisualCanvas({
 
   useEffect(() => {
     if (!bridgeId || !editRequest) return;
-    frameRef.current?.contentWindow?.postMessage(
-      envelope(bridgeId, {
-        type: "editor.edit" as const,
-        address: editRequest.address,
-        active: editRequest.active,
-      }),
-      bridgeOrigin(),
-    );
+    const message =
+      editRequest.kind === "begin"
+        ? {
+            type: "editor.editBegin" as const,
+            address: editRequest.address,
+            token: editRequest.token,
+            text: editRequest.text,
+          }
+        : { type: "editor.editCancel" as const, token: editRequest.token };
+    frameRef.current?.contentWindow?.postMessage(envelope(bridgeId, message), bridgeOrigin());
   }, [bridgeId, editRequest]);
 
   const logical = deviceWidth(device);

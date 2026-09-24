@@ -126,8 +126,8 @@ describe("the editor reads only what the canvas is allowed to say", () => {
     }
   });
 
-  test("this build speaks version 3, and an older canvas is not half-understood", () => {
-    assert.equal(PROTOCOL_VERSION, 3);
+  test("this build speaks version 4, and an older canvas is not half-understood", () => {
+    assert.equal(PROTOCOL_VERSION, 4);
     // A document served by the previous release answers in v1. Selection did
     // not exist there, so the two simply do not recognise each other — which is
     // the outcome that cannot go subtly wrong.

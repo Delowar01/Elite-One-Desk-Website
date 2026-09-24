@@ -543,25 +543,62 @@ export function EditorBridge({
     /**
      * The node being typed into, if any.
      *
-     * The canvas holds no document and stores nothing. It makes one element
-     * editable, reports the plain text as it changes, and puts the text back
-     * if the edit is abandoned. Where that text belongs — which field, which
-     * row, which edition — is decided by the editor from the block registry,
-     * and the ordinary validator and autosave write it. So the page a visitor
-     * gets is still rendered from stored values, never from what somebody
-     * typed into a browser.
+     * The canvas holds no document, stores nothing, and — since the editor
+     * found the English fallback written into an empty Arabic field — decides
+     * nothing either. A double-click *asks*; the editor loads the row that
+     * owns the node, reads the value out of it and sends the text back with
+     * `editor.editBegin`. Only then does anything here become editable, and
+     * the text it becomes editable with is the row's, not the page's.
+     *
+     * `before` is that supplied text, so Escape restores what the session
+     * started from rather than whatever the renderer happened to have drawn.
      */
-    type Editing = { element: HTMLElement; address: string; before: string; multiline: boolean };
+    type Editing = { element: HTMLElement; address: string; token: number; before: string };
     let editing: Editing | null = null;
 
-    const textOf = (element: HTMLElement): string =>
-      // `innerText` rather than `textContent`: the element is being edited, so
-      // the line breaks a person can see are the ones they typed.
-      (element.innerText ?? "").replace(/\u00a0/g, " ");
+    /**
+     * The characters in the element — not the characters the page is showing.
+     *
+     * `innerText` was the obvious choice and the wrong one: it is the *rendered*
+     * text, so a field styled `text-transform: uppercase` reads back in capitals
+     * and committing stores them. A heading that said "Start where you need us"
+     * came back as "START WHERE YOU NEED US" and that is what reached the
+     * database — the same mistake as seeding from the page, one step later.
+     *
+     * `textContent` has the opposite problem: it is the characters, but it
+     * drops the line structure a multiline field is allowed to have. So the
+     * nodes are walked: text as it is, a `<br>` or a block boundary as a
+     * newline. `plaintext-only` keeps that structure simple, because the
+     * browser will not produce anything else.
+     */
+    const textOf = (element: HTMLElement): string => {
+      let out = "";
+      const walk = (node: Node, top: boolean) => {
+        for (const child of Array.from(node.childNodes)) {
+          if (child.nodeType === Node.TEXT_NODE) {
+            out += child.textContent ?? "";
+            continue;
+          }
+          if (!(child instanceof HTMLElement)) continue;
+          if (child.tagName === "BR") {
+            out += "\n";
+            continue;
+          }
+          // A block the editor made while typing starts a line of its own.
+          const block = child.tagName === "DIV" || child.tagName === "P";
+          if (block && out && !out.endsWith("\n")) out += "\n";
+          walk(child, false);
+          if (block && !out.endsWith("\n")) out += "\n";
+        }
+        if (top) out = out.replace(/\n+$/, "");
+      };
+      walk(element, true);
+      return out.replace(/\u00a0/g, " ");
+    };
 
     const stopEditing = (commit: boolean) => {
       if (!editing) return;
-      const { element, address, before } = editing;
+      const { element, address, token, before } = editing;
       const text = textOf(element);
       editing = null;
 
@@ -569,38 +606,63 @@ export function EditorBridge({
       element.removeAttribute("data-eod-editing");
       element.removeAttribute("spellcheck");
       if (!commit) {
-        // Escape puts the element back to exactly what it showed. The editor
-        // is told too, so a buffer that took the interim keystrokes is wound
-        // back to the same place.
+        // Escape puts the element back to the text the session began with —
+        // the row's value, supplied by the editor.
         element.textContent = before;
       }
       element.blur();
-      post({ type: "canvas.edit", address, phase: commit ? "commit" : "cancel", text: commit ? text : before });
+      post({
+        type: "canvas.edit",
+        address,
+        token,
+        phase: commit ? "commit" : "cancel",
+        text: commit ? text : before,
+      });
     };
 
-    const startEditing = (element: Element): boolean => {
-      const address = element.getAttribute("data-eod-address");
+    /**
+     * Begin, on the editor's instruction and with the editor's text.
+     *
+     * Replacing the element's contents is deliberate: what the page rendered
+     * may not be the field's value at all — a fallback, a decorated string,
+     * the text of annotated children inside the same element — and typing on
+     * top of that is how a heading came to contain its own rotating words.
+     */
+    const beginEditing = (address: string, token: number, text: string) => {
+      const element = document.querySelector(`[data-eod-address="${address}"]`);
+      if (!(element instanceof HTMLElement)) return;
       const mode = element.getAttribute("data-eod-edit");
-      if (!address || (mode !== "text" && mode !== "multiline")) return false;
-      if (!(element instanceof HTMLElement)) return false;
-      if (isLocked(address)) return false;
-      if (editing?.element === element) return true;
+      if (mode !== "text" && mode !== "multiline") return;
+      if (isLocked(address)) return;
       stopEditing(true);
 
-      editing = { element, address, before: textOf(element), multiline: mode === "multiline" };
+      element.textContent = text;
+      editing = { element, address, token, before: text };
       // `plaintext-only` is the point: the browser will not produce bold,
       // links or pasted markup, so there is no markup for anybody to store.
       element.setAttribute("contenteditable", "plaintext-only");
       element.setAttribute("data-eod-editing", "");
       element.setAttribute("spellcheck", "false");
       element.focus();
-      post({ type: "canvas.edit", address, phase: "start", text: editing.before });
-      return true;
+      // The caret goes to the end rather than leaving the whole value
+      // selected, so a first keystroke appends instead of replacing silently.
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.collapse(false);
+      const selectionNow = window.getSelection();
+      selectionNow?.removeAllRanges();
+      selectionNow?.addRange(range);
     };
 
     const onEditInput = () => {
       if (!editing) return;
-      post({ type: "canvas.edit", address: editing.address, phase: "input", text: textOf(editing.element) });
+      post({
+        type: "canvas.edit",
+        address: editing.address,
+        token: editing.token,
+        phase: "input",
+        text: textOf(editing.element),
+      });
     };
 
     const onEditKey = (event: KeyboardEvent) => {
@@ -611,7 +673,7 @@ export function EditorBridge({
         stopEditing(false);
         return;
       }
-      if (event.key === "Enter" && !editing.multiline) {
+      if (event.key === "Enter" && editing.element.getAttribute("data-eod-edit") !== "multiline") {
         // A single-line field is a line: Enter finishes it rather than adding
         // a second one that the field cannot hold.
         event.preventDefault();
@@ -625,12 +687,24 @@ export function EditorBridge({
 
     const onEditBlur = () => stopEditing(true);
 
+    /**
+     * A double-click asks to edit. It changes nothing.
+     *
+     * Until Batch 13's correction this made the element editable on the spot,
+     * so a person could type into a section the editor had never loaded — text
+     * on screen that nothing was going to save.
+     */
     const onDoubleClick = (event: MouseEvent) => {
       const element = closestNode(event.target, { x: event.clientX, y: event.clientY });
       if (!element) return;
-      if (!startEditing(element)) return;
+      const address = element.getAttribute("data-eod-address");
+      const mode = element.getAttribute("data-eod-edit");
+      if (!address || (mode !== "text" && mode !== "multiline")) return;
+      if (isLocked(address)) return;
+      if (editing?.element === element) return;
       event.preventDefault();
       event.stopPropagation();
+      post({ type: "canvas.editRequest", address });
     };
 
     const onPointerMove = (event: PointerEvent) =>
@@ -705,15 +779,14 @@ export function EditorBridge({
           if (hover && isLocked(hover.address)) clearHover();
           return;
         }
-        case "editor.edit": {
-          if (!message.active) {
-            if (editing?.address === message.address) stopEditing(true);
-            return;
-          }
-          const element = document.querySelector(`[data-eod-address="${message.address}"]`);
-          if (element) startEditing(element);
+        case "editor.editBegin":
+          beginEditing(message.address, message.token, message.text);
           return;
-        }
+        case "editor.editCancel":
+          // Only the session it names: a cancel for a request that was already
+          // superseded must not stop the one that replaced it.
+          if (editing && editing.token === message.token) stopEditing(false);
+          return;
       }
     };
 
