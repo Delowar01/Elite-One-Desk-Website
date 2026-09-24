@@ -40,13 +40,18 @@ export const EDITOR_CHANNEL = "eod.visual-editor";
  * 1 — the page-level handshake.
  * 2 — selection: structure, hover, selection, bounds, and the editor's own
  *     `select` / `clearSelection`.
+ * 3 — the full tree, locking and direct text editing: every annotated node
+ *     rides with its section, the editor can tell the canvas which addresses
+ *     the pointer must ignore, and a node being typed into reports what it
+ *     now says. Still nothing that writes: `canvas.edit` carries the text a
+ *     person typed, and the editor decides which field that belongs in.
  *
  * Bumped rather than extended in place: a canvas document served by an older
  * build must not answer a newer editor with a message the editor will read
  * half of. The two simply do not recognise each other, which is the outcome
  * that cannot go subtly wrong.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /* -------------------------------------------------------------------------- */
 /* Bridge ids                                                                 */
@@ -101,6 +106,28 @@ export type EditorNodeMeta = {
 };
 
 /**
+ * One annotated node inside a section, as the canvas found it.
+ *
+ * Lighter than `EditorNodeMeta` because everything it would repeat is already
+ * on the section it rides with: a page with two hundred nodes would otherwise
+ * send the block type two hundred times to say what one section header already
+ * says. The address is still the whole identity.
+ *
+ * `edit` is what the *renderer* decided, from the block registry, about whether
+ * this node's text may be typed into directly. It is advice to the panel about
+ * which rows to offer an "Edit text" action on; it is not permission, and the
+ * editor checks the registry again before it writes anything.
+ */
+export type EditorTreeNode = {
+  address: string;
+  kind: EditorNodeKind;
+  /** The address without its section — what Batch 2 persists a style under. */
+  relativePath: string;
+  text?: string;
+  edit?: "text" | "multiline";
+};
+
+/**
  * One section of the page as the canvas actually rendered it.
  *
  * The canvas is the source of truth for Layers on purpose: it has been through
@@ -118,10 +145,22 @@ export type EditorSectionMeta = {
   isDraftOnly: boolean;
   /** The visibility this section would have once published. */
   visible: boolean;
+  /**
+   * Every annotated node inside this section, in the order the document has
+   * them — the material the Layers tree is built from.
+   *
+   * Flat, and nested afterwards by parsing the addresses, because the DOM's
+   * containment and the address's are two different questions and only one of
+   * them is stable. A card's label is inside its row because the *path* says
+   * so, whatever the markup does to lay it out.
+   */
+  nodes: EditorTreeNode[];
 };
 
 const MAX_TEXT = 120;
 const MAX_SECTIONS = 200;
+const MAX_NODES = 400;
+const MAX_LOCKS = 400;
 const MAX_RECT = 200_000;
 
 /**
@@ -190,8 +229,53 @@ export type CanvasBounds =
   | { type: "canvas.bounds"; address: string; rect: Rect }
   | { type: "canvas.bounds"; address: string; rect: null };
 
+/**
+ * A node is being typed into, and what it now says.
+ *
+ * `text` is plain text taken from the element being edited — never markup, and
+ * never the document. It is the same kind of thing an `<input>`'s `value` is:
+ * what a person typed. The editor resolves the address against the section's
+ * server-loaded values and writes that string into the field the registry says
+ * it belongs to, and the ordinary validator and autosave do the rest. The
+ * canvas is an input device here, not a source document.
+ *
+ * Four phases, so the editor can tell a commit from an abandonment: `start`
+ * when editing begins, `input` while it changes, `commit` when it is accepted
+ * (blur, Enter on a single-line field, or the panel closing it) and `cancel`
+ * when Escape puts it back.
+ */
+export type CanvasEdit = {
+  type: "canvas.edit";
+  address: string;
+  phase: "start" | "input" | "commit" | "cancel";
+  text: string;
+};
+
 /** The canvas could not do something. One safe sentence, never an exception. */
 export type CanvasError = { type: "canvas.error"; message: string };
+
+/**
+ * Which addresses the canvas pointer must ignore.
+ *
+ * The whole set, every time, rather than add/remove deltas: a delta protocol
+ * has to be applied in order and survives neither a reload nor a dropped
+ * message, and "what is locked" is small enough to state outright. An empty
+ * list is a legitimate message and means nothing is locked.
+ *
+ * Locking is an editing convenience and never a permission. It stops a pointer
+ * inside this one canvas; it is not sent to the server, not stored, and grants
+ * and denies nothing. Every write still goes through the same Server Action
+ * checks it always did.
+ */
+export type EditorLocks = { type: "editor.locks"; addresses: string[] };
+
+/**
+ * Begin — or end — direct text editing of one node.
+ *
+ * Sent when an editor asks for it explicitly from the panel. A double-click on
+ * the canvas needs no message: the canvas starts it and reports back.
+ */
+export type EditorEdit = { type: "editor.edit"; address: string; active: boolean };
 
 export type EditorPing = { type: "editor.ping"; at: number };
 
@@ -207,9 +291,15 @@ export type CanvasMessage =
   | CanvasStructure
   | CanvasHover
   | CanvasSelection
-  | CanvasBounds;
+  | CanvasBounds
+  | CanvasEdit;
 
-export type EditorMessage = EditorPing | EditorSelect | EditorClearSelection;
+export type EditorMessage =
+  | EditorPing
+  | EditorSelect
+  | EditorClearSelection
+  | EditorLocks
+  | EditorEdit;
 
 export type Envelope<T> = {
   channel: typeof EDITOR_CHANNEL;
@@ -294,6 +384,36 @@ function readNode(value: unknown): EditorNodeMeta | null {
   return meta;
 }
 
+/**
+ * One node of a section's tree.
+ *
+ * The address is parsed with the same parser everything else uses, and it must
+ * name *this* section: a node claiming to belong to a section it is not inside
+ * would put a row under the wrong parent in Layers and select the wrong thing
+ * when clicked. A section root is not a node of its own tree — it is the tree.
+ */
+function readTreeNode(value: unknown, sectionId: number): EditorTreeNode | null {
+  const source = asRecord(value);
+  if (!source) return null;
+
+  const { address, kind, relativePath, text, edit } = source;
+  if (typeof address !== "string") return null;
+  const parsed = parseAddress(address);
+  if (!parsed || parsed.sectionId !== sectionId) return null;
+  if (!parsed.path.length) return null;
+  if (typeof kind !== "string" || !NODE_KINDS.has(kind) || kind === "section") return null;
+  if (typeof relativePath !== "string" || relativePath !== formatNodePath(parsed.path)) return null;
+
+  const node: EditorTreeNode = {
+    address: formatAddress(parsed.sectionId, parsed.path),
+    kind: kind as EditorNodeKind,
+    relativePath,
+  };
+  if (typeof text === "string" && text.trim()) node.text = text.slice(0, MAX_TEXT);
+  if (edit === "text" || edit === "multiline") node.edit = edit;
+  return node;
+}
+
 function readSection(value: unknown): EditorSectionMeta | null {
   const source = asRecord(value);
   if (!source) return null;
@@ -305,6 +425,21 @@ function readSection(value: unknown): EditorSectionMeta | null {
   if (typeof source.isDraft !== "boolean") return null;
   if (typeof source.isDraftOnly !== "boolean") return null;
   if (typeof source.visible !== "boolean") return null;
+  /**
+   * A node the reader refuses loses a Layers row; refusing the section would
+   * lose the section. The same rule the structure message already applies to a
+   * bad section, one level down.
+   */
+  const nodes: EditorTreeNode[] = [];
+  if (source.nodes !== undefined) {
+    if (!Array.isArray(source.nodes)) return null;
+    if (source.nodes.length > MAX_NODES) return null;
+    for (const entry of source.nodes) {
+      const node = readTreeNode(entry, parsed.sectionId);
+      if (node) nodes.push(node);
+    }
+  }
+
   return {
     address: formatAddress(parsed.sectionId, []),
     sectionId: parsed.sectionId,
@@ -313,6 +448,7 @@ function readSection(value: unknown): EditorSectionMeta | null {
     isDraft: source.isDraft,
     isDraftOnly: source.isDraftOnly,
     visible: source.visible,
+    nodes,
   };
 }
 
@@ -400,6 +536,23 @@ export function readCanvasMessage(
       const rect = readRect(message.rect);
       return rect ? { type: "canvas.selection", node, rect } : null;
     }
+    case "canvas.edit": {
+      if (typeof message.address !== "string") return null;
+      const parsed = parseAddress(message.address);
+      // A section root has no text of its own to type into.
+      if (!parsed || !parsed.path.length) return null;
+      const phase = message.phase;
+      if (phase !== "start" && phase !== "input" && phase !== "commit" && phase !== "cancel") return null;
+      if (typeof message.text !== "string") return null;
+      return {
+        type: "canvas.edit",
+        address: formatAddress(parsed.sectionId, parsed.path),
+        phase,
+        // Long enough for any field the registry declares as text, and bounded
+        // so a runaway canvas cannot post the page into the editor.
+        text: message.text.slice(0, 20_000),
+      };
+    }
     case "canvas.bounds": {
       if (typeof message.address !== "string" || !parseAddress(message.address)) return null;
       const address = message.address;
@@ -442,6 +595,31 @@ export function readEditorMessage(
     }
     case "editor.clearSelection":
       return { type: "editor.clearSelection" };
+    case "editor.locks": {
+      if (!Array.isArray(message.addresses)) return null;
+      if (message.addresses.length > MAX_LOCKS) return null;
+      const addresses: string[] = [];
+      for (const entry of message.addresses) {
+        if (typeof entry !== "string") continue;
+        const parsed = parseAddress(entry);
+        // A malformed lock is dropped rather than refusing the whole set: the
+        // safe failure is one node that can still be clicked, not a canvas
+        // that forgets every lock it had.
+        if (parsed) addresses.push(formatAddress(parsed.sectionId, parsed.path));
+      }
+      return { type: "editor.locks", addresses };
+    }
+    case "editor.edit": {
+      if (typeof message.address !== "string") return null;
+      const parsed = parseAddress(message.address);
+      if (!parsed || !parsed.path.length) return null;
+      if (typeof message.active !== "boolean") return null;
+      return {
+        type: "editor.edit",
+        address: formatAddress(parsed.sectionId, parsed.path),
+        active: message.active,
+      };
+    }
     default:
       return null;
   }

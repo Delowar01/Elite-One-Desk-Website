@@ -33,6 +33,15 @@ export type CanvasState = {
  */
 export type SelectRequest = { address: string | null; scrollIntoView: boolean; token: number } | null;
 
+/**
+ * Asking the canvas to start or stop typing into a node.
+ *
+ * Carries a token for the same reason `SelectRequest` does: asking twice for
+ * the same node is a real request, and without something that changes, the
+ * effect that sends it would not run the second time.
+ */
+export type EditRequest = { address: string; active: boolean; token: number } | null;
+
 const PING_EVERY_MS = 500;
 const GIVE_UP_AFTER_MS = 20_000;
 
@@ -70,9 +79,12 @@ export function VisualCanvas({
   canvasKey,
   title,
   selectRequest,
+  editRequest,
+  locks,
   onState,
   onStructure,
   onSelection,
+  onEdit,
 }: {
   slug: string;
   locale: Locale;
@@ -81,9 +93,13 @@ export function VisualCanvas({
   canvasKey: number;
   title: string;
   selectRequest: SelectRequest;
+  editRequest: EditRequest;
+  /** Addresses the canvas pointer must ignore. Editor-side state, never saved. */
+  locks: string[];
   onState: (state: CanvasState) => void;
   onStructure: (sections: EditorSectionMeta[]) => void;
   onSelection: (node: EditorNodeMeta | null) => void;
+  onEdit: (edit: { address: string; phase: "start" | "input" | "commit" | "cancel"; text: string }) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -180,6 +196,9 @@ export function VisualCanvas({
             return { node: current.node, rect: message.rect };
           });
           return;
+        case "canvas.edit":
+          onEdit({ address: message.address, phase: message.phase, text: message.text });
+          return;
         case "canvas.error":
           onState({ status: "error", innerWidth: null, message: message.message });
           return;
@@ -237,6 +256,36 @@ export function VisualCanvas({
           };
     frameRef.current?.contentWindow?.postMessage(envelope(bridgeId, message), origin);
   }, [bridgeId, selectRequest]);
+
+  /**
+   * The locks, re-sent whenever they change *and* whenever a new document
+   * arrives.
+   *
+   * `loads` is in the dependencies on purpose: a canvas that reloaded — a
+   * language switch, a device switch, a publish — is a fresh document that has
+   * never heard of them, and without this it would happily let the pointer
+   * select something the editor had locked a moment earlier.
+   */
+  const lockKey = locks.join("|");
+  useEffect(() => {
+    if (!bridgeId || loads === 0) return;
+    frameRef.current?.contentWindow?.postMessage(
+      envelope(bridgeId, { type: "editor.locks" as const, addresses: lockKey ? lockKey.split("|") : [] }),
+      bridgeOrigin(),
+    );
+  }, [bridgeId, loads, lockKey]);
+
+  useEffect(() => {
+    if (!bridgeId || !editRequest) return;
+    frameRef.current?.contentWindow?.postMessage(
+      envelope(bridgeId, {
+        type: "editor.edit" as const,
+        address: editRequest.address,
+        active: editRequest.active,
+      }),
+      bridgeOrigin(),
+    );
+  }, [bridgeId, editRequest]);
 
   const logical = deviceWidth(device);
   // Never scaled up: a 390px page blown up to fill a 1200px stage would be a

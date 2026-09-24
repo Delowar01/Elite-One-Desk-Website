@@ -43,7 +43,7 @@ import type { GlobalsState } from "@/lib/visual-editor/globals";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
 import { DEVICE_BREAKPOINT, EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
 
-import { VisualCanvas, type CanvasState, type SelectRequest } from "./canvas";
+import { VisualCanvas, type CanvasState, type EditRequest, type SelectRequest } from "./canvas";
 import {
   dirtyOf,
   EDIT_DOMAINS,
@@ -52,6 +52,8 @@ import {
   type EditDomain,
   type SectionBuffer,
 } from "./inspector";
+import { formatNodePath, parseAddress } from "@/lib/cms/address";
+import { applyTextAt } from "@/lib/visual-editor/tree";
 import { LayersPanel, type StructuralOps } from "./layers";
 import { PagePanel } from "./page-panel";
 
@@ -177,6 +179,21 @@ export function VisualEditorShell({
   const [sections, setSections] = useState<EditorSectionMeta[]>([]);
   const [selected, setSelected] = useState<EditorNodeMeta | null>(null);
   const [selectRequest, setSelectRequest] = useState<SelectRequest>(null);
+  const [editRequest, setEditRequest] = useState<EditRequest>(null);
+  /**
+   * Which addresses the canvas pointer must ignore.
+   *
+   * Editor-session state and nothing more: it is held here for as long as this
+   * page is open, it is never sent to a Server Action, never written to the
+   * database, never part of the style document, the content, the page history
+   * or a publish. Nobody else sees it and nothing survives a page change —
+   * which is exactly what a lock is for, since it exists to stop *this* editor
+   * mis-clicking while they work on *this* page.
+   *
+   * It is not a permission. Every save is still checked server-side exactly as
+   * it was before, and an editor can always reach a locked node from Layers.
+   */
+  const [locks, setLocks] = useState<string[]>([]);
 
   /**
    * One edit buffer per section, keyed by its database id.
@@ -354,6 +371,7 @@ export function VisualEditorShell({
   const freshCanvas = () => {
     setCanvas(EMPTY_CANVAS);
     setSections([]);
+    setEditRequest(null);
     selectedRef.current = null;
     setSelected(null);
     setSelectRequest(null);
@@ -373,6 +391,10 @@ export function VisualEditorShell({
     let cancelled = false;
     setStructure(null);
     setStructureFailure(null);
+    // Locks name section ids, and those belong to one page. Carrying them over
+    // would be meaningless at best and would silently lock a section of the
+    // new page that happens to share an id at worst.
+    setLocks([]);
     loadPageStructure(page.id).then((next) => {
       if (!cancelled) setStructure(next);
     });
@@ -380,6 +402,55 @@ export function VisualEditorShell({
       cancelled = true;
     };
   }, [page]);
+
+  /**
+   * Locking, and what it is scoped to.
+   *
+   * Per page, because an address names a section id and those belong to one
+   * page; carrying them across would be meaningless at best. A language or a
+   * device switch reloads the canvas but keeps them, because the editor is
+   * still looking at the same page and did not ask to unlock anything — the
+   * canvas is re-told on every load.
+   */
+  const toggleLock = useCallback((address: string) => {
+    setLocks((current) =>
+      current.includes(address) ? current.filter((entry) => entry !== address) : [...current, address],
+    );
+  }, []);
+
+  /**
+   * The values the panel may name a repeatable row from.
+   *
+   * Only a section that is actually loaded has any — a row in a section nobody
+   * has selected yet is named by what the canvas could see on it, and by the
+   * neutral word when it could see nothing. The panel never triggers a load to
+   * find a label out: that would mean opening a section in Layers quietly
+   * fetching every section on the page.
+   */
+  const valuesOf = useCallback(
+    (sectionId: number) => buffersRef.current[sectionId]?.values,
+    [],
+  );
+
+  /**
+   * Ask the canvas to start typing into a node, from the panel.
+   *
+   * The node is selected first, so the inspector is showing the same thing the
+   * canvas is about to edit — the two are interfaces onto one buffer, and it
+   * would be strange for one of them to be pointed somewhere else.
+   */
+  const startCanvasEdit = useCallback(
+    (address: string) => {
+      if (!canManageContent) return;
+      setSelectRequest((current) => ({
+        address,
+        scrollIntoView: true,
+        token: (current?.token ?? 0) + 1,
+      }));
+      setEditRequest((current) => ({ address, active: true, token: (current?.token ?? 0) + 1 }));
+    },
+    [canManageContent],
+  );
 
   const ask = useCallback(
     (address: string | null) =>
@@ -455,6 +526,74 @@ export function VisualEditorShell({
       cancelled = true;
     };
   }, [activeId, page, writeBuffers]);
+
+  /**
+   * A node on the canvas was typed into.
+   *
+   * This is the whole of direct editing on the editor's side, and what it does
+   * *not* do is the point. It does not take the canvas's DOM as the document,
+   * it does not store markup, it does not save anything itself and it has no
+   * endpoint of its own. It takes the plain string the canvas reported, asks
+   * the block registry which field that address names, writes it into the same
+   * `SectionBuffer` the Content tab is editing, and lets the ordinary autosave
+   * carry it — same debounce, same one-write-at-a-time queue, same validator,
+   * same revision guard, same conflict behaviour.
+   *
+   * So the inspector and the canvas are two interfaces onto one buffer rather
+   * than two copies of the content, and a value typed on the canvas is visible
+   * in the inspector immediately because there is only one place it lives.
+   *
+   * The edition being edited is the canvas's own. An Arabic canvas writes the
+   * Arabic value and leaves the English one exactly as it was; `applyTextAt`
+   * will not copy one into the other, because a translation nobody wrote is
+   * worse than an empty field.
+   */
+  const onCanvasEdit = useCallback(
+    (edit: { address: string; phase: "start" | "input" | "commit" | "cancel"; text: string }) => {
+      if (!canManageContent) return;
+      const parsed = parseAddress(edit.address);
+      if (!parsed) return;
+      const sectionId = parsed.sectionId;
+
+      writeBuffers((prev) => {
+        const entry = prev[sectionId];
+        // Nothing is loaded for this section yet, so there is no buffer to
+        // write into. The canvas keeps what was typed on screen; selecting the
+        // node loads the section and the inspector shows the stored value. A
+        // buffer invented here would be a second copy of the content.
+        if (!entry) return prev;
+        // A section that has lost a race is not written to again: the editor
+        // has to Reload latest first, which is the existing conflict rule and
+        // direct editing does not get an exemption from it.
+        if (entry.status === "conflict") return prev;
+
+        const values = applyTextAt(
+          entry.values,
+          entry.data.blockType,
+          formatNodePath(parsed.path),
+          locale,
+          edit.text,
+        );
+        if (!values) return prev;
+
+        return {
+          ...prev,
+          [sectionId]: {
+            ...entry,
+            values,
+            contentDirty: !sameValues(values, entry.data.values),
+            status: "idle",
+            statusDomain: null,
+            message: undefined,
+          },
+        };
+      });
+
+      // `start` changes nothing; it only says a node has become editable.
+      if (edit.phase !== "start") scheduleAutosave(sectionId);
+    },
+    [canManageContent, locale, scheduleAutosave, writeBuffers],
+  );
 
   const onValues = useCallback(
     (values: Record<string, unknown>) => {
@@ -1565,6 +1704,10 @@ export function VisualEditorShell({
           structure={structure}
           removed={structure ? removedSections(structure) : []}
           selectedSectionId={activeId}
+          selectedAddress={selected?.address ?? null}
+          locks={locks}
+          locale={locale}
+          valuesOf={valuesOf}
           dirtyIds={dirtyIds}
           ready={ready}
           canManage={canManageContent}
@@ -1574,6 +1717,8 @@ export function VisualEditorShell({
           blocks={blocks[page.slug] ?? []}
           ops={ops}
           onSelect={ask}
+          onToggleLock={toggleLock}
+          onEditText={startCanvasEdit}
         />
 
         <section
@@ -1588,9 +1733,12 @@ export function VisualEditorShell({
               canvasKey={canvasKey}
               title={page.title}
               selectRequest={selectRequest}
+              editRequest={editRequest}
+              locks={locks}
               onState={onCanvasState}
               onStructure={onStructure}
               onSelection={onSelection}
+              onEdit={onCanvasEdit}
             />
           </div>
 

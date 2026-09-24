@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Icon } from "@/components/ui/icon";
 import type { BlockDef } from "@/lib/cms/blocks";
+import type { Locale } from "@/lib/i18n/config";
 import { blockNameOf } from "@/lib/visual-editor/labels";
 import type { EditorSectionMeta } from "@/lib/visual-editor/protocol";
+import { ancestorAddresses, buildLayerTree, type LayerNode } from "@/lib/visual-editor/tree";
 import type { PageStructure, PageStructureSection } from "@/lib/cms/structure";
 
 /**
@@ -19,8 +21,16 @@ import type { PageStructure, PageStructureSection } from "@/lib/cms/structure";
  * screen. What the server adds is the part the canvas cannot know — which
  * sections the layout is leaving out, and which revision of the layout this is.
  *
- * Section-level only. A tree with every heading and paragraph in it would be
- * accurate and unusable; the canvas is where you point at a sentence.
+ * Every section opens into the nodes inside it — its fields, its repeatable
+ * rows and the fields inside those — built from the addresses the canvas
+ * reported and nested by parsing them. Nothing is invented: a field the page
+ * did not draw has no annotated element, so it has no row, and the tree is
+ * therefore a view of what can actually be pointed at rather than of what the
+ * registry permits.
+ *
+ * Collapsed by default, because a page with two hundred nodes expanded is
+ * accurate and unusable. The tree opens itself to whatever the canvas has
+ * selected, which is the one thing an editor always wants to see.
  *
  * Every control edits the **layout draft**. None of them changes what a visitor
  * is getting: hiding a section says what publishing the layout would do, and
@@ -45,6 +55,10 @@ export function LayersPanel({
   structure,
   removed,
   selectedSectionId,
+  selectedAddress,
+  locks,
+  locale,
+  valuesOf,
   dirtyIds,
   ready,
   canManage,
@@ -54,11 +68,20 @@ export function LayersPanel({
   blocks,
   ops,
   onSelect,
+  onToggleLock,
+  onEditText,
 }: {
   sections: EditorSectionMeta[];
   structure: PageStructure | null;
   removed: PageStructureSection[];
   selectedSectionId: number | null;
+  /** The exact node the canvas has selected, so the tree can open to it. */
+  selectedAddress: string | null;
+  /** Addresses the canvas pointer ignores. Still selectable from here. */
+  locks: string[];
+  locale: Locale;
+  /** The section's loaded values, for naming a row nothing on screen shows. */
+  valuesOf: (sectionId: number) => Record<string, unknown> | undefined;
   /** Sections with edits in the panel that have not been saved yet. */
   dirtyIds: Set<number>;
   ready: boolean;
@@ -71,12 +94,53 @@ export function LayersPanel({
   blocks: BlockDef[];
   ops: StructuralOps;
   onSelect: (address: string) => void;
+  onToggleLock: (address: string) => void;
+  onEditText: (address: string) => void;
 }) {
   const [order, setOrder] = useState<EditorSectionMeta[]>(sections);
   const [dragging, setDragging] = useState<number | null>(null);
   const [over, setOver] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
+  /**
+   * Which rows are open. Addresses, not indexes: a section that moves keeps
+   * whatever the editor had open inside it.
+   */
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
   const signature = sections.map((s) => `${s.sectionId}:${s.visible}`).join(",");
+
+  /**
+   * The tree opens to whatever the canvas selected, and the row scrolls into
+   * view.
+   *
+   * Opening ancestors rather than replacing what is open: an editor who has
+   * three sections expanded did not ask for two of them to close because they
+   * clicked a heading in the third.
+   */
+  useEffect(() => {
+    if (!selectedAddress) return;
+    setOpen((current) => {
+      const next = new Set(current);
+      let changed = false;
+      // The node itself is not opened — only what contains it.
+      for (const ancestor of ancestorAddresses(selectedAddress).slice(0, -1)) {
+        if (!next.has(ancestor)) {
+          next.add(ancestor);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [selectedAddress]);
+
+  const toggleOpen = (address: string) =>
+    setOpen((current) => {
+      const next = new Set(current);
+      if (next.has(address)) next.delete(address);
+      else next.add(address);
+      return next;
+    });
+
+  const lockSet = useMemo(() => new Set(locks), [locks]);
 
   useEffect(() => {
     setOrder(sections);
@@ -216,11 +280,32 @@ export function LayersPanel({
                   data-over={over === index && dragging !== index ? true : undefined}
                   className="rounded-[var(--radius-xs)] transition-colors data-[dragging]:opacity-45 data-[over]:bg-[color-mix(in_oklab,var(--color-orange)_14%,transparent)]"
                 >
-                  <button
+                  <div className="flex items-stretch gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleOpen(section.address)}
+                      aria-expanded={open.has(section.address)}
+                      aria-label={
+                        open.has(section.address)
+                          ? `Collapse ${blockNameOf(section.blockType)}`
+                          : `Expand ${blockNameOf(section.blockType)}`
+                      }
+                      data-layer-toggle={section.address}
+                      disabled={!section.nodes.length}
+                      className="shrink-0 rounded-[var(--radius-xs)] px-1 text-muted transition-colors enabled:hover:text-strong disabled:opacity-30"
+                    >
+                      <Icon
+                        name="chevronDown"
+                        size={11}
+                        className={open.has(section.address) ? undefined : "-rotate-90"}
+                      />
+                    </button>
+                    <button
                     type="button"
                     onClick={() => onSelect(section.address)}
                     aria-current={active ? "true" : undefined}
-                    className="flex w-full flex-col gap-0.5 rounded-[var(--radius-xs)] border px-2.5 py-1.5 text-start transition-colors"
+                    data-layer-row={section.address}
+                    className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-[var(--radius-xs)] border px-2.5 py-1.5 text-start transition-colors"
                     style={{
                       borderColor: active ? "var(--color-orange)" : "transparent",
                       background: active ? "color-mix(in oklab, var(--color-orange) 12%, transparent)" : "transparent",
@@ -236,9 +321,42 @@ export function LayersPanel({
                       {section.isDraftOnly ? <Badge tone="new">New</Badge> : null}
                       {section.isDraft && !section.isDraftOnly ? <Badge tone="draft">Draft</Badge> : null}
                       {!section.visible ? <Badge tone="muted">Will hide</Badge> : null}
+                      {lockSet.has(section.address) ? <Badge tone="muted">Locked</Badge> : null}
                     </span>
                     <span className="truncate text-[0.68rem] text-muted">{section.blockType}</span>
                   </button>
+                    <LockButton
+                      address={section.address}
+                      locked={lockSet.has(section.address)}
+                      label={blockNameOf(section.blockType)}
+                      onToggle={onToggleLock}
+                    />
+                  </div>
+
+                  {open.has(section.address) && section.nodes.length ? (
+                    <ul
+                      className="mt-0.5 flex flex-col gap-0.5 border-s border-[var(--admin-line)] ps-1.5 ms-3"
+                      data-layer-children={section.address}
+                    >
+                      {buildLayerTree(section.blockType, section.nodes, {
+                        values: valuesOf(section.sectionId),
+                        locale,
+                      }).map((node) => (
+                        <LayerRow
+                          key={node.address}
+                          node={node}
+                          open={open}
+                          lockSet={lockSet}
+                          selectedAddress={selectedAddress}
+                          editable={editableOf(section)}
+                          onToggleOpen={toggleOpen}
+                          onSelect={onSelect}
+                          onToggleLock={onToggleLock}
+                          onEditText={onEditText}
+                        />
+                      ))}
+                    </ul>
+                  ) : null}
 
                   {canManage ? (
                     <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
@@ -324,6 +442,183 @@ export function LayersPanel({
         ) : null}
       </div>
     </aside>
+  );
+}
+
+
+/**
+ * Which of a section's nodes the renderer marked as directly editable.
+ *
+ * Read off the canvas's own report rather than re-derived here: the renderer
+ * decided it from the block registry at the moment it drew the page, and a
+ * second opinion computed in the panel is a second thing to keep in step.
+ */
+const editableOf = (section: EditorSectionMeta): Set<string> =>
+  new Set(section.nodes.filter((node) => node.edit).map((node) => node.address));
+
+/** What each kind of node is called, in words, beside its icon. */
+const GROUP: Record<LayerNode["group"], { icon: string; word: string }> = {
+  section: { icon: "layers", word: "Section" },
+  item: { icon: "route", word: "Item" },
+  media: { icon: "fileText", word: "Image" },
+  link: { icon: "arrowUpRight", word: "Link" },
+  field: { icon: "quote", word: "Field" },
+};
+
+/**
+ * One row of the tree, and its children.
+ *
+ * The status words are words. A locked row says "Locked" and an openable one
+ * names what it would open, because a screen reader gets nothing from a tint
+ * and neither does a greyscale screenshot.
+ */
+function LayerRow({
+  node,
+  open,
+  lockSet,
+  selectedAddress,
+  editable,
+  onToggleOpen,
+  onSelect,
+  onToggleLock,
+  onEditText,
+}: {
+  node: LayerNode;
+  open: Set<string>;
+  lockSet: Set<string>;
+  selectedAddress: string | null;
+  editable: Set<string>;
+  onToggleOpen: (address: string) => void;
+  onSelect: (address: string) => void;
+  onToggleLock: (address: string) => void;
+  onEditText: (address: string) => void;
+}) {
+  const row = useRef<HTMLButtonElement>(null);
+  const active = selectedAddress === node.address;
+  const expanded = open.has(node.address);
+  const group = GROUP[node.group];
+
+  /**
+   * The selected row is brought into view.
+   *
+   * `nearest` rather than `center`: the panel should move as little as it can
+   * to show the row, because an editor clicking around the canvas watching the
+   * tree follow them does not want the list jumping to the middle each time.
+   */
+  useEffect(() => {
+    if (active) row.current?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  return (
+    <li data-layer-node={node.address} data-layer-kind={node.kind}>
+      <div className="flex items-stretch gap-0.5">
+        <button
+          type="button"
+          onClick={() => onToggleOpen(node.address)}
+          aria-expanded={node.children.length ? expanded : undefined}
+          aria-label={expanded ? `Collapse ${node.label}` : `Expand ${node.label}`}
+          disabled={!node.children.length}
+          data-layer-toggle={node.address}
+          className="shrink-0 rounded-[var(--radius-xs)] px-1 text-muted transition-colors enabled:hover:text-strong disabled:opacity-0"
+        >
+          <Icon name="chevronDown" size={10} className={expanded ? undefined : "-rotate-90"} />
+        </button>
+        <button
+          ref={row}
+          type="button"
+          onClick={() => onSelect(node.address)}
+          onDoubleClick={() => editable.has(node.address) && onEditText(node.address)}
+          aria-current={active ? "true" : undefined}
+          data-layer-row={node.address}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-[var(--radius-xs)] border px-1.5 py-1 text-start transition-colors"
+          style={{
+            borderColor: active ? "var(--color-orange)" : "transparent",
+            background: active ? "color-mix(in oklab, var(--color-orange) 12%, transparent)" : "transparent",
+          }}
+        >
+          <Icon name={group.icon} size={10} className="shrink-0 text-muted" />
+          <span className="truncate text-[0.74rem] text-body">{node.label}</span>
+          <span className="sr-only">{group.word}</span>
+          {lockSet.has(node.address) ? <Badge tone="muted">Locked</Badge> : null}
+        </button>
+        {editable.has(node.address) ? (
+          <button
+            type="button"
+            onClick={() => onEditText(node.address)}
+            aria-label={`Edit ${node.label} text on the canvas`}
+            title="Edit text on the canvas"
+            data-layer-edit={node.address}
+            className="shrink-0 rounded-[var(--radius-xs)] px-1 text-muted transition-colors hover:text-strong"
+          >
+            <Icon name="quote" size={10} />
+          </button>
+        ) : null}
+        <LockButton
+          address={node.address}
+          locked={lockSet.has(node.address)}
+          label={node.label}
+          onToggle={onToggleLock}
+        />
+      </div>
+
+      {expanded && node.children.length ? (
+        <ul
+          className="mt-0.5 flex flex-col gap-0.5 border-s border-[var(--admin-line)] ps-1.5 ms-2"
+          data-layer-children={node.address}
+        >
+          {node.children.map((child) => (
+            <LayerRow
+              key={child.address}
+              node={child}
+              open={open}
+              lockSet={lockSet}
+              selectedAddress={selectedAddress}
+              editable={editable}
+              onToggleOpen={onToggleOpen}
+              onSelect={onSelect}
+              onToggleLock={onToggleLock}
+              onEditText={onEditText}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * Lock and unlock.
+ *
+ * Named in words on the control itself, because "what does this padlock mean
+ * right now" is exactly the question an icon cannot answer. It is an editing
+ * convenience and the title says so: it stops the canvas pointer reaching the
+ * node, and it is not a permission — the server's checks are unchanged and the
+ * node is still selectable from this panel.
+ */
+function LockButton({
+  address,
+  locked,
+  label,
+  onToggle,
+}: {
+  address: string;
+  locked: boolean;
+  label: string;
+  onToggle: (address: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onToggle(address)}
+      aria-pressed={locked}
+      aria-label={locked ? `Unlock ${label}` : `Lock ${label} against canvas clicks`}
+      title={locked ? "Unlock: the canvas can select this again" : "Lock: the canvas pointer will skip this"}
+      data-layer-lock={address}
+      className="shrink-0 rounded-[var(--radius-xs)] px-1 transition-colors"
+      style={{ color: locked ? "var(--color-orange)" : "var(--color-muted)" }}
+    >
+      <Icon name="shield" size={10} />
+    </button>
   );
 }
 

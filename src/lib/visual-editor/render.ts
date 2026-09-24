@@ -1,5 +1,6 @@
-import { formatAddress, parseNodePath, type NodePath } from "@/lib/cms/address";
+import { formatAddress, formatNodePath, parseNodePath, type NodePath } from "@/lib/cms/address";
 import { isItemId } from "@/lib/cms/item-id";
+import { directEditAt } from "./tree";
 
 /**
  * How the real public renderer marks the things an editor can point at.
@@ -36,6 +37,18 @@ export type EditorAttrs = {
   "data-eod-kind"?: EditorNodeKind;
   "data-eod-section"?: string;
   "data-eod-block"?: string;
+  /**
+   * This node's text may be typed into on the canvas, and whether it takes
+   * more than one line.
+   *
+   * Decided here, from the block registry, rather than by the canvas looking at
+   * the element: whether something is a plain-text field is a fact about the
+   * block's declaration, and the canvas has no access to that. Absent means the
+   * inspector is where it is edited, which is true of every field and is only
+   * *only* true of the rest — a picture, a link, a number, a switch, and rich
+   * text, which has a sanitizer and an editor of its own.
+   */
+  "data-eod-edit"?: "text" | "multiline";
 };
 
 const NONE: EditorAttrs = {};
@@ -89,6 +102,9 @@ export function editorNodeAttrs(
   if (spec.kind === "section") {
     attrs["data-eod-section"] = String(editor.sectionId);
     attrs["data-eod-block"] = editor.blockType;
+  } else {
+    const edit = directEditAt(editor.blockType, formatNodePath(path));
+    if (edit) attrs["data-eod-edit"] = edit.multiline ? "multiline" : "text";
   }
   return attrs;
 }

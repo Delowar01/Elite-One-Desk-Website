@@ -50,7 +50,27 @@ describe("editor attributes exist only for an authorised canvas", () => {
       "data-eod-node": "",
       "data-eod-address": "section:42/field:title",
       "data-eod-kind": "field",
+      // What a field carries instead: whether its text may be typed into
+      // directly. Decided from the block registry at render time, because the
+      // canvas has no way to know a title is a plain-text field and a picture
+      // is not. Still no section id and no block type — those are the section
+      // root's, and one `closest()` finds them.
+      "data-eod-edit": "text",
     });
+    // …and a field that is not plain text says nothing, which is what makes
+    // the flag meaningful rather than decorative.
+    assert.deepEqual(editorNodeAttrs(EDITOR, { path: "field:links", kind: "field" }), {
+      "data-eod-node": "",
+      "data-eod-address": "section:42/field:links",
+      "data-eod-kind": "field",
+    });
+    for (const attrs of [
+      editorNodeAttrs(EDITOR, { path: "field:title", kind: "field" }),
+      editorNodeAttrs(EDITOR, { path: "field:links", kind: "field" }),
+    ]) {
+      assert.ok(!("data-eod-section" in attrs), "a field repeats the section id");
+      assert.ok(!("data-eod-block" in attrs), "a field repeats the block type");
+    }
   });
 
   test("every address it writes is one the parser accepts", () => {

@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 
 import { decomposeAddress } from "@/lib/cms/address";
+import { isDescendantAddress } from "@/lib/visual-editor/tree";
 import type { Locale } from "@/lib/i18n/config";
 import {
   bridgeOrigin,
@@ -11,6 +12,7 @@ import {
   type CanvasMessage,
   type EditorNodeMeta,
   type EditorSectionMeta,
+  type EditorTreeNode,
 } from "@/lib/visual-editor/protocol";
 import { isUsableRect, type Rect } from "@/lib/visual-editor/overlay";
 import type { EditorNodeKind } from "@/lib/visual-editor/render";
@@ -97,6 +99,36 @@ function describe(element: Element): EditorNodeMeta | null {
   };
 }
 
+/**
+ * Every annotated node inside one section root, in document order.
+ *
+ * Read off the page rather than described from anywhere else, which is the
+ * same rule the rest of this file follows: if it is not annotated it cannot be
+ * pointed at, so it is not in the tree either. A field the page did not draw —
+ * an empty media slot, a CTA that is switched off — simply has no element, and
+ * the panel is therefore a view of what is really there.
+ */
+function readNodes(root: Element): EditorTreeNode[] {
+  const out: EditorTreeNode[] = [];
+  root.querySelectorAll(SELECTABLE).forEach((element) => {
+    const address = element.getAttribute("data-eod-address");
+    const kind = element.getAttribute("data-eod-kind") as EditorNodeKind | null;
+    if (!address || !kind || kind === "section") return;
+    // A node inside a *nested* section root belongs to that one, not to this.
+    if (element.closest(SECTION) !== root) return;
+    const parts = decomposeAddress(address);
+    if (!parts || parts.relative === "root") return;
+
+    const node: EditorTreeNode = { address, kind, relativePath: parts.relative };
+    const text = excerpt(element);
+    if (text) node.text = text;
+    const edit = element.getAttribute("data-eod-edit");
+    if (edit === "text" || edit === "multiline") node.edit = edit;
+    out.push(node);
+  });
+  return out;
+}
+
 /** Every section the page actually rendered, in the order it rendered them. */
 function readStructure(): EditorSectionMeta[] {
   const out: EditorSectionMeta[] = [];
@@ -113,6 +145,7 @@ function readStructure(): EditorSectionMeta[] {
       isDraft: root.getAttribute("data-eod-draft") === "true",
       isDraftOnly: root.getAttribute("data-eod-draft-only") === "true",
       visible: root.getAttribute("data-eod-visible") !== "false",
+      nodes: readNodes(root),
     });
   });
   return out;
@@ -154,6 +187,25 @@ export function EditorBridge({
 
     let hover: Tracked | null = null;
     let selection: Tracked | null = null;
+
+    /**
+     * Addresses the pointer must ignore, and the node being typed into.
+     *
+     * Locking is an editing convenience, not a permission: it exists so that a
+     * background image or a settled section stops swallowing clicks aimed at
+     * something in front of it. It lives here, for the life of this document,
+     * and goes nowhere near a save — the server neither knows nor cares, and
+     * every write is checked exactly as it was before.
+     *
+     * Locking a node locks what is inside it. That is the rule, chosen because
+     * it is the one an editor predicts: locking a section means "leave this
+     * section alone", and having its heading stay clickable would make the
+     * lock look broken. Layers is unaffected either way — a locked node is
+     * still selectable there, which is what keeps it recoverable.
+     */
+    let locked: string[] = [];
+    const isLocked = (address: string): boolean =>
+      locked.some((entry) => entry === address || isDescendantAddress(entry, address));
 
     /**
      * Watches the boxes of whatever is tracked, and nothing else.
@@ -443,8 +495,32 @@ export function EditorBridge({
      * reach the second half: the first `closest()` already returns something
      * with no editable descendants, and the extra work is one scoped query.
      */
+    /**
+     * The nearest ancestor the pointer is allowed to have, or nothing.
+     *
+     * A locked node does not become transparent — what is *behind* it was not
+     * what the editor pointed at either. The pointer walks outwards instead,
+     * so clicking a locked card selects the section that contains it, and
+     * clicking a locked section selects nothing at all. Predictable in one
+     * sentence, which is the whole requirement for a lock.
+     */
+    const unlockedAncestor = (element: Element | null): Element | null => {
+      let current: Element | null = element;
+      while (current) {
+        const address = current.getAttribute("data-eod-address");
+        if (address && !isLocked(address)) return current;
+        current = current.parentElement?.closest(SELECTABLE) ?? null;
+      }
+      return null;
+    };
+
     const closestNode = (target: EventTarget | null, point?: { x: number; y: number }): Element | null => {
       if (!(target instanceof Element)) return null;
+      const found = refineNode(target, point);
+      return found ? unlockedAncestor(found) : null;
+    };
+
+    const refineNode = (target: Element, point?: { x: number; y: number }): Element | null => {
       const direct = target.closest(SELECTABLE);
       if (!direct || !point) return direct;
       // Cheap gate: only a node with editable things inside it can be refined.
@@ -460,6 +536,103 @@ export function EditorBridge({
       return direct;
     };
 
+    /* ---------------------------------------------------------------- */
+    /* Direct text editing                                               */
+    /* ---------------------------------------------------------------- */
+
+    /**
+     * The node being typed into, if any.
+     *
+     * The canvas holds no document and stores nothing. It makes one element
+     * editable, reports the plain text as it changes, and puts the text back
+     * if the edit is abandoned. Where that text belongs — which field, which
+     * row, which edition — is decided by the editor from the block registry,
+     * and the ordinary validator and autosave write it. So the page a visitor
+     * gets is still rendered from stored values, never from what somebody
+     * typed into a browser.
+     */
+    type Editing = { element: HTMLElement; address: string; before: string; multiline: boolean };
+    let editing: Editing | null = null;
+
+    const textOf = (element: HTMLElement): string =>
+      // `innerText` rather than `textContent`: the element is being edited, so
+      // the line breaks a person can see are the ones they typed.
+      (element.innerText ?? "").replace(/\u00a0/g, " ");
+
+    const stopEditing = (commit: boolean) => {
+      if (!editing) return;
+      const { element, address, before } = editing;
+      const text = textOf(element);
+      editing = null;
+
+      element.removeAttribute("contenteditable");
+      element.removeAttribute("data-eod-editing");
+      element.removeAttribute("spellcheck");
+      if (!commit) {
+        // Escape puts the element back to exactly what it showed. The editor
+        // is told too, so a buffer that took the interim keystrokes is wound
+        // back to the same place.
+        element.textContent = before;
+      }
+      element.blur();
+      post({ type: "canvas.edit", address, phase: commit ? "commit" : "cancel", text: commit ? text : before });
+    };
+
+    const startEditing = (element: Element): boolean => {
+      const address = element.getAttribute("data-eod-address");
+      const mode = element.getAttribute("data-eod-edit");
+      if (!address || (mode !== "text" && mode !== "multiline")) return false;
+      if (!(element instanceof HTMLElement)) return false;
+      if (isLocked(address)) return false;
+      if (editing?.element === element) return true;
+      stopEditing(true);
+
+      editing = { element, address, before: textOf(element), multiline: mode === "multiline" };
+      // `plaintext-only` is the point: the browser will not produce bold,
+      // links or pasted markup, so there is no markup for anybody to store.
+      element.setAttribute("contenteditable", "plaintext-only");
+      element.setAttribute("data-eod-editing", "");
+      element.setAttribute("spellcheck", "false");
+      element.focus();
+      post({ type: "canvas.edit", address, phase: "start", text: editing.before });
+      return true;
+    };
+
+    const onEditInput = () => {
+      if (!editing) return;
+      post({ type: "canvas.edit", address: editing.address, phase: "input", text: textOf(editing.element) });
+    };
+
+    const onEditKey = (event: KeyboardEvent) => {
+      if (!editing) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        stopEditing(false);
+        return;
+      }
+      if (event.key === "Enter" && !editing.multiline) {
+        // A single-line field is a line: Enter finishes it rather than adding
+        // a second one that the field cannot hold.
+        event.preventDefault();
+        event.stopPropagation();
+        stopEditing(true);
+        return;
+      }
+      // Tab is left to the browser on purpose. Trapping focus inside a canvas
+      // element is how a keyboard user gets stuck in a page they cannot leave.
+    };
+
+    const onEditBlur = () => stopEditing(true);
+
+    const onDoubleClick = (event: MouseEvent) => {
+      const element = closestNode(event.target, { x: event.clientX, y: event.clientY });
+      if (!element) return;
+      if (!startEditing(element)) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
     const onPointerMove = (event: PointerEvent) =>
       setHover(closestNode(event.target, { x: event.clientX, y: event.clientY }));
     const onPointerLeave = () => setHover(null);
@@ -470,6 +643,10 @@ export function EditorBridge({
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       const element = closestNode(event.target, { x: event.clientX, y: event.clientY });
       if (!element) return;
+      // A click inside the node being typed into is placing the caret, not
+      // choosing something else.
+      if (editing && (element === editing.element || editing.element.contains(event.target as Node))) return;
+      if (editing) stopEditing(true);
       // Inside the canvas a click on something editable means "select this".
       // Following the link as well would take the editor off the page they are
       // editing, mid-edit, because they aimed at a heading.
@@ -516,9 +693,27 @@ export function EditorBridge({
           return;
         }
         case "editor.clearSelection":
+          stopEditing(true);
           setHover(null);
           setSelection(null);
           return;
+        case "editor.locks": {
+          locked = message.addresses;
+          // Something that has just been locked must not stay under the
+          // pointer's outline, and must not go on being typed into.
+          if (editing && isLocked(editing.address)) stopEditing(true);
+          if (hover && isLocked(hover.address)) clearHover();
+          return;
+        }
+        case "editor.edit": {
+          if (!message.active) {
+            if (editing?.address === message.address) stopEditing(true);
+            return;
+          }
+          const element = document.querySelector(`[data-eod-address="${message.address}"]`);
+          if (element) startEditing(element);
+          return;
+        }
       }
     };
 
@@ -554,6 +749,10 @@ export function EditorBridge({
     document.addEventListener("pointermove", onPointerMove, { passive: true });
     document.addEventListener("pointerleave", onPointerLeave);
     document.addEventListener("click", onClick, { capture: true });
+    document.addEventListener("dblclick", onDoubleClick, { capture: true });
+    document.addEventListener("input", onEditInput, true);
+    document.addEventListener("keydown", onEditKey, true);
+    document.addEventListener("focusout", onEditBlur, true);
     document.addEventListener("submit", onSubmit, { capture: true });
 
     announce();
@@ -565,6 +764,10 @@ export function EditorBridge({
       document.removeEventListener("pointermove", onPointerMove);
       document.removeEventListener("pointerleave", onPointerLeave);
       document.removeEventListener("click", onClick, { capture: true });
+      document.removeEventListener("dblclick", onDoubleClick, { capture: true });
+      document.removeEventListener("input", onEditInput, true);
+      document.removeEventListener("keydown", onEditKey, true);
+      document.removeEventListener("focusout", onEditBlur, true);
       document.removeEventListener("submit", onSubmit, { capture: true });
       for (const type of ["transitionrun", "transitionend", "animationstart", "animationend"]) {
         document.removeEventListener(type, onMotion, { capture: true });
