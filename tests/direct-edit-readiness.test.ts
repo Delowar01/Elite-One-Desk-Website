@@ -37,6 +37,12 @@ import {
   readEditorMessage,
 } from "@/lib/visual-editor/protocol";
 import { textAt } from "@/lib/visual-editor/tree";
+import {
+  acceptEdit,
+  type DirectEditSession,
+  type EditorContext,
+  type IncomingEdit,
+} from "@/lib/visual-editor/direct-edit";
 
 const BRIDGE = "0123456789abcdef0123456789abcdef";
 const wrap = (message: unknown) => ({
@@ -281,24 +287,41 @@ describe("what comes back is applied only to the session that asked for it", () 
   const apply = bodyOf(code(SHELL_SOURCE), "const onCanvasEdit = useCallback(");
 
   test("a message from a superseded session, or another node, is ignored", () => {
-    assert.match(
-      apply,
-      /if \(!session \|\| session\.token !== edit\.token \|\| session\.address !== edit\.address\) return;/,
-      "a late message can still write into whatever is selected now",
+    // The decision moved into `acceptEdit`, which compares the token, the
+    // address, the section and the whole editor context — and is asserted
+    // directly below. What is asserted here is that the handler abides by it
+    // and has kept no opinion of its own.
+    assert.match(apply, /const verdict = acceptEdit\(/);
+    assert.match(apply, /if \(!verdict\.ok\) \{/);
+    assert.ok(
+      !/session\.token !== edit\.token/.test(apply),
+      "the handler still carries its own copy of the rule",
     );
   });
 
   test("cancel restores the value the session started from", () => {
-    assert.match(apply, /edit\.phase === "cancel" \? session\.started : edit\.text/);
+    // Decided by the guard, which hands back `session.started` for a cancel.
+    const session: DirectEditSession = {
+      token: 1, address: "section:4/field:title", sectionId: 4,
+      pageId: 2, locale: "en", canvasKey: 0, started: "Original",
+    };
+    const verdict = acceptEdit(
+      session,
+      { pageId: 2, locale: "en", canvasKey: 0 },
+      { address: "section:4/field:title", token: 1, phase: "cancel", text: "typed then abandoned" },
+    );
+    assert.ok(verdict.ok);
+    assert.equal(verdict.text, "Original");
+    assert.match(apply, /verdict\.text/, "the handler writes something other than the verdict's text");
   });
 
   test("…and never queues a write for it", () => {
-    assert.match(apply, /if \(edit\.phase !== "cancel"\) scheduleAutosave\(sectionId\);/);
+    assert.match(apply, /if \(edit\.phase !== "cancel"\) scheduleAutosave\(verdict\.sectionId\);/);
   });
 
   test("a commit goes through the existing buffer and autosave, and nothing else", () => {
     assert.match(apply, /writeBuffers\(/);
-    assert.match(apply, /scheduleAutosave\(sectionId\)/);
+    assert.match(apply, /scheduleAutosave\(verdict\.sectionId\)/);
     for (const banned of ["saveVisualSectionDraft", "fetch(", "loadVisualSection"]) {
       assert.ok(!apply.includes(banned), `the edit path calls ${banned} directly`);
     }
@@ -349,5 +372,232 @@ describe("one section is loaded once, whoever asked", () => {
     for (const invented of ["revision: 0", "revision: 1", "innerText", "textContent"]) {
       assert.ok(!ensure.includes(invented), `the loader invents ${invented}`);
     }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("a message is only applied in the context its session was opened in", () => {
+  /**
+   * The race this closes: the session used to be identified by token and
+   * address alone, and the text was then written using whatever language the
+   * editor was showing *now*. Between React rendering a new page, language or
+   * canvas and the effect that cancels the session actually running, a message
+   * from the old session passed that check and was applied under the new
+   * context — an English edit written into `.ar`, a page the editor had left
+   * made dirty and queued for saving.
+   *
+   * These ask the rule directly rather than driving the component, because the
+   * rule is the valuable part and it has to hold synchronously, before any
+   * cleanup has had a chance to run.
+   */
+  const SESSION: DirectEditSession = {
+    token: 7,
+    address: "section:21/field:headline",
+    sectionId: 21,
+    pageId: 3,
+    locale: "en",
+    canvasKey: 5,
+    started: "Where it began",
+  };
+  const HERE: EditorContext = { pageId: 3, locale: "en", canvasKey: 5 };
+  const TYPED: IncomingEdit = {
+    address: "section:21/field:headline",
+    token: 7,
+    phase: "input",
+    text: "Being typed",
+  };
+
+  test("the session carries the page, the language, the canvas and the section", () => {
+    // Everything the guard compares has to be *on* the session; a field it does
+    // not carry is a field it cannot check.
+    for (const key of ["token", "address", "sectionId", "pageId", "locale", "canvasKey", "started"] as const) {
+      assert.ok(key in SESSION, `a session does not carry ${key}`);
+    }
+    assert.equal(typeof SESSION.pageId, "number");
+    assert.equal(typeof SESSION.canvasKey, "number");
+    assert.equal(SESSION.locale, "en");
+    assert.equal(SESSION.sectionId, 21);
+  });
+
+  test("a message from the live session, in its own context, is accepted", () => {
+    const verdict = acceptEdit(SESSION, HERE, TYPED);
+    assert.equal(verdict.ok, true);
+    assert.ok(verdict.ok);
+    assert.equal(verdict.sectionId, 21);
+    assert.equal(verdict.relativePath, "field:headline");
+    assert.equal(verdict.locale, "en");
+    assert.equal(verdict.text, "Being typed");
+    assert.equal(verdict.ends, false, "typing ended the session");
+  });
+
+  test("…and a commit or a cancel ends it, where typing does not", () => {
+    assert.equal((acceptEdit(SESSION, HERE, { ...TYPED, phase: "commit" }) as { ends: boolean }).ends, true);
+    const cancelled = acceptEdit(SESSION, HERE, { ...TYPED, phase: "cancel", text: "abandoned" });
+    assert.ok(cancelled.ok);
+    assert.equal(cancelled.ends, true);
+    assert.equal(cancelled.text, "Where it began", "cancel did not restore the starting value");
+  });
+
+  test("no session at all, a stale token, or another node", () => {
+    assert.deepEqual(acceptEdit(null, HERE, TYPED), { ok: false, reason: "no-session" });
+    assert.deepEqual(acceptEdit(SESSION, HERE, { ...TYPED, token: 6 }), { ok: false, reason: "token" });
+    assert.deepEqual(acceptEdit(SESSION, HERE, { ...TYPED, token: 8 }), { ok: false, reason: "token" });
+    assert.deepEqual(acceptEdit(SESSION, HERE, { ...TYPED, address: "section:21/field:lead" }), {
+      ok: false,
+      reason: "address",
+    });
+  });
+
+  test("an address that does not parse, or names another section", () => {
+    // The equality check comes first, so a *different* address is refused as
+    // one — reaching the parser needs a session whose own address is the thing
+    // that cannot be a node.
+    assert.deepEqual(acceptEdit(SESSION, HERE, { ...TYPED, address: "section:21" }), {
+      ok: false,
+      reason: "address",
+    });
+    const rooted: DirectEditSession = { ...SESSION, address: "section:21" };
+    assert.deepEqual(acceptEdit(rooted, HERE, { ...TYPED, address: "section:21" }), {
+      ok: false,
+      reason: "unparsable",
+    });
+    // The session and its own address disagreeing is a bug, not a race, and is
+    // refused rather than reconciled.
+    const crossed: DirectEditSession = { ...SESSION, sectionId: 22 };
+    assert.deepEqual(acceptEdit(crossed, HERE, TYPED), { ok: false, reason: "section" });
+  });
+
+  test("the editor has moved to another page", () => {
+    assert.deepEqual(acceptEdit(SESSION, { ...HERE, pageId: 4 }, TYPED), { ok: false, reason: "page" });
+    assert.deepEqual(acceptEdit(SESSION, { ...HERE, pageId: null }, TYPED), { ok: false, reason: "page" });
+  });
+
+  test("the editor has switched language", () => {
+    assert.deepEqual(acceptEdit(SESSION, { ...HERE, locale: "ar" }, TYPED), { ok: false, reason: "locale" });
+    const arabic: DirectEditSession = { ...SESSION, locale: "ar" };
+    assert.deepEqual(acceptEdit(arabic, { ...HERE, locale: "en" }, TYPED), { ok: false, reason: "locale" });
+  });
+
+  test("the canvas document has been replaced, even with everything else identical", () => {
+    // Same page, same language, same address, same section, same token: the
+    // canvas alone is different, and that is enough on its own.
+    assert.deepEqual(acceptEdit(SESSION, { ...HERE, canvasKey: 6 }, TYPED), { ok: false, reason: "canvas" });
+  });
+
+  test("a stale English message can never be written as Arabic", () => {
+    // The editor is now showing Arabic; the message belongs to the English
+    // session that was open a moment ago.
+    const verdict = acceptEdit(SESSION, { ...HERE, locale: "ar" }, TYPED);
+    assert.equal(verdict.ok, false);
+    assert.ok(!verdict.ok && verdict.reason === "locale");
+  });
+
+  test("…and a stale Arabic message can never be written as English", () => {
+    const arabic: DirectEditSession = { ...SESSION, locale: "ar", started: "بدأ هنا" };
+    const verdict = acceptEdit(arabic, HERE, { ...TYPED, text: "مكتوب" });
+    assert.equal(verdict.ok, false);
+    assert.ok(!verdict.ok && verdict.reason === "locale");
+  });
+
+  test("an accepted message is interpreted in the session's language, not the editor's", () => {
+    // The one case where the two can legitimately differ is none: acceptance
+    // requires them equal. What matters is that the verdict names the
+    // session's, so the caller cannot reach for the current one by habit.
+    const arabic: DirectEditSession = { ...SESSION, locale: "ar" };
+    const verdict = acceptEdit(arabic, { ...HERE, locale: "ar" }, TYPED);
+    assert.ok(verdict.ok);
+    assert.equal(verdict.locale, "ar");
+  });
+
+  test("a stale message from a page the editor has left is refused before anything is written", () => {
+    /**
+     * The shape of the accident: buffers survive a page change on purpose, so
+     * Page A's buffer is still there to be dirtied and autosaved by a keystroke
+     * that belongs to a canvas nobody is looking at.
+     */
+    const onPageB: EditorContext = { pageId: 9, locale: "en", canvasKey: 5 };
+    for (const phase of ["input", "commit", "cancel"] as const) {
+      const verdict = acceptEdit(SESSION, onPageB, { ...TYPED, phase });
+      assert.equal(verdict.ok, false, phase);
+      assert.ok(!verdict.ok && verdict.reason === "page", phase);
+    }
+  });
+
+  test("every rejection is a refusal to act, never a partial answer", () => {
+    // A rejected verdict carries nothing a caller could write with: no section,
+    // no text, no locale. It cannot be half-applied by accident.
+    for (const context of [
+      { ...HERE, pageId: 4 },
+      { ...HERE, locale: "ar" as const },
+      { ...HERE, canvasKey: 99 },
+    ]) {
+      const verdict = acceptEdit(SESSION, context, TYPED);
+      assert.equal(verdict.ok, false);
+      assert.deepEqual(Object.keys(verdict).sort(), ["ok", "reason"]);
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("the handler acts on the verdict and on nothing else", () => {
+  const handler = bodyOf(code(SHELL_SOURCE), "const onCanvasEdit = useCallback(");
+
+  test("it asks the guard before it touches a buffer", () => {
+    const asked = handler.indexOf("acceptEdit(");
+    const writes = handler.indexOf("writeBuffers(");
+    assert.ok(asked > 0, "the handler no longer consults the guard");
+    assert.ok(writes > asked, "a buffer is written before the context is checked");
+    assert.match(handler, /if \(!verdict\.ok\) \{/, "a rejected verdict is not handled");
+  });
+
+  test("it passes the whole current context, from refs read at that moment", () => {
+    assert.match(
+      handler,
+      /\{ pageId: pageRef\.current, locale: localeRef\.current, canvasKey: canvasKeyRef\.current \}/,
+      "the guard is given something other than the editor's current context",
+    );
+  });
+
+  test("it writes with the session's language, never the editor's", () => {
+    assert.match(handler, /verdict\.locale/, "the write does not use the verdict's language");
+    const write = handler.slice(handler.indexOf("applyTextAt("));
+    assert.ok(
+      !write.includes("localeRef.current"),
+      "the write still reaches for the editor's current language",
+    );
+  });
+
+  test("a rejected message schedules nothing and reports nothing", () => {
+    const rejected = handler.slice(handler.indexOf("if (!verdict.ok)"), handler.indexOf("if (verdict.ends)"));
+    for (const effect of ["scheduleAutosave", "setLoadError", "writeBuffers", "contentDirty"]) {
+      assert.ok(!rejected.includes(effect), `a rejected message still does ${effect}`);
+    }
+  });
+
+  test("a cancel still writes the restored value and still queues nothing", () => {
+    assert.match(handler, /if \(edit\.phase !== "cancel"\) scheduleAutosave\(verdict\.sectionId\);/);
+  });
+
+  test("the session is bound to the context the request validated, not re-read later", () => {
+    const request = bodyOf(code(SHELL_SOURCE), "const requestDirectEdit = useCallback(");
+    const bind = request.slice(request.indexOf("editSession.current = {"));
+    assert.match(bind, /pageId: pageAtRequest/);
+    assert.match(bind, /locale: localeAtRequest/);
+    assert.match(bind, /canvasKey: canvasAtRequest/);
+    for (const reread of ["pageId: pageRef.current", "locale: localeRef.current", "canvasKey: canvasKeyRef.current"]) {
+      assert.ok(!bind.includes(reread), `the session re-reads ${reread} instead of keeping what it checked`);
+    }
+  });
+
+  test("the session holds no DOM node and no markup", () => {
+    const source = code(read("src/lib/visual-editor/direct-edit.ts"));
+    for (const banned of ["HTMLElement", "innerHTML", "outerHTML", "querySelector"]) {
+      assert.ok(!source.includes(banned), `the session type mentions ${banned}`);
+    }
+    // …and the bridge id is not part of it: it correlates documents, it does
+    // not authorise anything.
+    assert.ok(!source.includes("bridgeId"), "the session treats the bridge id as identity");
   });
 });

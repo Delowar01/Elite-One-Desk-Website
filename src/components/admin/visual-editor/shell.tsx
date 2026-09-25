@@ -54,6 +54,7 @@ import {
 } from "./inspector";
 import { formatNodePath, parseAddress } from "@/lib/cms/address";
 import { applyTextAt, directEditAt, textAt } from "@/lib/visual-editor/tree";
+import { acceptEdit, type DirectEditSession } from "@/lib/visual-editor/direct-edit";
 import { LayersPanel, type StructuralOps } from "./layers";
 import { PagePanel } from "./page-panel";
 
@@ -232,9 +233,7 @@ export function VisualEditorShell({
    * session opened with, which is what Escape restores.
    */
   const editToken = useRef(0);
-  const editSession = useRef<
-    { token: number; address: string; sectionId: number; started: string } | null
-  >(null);
+  const editSession = useRef<DirectEditSession | null>(null);
   /** Where the selection should go once the canvas comes back from a save. */
   const restoreTo = useRef<{ address: string; fallback: string } | null>(null);
   const [restoreToken, setRestoreToken] = useState(0);
@@ -634,6 +633,8 @@ export function VisualEditorShell({
       const pageAtRequest = pageRef.current;
       const localeAtRequest = localeRef.current;
       const canvasAtRequest = canvasKeyRef.current;
+      // No page open is not a context a session can be bound to.
+      if (pageAtRequest === null) return;
 
       const buffer = await ensureSectionBuffer(sectionId);
 
@@ -651,7 +652,23 @@ export function VisualEditorShell({
       const text = textAt(buffer.values, buffer.data.blockType, relative, localeAtRequest);
       if (text === null) return;
 
-      editSession.current = { token, address, sectionId, started: text };
+      /**
+       * The session is bound to the context it was opened in.
+       *
+       * These are the same values the checks above were made against, kept
+       * rather than re-read: a session that recorded the context as it is when
+       * the *message* arrives would be describing the accident instead of
+       * guarding against it.
+       */
+      editSession.current = {
+        token,
+        address,
+        sectionId,
+        pageId: pageAtRequest,
+        locale: localeAtRequest,
+        canvasKey: canvasAtRequest,
+        started: text,
+      };
       setEditRequest({ kind: "begin", address, token, text });
     },
     [canManageContent, ensureSectionBuffer],
@@ -683,29 +700,41 @@ export function VisualEditorShell({
     (edit: { address: string; token: number; phase: "input" | "commit" | "cancel"; text: string }) => {
       if (!canManageContent) return;
       /**
-       * Only the live session, and only its own node.
+       * Does this message still belong to the editor it has arrived in?
        *
-       * A canvas that was replaced, a request that was superseded, an address
-       * the editor has moved off: each can still have a message in flight, and
-       * applying one would write text into whatever is selected now. The token
-       * is what tells them apart — "whatever is currently contenteditable" is
-       * not an identity.
+       * Asked synchronously, and asked about the whole context — page,
+       * language and canvas document as well as the session's token and
+       * address. The effect that cancels a session when the context changes is
+       * still there and still tells the canvas to stop, but it runs after the
+       * render that changed the context, and a message in that window used to
+       * pass a token-and-address check and then be written using whatever
+       * language the editor had just switched to.
        */
-      const session = editSession.current;
-      if (!session || session.token !== edit.token || session.address !== edit.address) return;
+      const verdict = acceptEdit(
+        editSession.current,
+        { pageId: pageRef.current, locale: localeRef.current, canvasKey: canvasKeyRef.current },
+        edit,
+      );
+      if (!verdict.ok) {
+        /**
+         * Nothing happens to a message that does not belong here: no write, no
+         * dirty flag, no autosave, no error on screen. A stale keystroke is not
+         * something an editor did wrong, and telling them about it would be
+         * noise about a canvas they have already left.
+         *
+         * The session is dropped when the context has moved, so a stream of
+         * them from a replaced document stops being considered at all.
+         */
+        if (verdict.reason === "page" || verdict.reason === "locale" || verdict.reason === "canvas") {
+          editSession.current = null;
+        }
+        return;
+      }
 
-      const parsed = parseAddress(edit.address);
-      if (!parsed) return;
-      const sectionId = parsed.sectionId;
-      // Cancel restores the value the session began with, in the buffer as
-      // well as on the canvas — a buffer left holding the abandoned text while
-      // the canvas showed the old one would be a dirty state nobody could see.
-      const text = edit.phase === "cancel" ? session.started : edit.text;
-
-      if (edit.phase !== "input") editSession.current = null;
+      if (verdict.ends) editSession.current = null;
 
       writeBuffers((prev) => {
-        const entry = prev[sectionId];
+        const entry = prev[verdict.sectionId];
         // There is always a buffer by now: the session only exists because one
         // was loaded before editing was allowed to begin.
         if (!entry) return prev;
@@ -714,15 +743,16 @@ export function VisualEditorShell({
         const values = applyTextAt(
           entry.values,
           entry.data.blockType,
-          formatNodePath(parsed.path),
-          localeRef.current,
-          text,
+          verdict.relativePath,
+          // The session's language, not the editor's current one.
+          verdict.locale,
+          verdict.text,
         );
         if (!values) return prev;
 
         return {
           ...prev,
-          [sectionId]: {
+          [verdict.sectionId]: {
             ...entry,
             values,
             contentDirty: !sameValues(values, entry.data.values),
@@ -736,12 +766,12 @@ export function VisualEditorShell({
       /**
        * A cancelled session saves nothing.
        *
-       * Opening the editor on a node and pressing Escape has to leave the
-       * section exactly as it was — including not having queued a write of the
-       * value it started from, which would spend a revision to store what is
-       * already stored.
+       * The section's autosave timer may already be running because of earlier
+       * keystrokes, and it is deliberately left alone: it may also be carrying
+       * unrelated style or motion work. When it wakes, the restored buffer is
+       * no longer content-dirty, so it writes no content and moves no revision.
        */
-      if (edit.phase !== "cancel") scheduleAutosave(sectionId);
+      if (edit.phase !== "cancel") scheduleAutosave(verdict.sectionId);
     },
     [canManageContent, scheduleAutosave, writeBuffers],
   );
