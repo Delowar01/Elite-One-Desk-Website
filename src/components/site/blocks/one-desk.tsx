@@ -9,14 +9,14 @@ import { localeHref } from "@/lib/i18n/config";
 import { blockNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function OneDeskBlock({ values, ctx, editor, styles }: BlockProps) {
+export function OneDeskBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("one-desk")!;
   const fields = def.fields.find((f) => f.name === "paths")!.itemFields ?? [];
   const paths = items(values, "paths", locale, fields).map((p) => p.label);
   const ctaHref = str(values, "ctaHref");
   const ctaLabel = text(values, "ctaLabel", locale);
-  const node = blockNode({ editor, styles });
+  const node = blockNode({ editor, styles, motion });
 
   return (
     <section className="section relative overflow-clip">
@@ -25,6 +25,7 @@ export function OneDeskBlock({ values, ctx, editor, styles }: BlockProps) {
           <SectionHeading
             editor={editor}
             styles={styles}
+            motion={motion}
             fields={{ eyebrow: "eyebrow", title: "title", intro: "body" }}
             eyebrow={text(values, "eyebrow", locale)}
             title={text(values, "title", locale)}

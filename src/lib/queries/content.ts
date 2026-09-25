@@ -7,6 +7,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { TAGS } from "@/lib/cache";
 import { composePreview, composePublished, type CompositionRow } from "@/lib/cms/composition";
 import type { MotionPreset } from "@/lib/cms/motion";
+import type { MotionDocument } from "@/lib/cms/motion-doc";
 import type { StyleDocument } from "@/lib/cms/styles";
 import { readDraftStructure } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
@@ -20,6 +21,11 @@ export type RenderedSection = {
   values: Record<string, unknown>;
   /** Validated visual overrides — published ones, or the draft in preview. */
   styles: StyleDocument;
+  /**
+   * Validated advanced motion — published, or the draft in preview — or `null`
+   * for a section that has none and renders its legacy entrance alone.
+   */
+  motion: MotionDocument | null;
   /** True when this section is showing unpublished edits (preview only). */
   isDraft: boolean;
   /** Which domain those edits are in. Preview only; false on the live page. */
@@ -83,6 +89,8 @@ async function loadPage(slug: string, preview: boolean): Promise<RenderedPage | 
     draft: row.draft,
     styles: row.styles,
     draftStyles: row.draftStyles,
+    motionConfig: row.motionConfig,
+    draftMotionConfig: row.draftMotionConfig,
     isPublished: row.isPublished,
     isDraftOnly: row.isDraftOnly,
   }));

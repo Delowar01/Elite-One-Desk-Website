@@ -15,7 +15,7 @@ import type { BlockProps } from "./context";
  * from the rest — an inset panel on its own ground, so it reads as a priority
  * rather than another row in the list.
  */
-export function FeaturedServiceBlock({ values, ctx, editor, styles }: BlockProps) {
+export function FeaturedServiceBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("featured-service")!;
   const pointFields = def.fields.find((f) => f.name === "points")!.itemFields ?? [];
@@ -23,8 +23,8 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles }: BlockProps
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const ctaHref = str(values, "ctaHref", "/contact");
   const ctaLabel = text(values, "ctaLabel", locale);
-  const node = blockNode({ editor, styles });
-  const imageNode = mediaNode({ editor, styles })("field:image");
+  const node = blockNode({ editor, styles, motion });
+  const imageNode = mediaNode({ editor, styles, motion })("field:image");
 
   return (
     <section className="section-tight">

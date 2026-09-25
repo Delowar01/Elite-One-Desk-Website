@@ -66,15 +66,24 @@ export function SectionMotion({
   attrs: SectionWrapperAttrs;
   children: ReactNode;
 }) {
-  const { ref, shown } = useRevealed(motion);
-  const revealClass = revealClassOf(motion);
+  /**
+   * An advanced entrance (Batch 15) arrives already rendered: the renderer has
+   * put the motion variables and the finished opacity into `attrs`, and marked
+   * the wrapper `data-m-reveal`. All this component adds is the lifecycle — the
+   * same one, from the same shared observer — and it adds no legacy class,
+   * because the legacy rise is on `transform` and the advanced entrance must be
+   * the only thing moving this element.
+   */
+  const advanced = attrs["data-m-reveal"] !== undefined;
+  const { ref, shown } = useRevealed(advanced || motion !== "none");
+  const revealClass = advanced ? "" : revealClassOf(motion);
   const { style: nodeStyle, ...rest } = attrs;
 
   // Defensive rather than expected: the renderer does not send "none" here,
   // because a section with no entrance has no reason to become a client
   // component. If it ever did, this is the markup it must produce — the plain
   // wrapper, unchanged.
-  if (!revealClass) {
+  if (!revealClass && !advanced) {
     return (
       <div {...attrs}>
         {children}
@@ -85,10 +94,10 @@ export function SectionMotion({
   return (
     <div
       ref={ref as React.RefObject<HTMLDivElement>}
-      className={revealClass}
+      className={revealClass || undefined}
       data-shown={shown ? "true" : "false"}
-      style={revealStyle({ delay: 0, revealClass, node: nodeStyle })}
-      {...revealMarks(revealClass, rest)}
+      style={advanced ? nodeStyle : revealStyle({ delay: 0, revealClass, node: nodeStyle })}
+      {...(advanced ? rest : revealMarks(revealClass, rest))}
     >
       {children}
     </div>

@@ -28,6 +28,7 @@ import {
 } from "@/lib/cms/publish-service";
 import { hasDraft, draftKindOf } from "@/lib/cms/drafts";
 import { effectiveMotion, motionOf, readMotion, type MotionPreset } from "@/lib/cms/motion";
+import { classicMotionWrite, hasAdvancedMotion, motionPromotion } from "@/lib/cms/motion-write";
 import {
   addStructureSection,
   discardLayoutDraft,
@@ -225,6 +226,7 @@ async function sectionSnapshot(
     revision: row.revision,
     draftKind: draftKindOf(row),
     animation: effectiveMotion(row.animation, row.draftAnimation),
+    advancedMotion: hasAdvancedMotion(row),
     isDraftOnly: row.isDraftOnly,
   };
   // The key is absent rather than undefined: a save must say nothing about the
@@ -365,6 +367,7 @@ const hasAnyDraft = (row: {
   draft: unknown;
   draftStyles: unknown;
   draftAnimation: unknown;
+  draftMotionConfig: unknown;
 }): boolean => hasDraft(draftKindOf(row));
 
 /**
@@ -418,26 +421,25 @@ function promotion(row: typeof pageSections.$inferSelect): Promotion {
     values.styles = validateStyleDocument(row.draftStyles);
     values.draftStyles = null;
   }
-  if (row.draftAnimation !== null) {
-    /**
-     * Strictly, and this is the one place in the file that may not be
-     * forgiving.
-     *
-     * `motionOf` is right for reading the *live* column: a legacy value there
-     * is already published, the page has to render, and the default is the
-     * honest reading of a row whose own column defaults to it. A pending draft
-     * is the opposite situation. It is unpublished editorial intent, and an
-     * unreadable one is intent nobody can recover — so normalising it here
-     * would take a value the editor never chose and make it the live site's,
-     * on a button press that says "Publish". Refuse instead: the draft stays
-     * exactly where it is, repairable by saving a preset and removable by
-     * discarding.
-     */
-    const motion = readMotion(row.draftAnimation);
-    if (!motion) return { ok: false, reason: "motion" };
-    values.animation = motion;
-    values.draftAnimation = null;
-  }
+  /**
+   * Strictly, and this is the one place in the file that may not be forgiving.
+   *
+   * `motionOf` is right for reading the *live* column: a legacy value there is
+   * already published, the page has to render, and the default is the honest
+   * reading of a row whose own column defaults to it. A pending draft is the
+   * opposite situation. It is unpublished editorial intent, and an unreadable
+   * one is intent nobody can recover — so normalising it here would take a
+   * value the editor never chose and make it the live site's, on a button press
+   * that says "Publish". Refuse instead: the draft stays exactly where it is,
+   * repairable by saving a preset and removable by discarding.
+   *
+   * Both motion columns come out of `motionPromotion`, the decision a page
+   * publication makes too, so publishing one section and publishing the page
+   * cannot promote a section's motion differently.
+   */
+  const motion = motionPromotion(row, row.blockType);
+  if (!motion.ok) return { ok: false, reason: "motion" };
+  Object.assign(values, motion.values);
   return { ok: true, values };
 }
 
@@ -636,12 +638,23 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
    * draft stays pending, for an explicit publication later, and the strict
    * gate in `promotion()` still stands in front of it.
    */
+  /**
+   * A section with an advanced motion document (Batch 15) is written by
+   * `classicMotionWrite`, because one menu cannot say everything the document
+   * does: an untouched menu leaves it alone, and a changed one becomes the
+   * section's Base entrance inside it. `null` for every other section, which
+   * keeps exactly the Batch 9 rules below.
+   */
+  const advanced = chosen === null ? null : classicMotionWrite(section, block.type, chosen, publish);
+  if (advanced && !advanced.ok) return fail(CONFLICT.motion);
   const motion: Record<string, unknown> =
     chosen === null
       ? {}
-      : publish
-        ? { animation: chosen, draftAnimation: null }
-        : { draftAnimation: chosen === motionOf(section.animation) ? null : chosen };
+      : advanced
+        ? advanced.values
+        : publish
+          ? { animation: chosen, draftAnimation: null }
+          : { draftAnimation: chosen === motionOf(section.animation) ? null : chosen };
 
   const written = {
     // Publishing content writes content. `is_published` is the live layout's
@@ -792,6 +805,7 @@ export async function discardDraft(_prev: ActionState, form: FormData): Promise<
       draft: null,
       draftStyles: null,
       draftAnimation: null,
+      draftMotionConfig: null,
       updatedBy: session.user.id,
     });
     if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.discard);

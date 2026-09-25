@@ -7,9 +7,12 @@ import { updatePageGuarded, updatePageGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
 
 import { blocksForPage, getBlock, type BlockDef } from "./blocks";
-import { withFreshItemIds, remapStyleItemIds } from "./duplicate";
+import { withFreshItemIds, remapMotionItemIds, remapStyleItemIds } from "./duplicate";
 import { effectiveMotion } from "./motion";
+import { isEmptyMotionDocument, legacyProjection } from "./motion-doc";
+import { currentMotionDocument } from "./motion-write";
 import { validateStyleDocument } from "./styles";
+import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 import {
   DRAFT_STRUCTURE_VERSION,
   normalizeDraftStructureForPage,
@@ -448,6 +451,16 @@ export async function duplicateStructureSection(
     validateStyleDocument(source.draftStyles !== null ? source.draftStyles : source.styles),
     ids,
   );
+  /**
+   * Motion, copied the way styles are: what the original previews with — its
+   * motion draft when there is one — remapped onto the copy's fresh row ids and
+   * cut down to what the block can carry. The preset beside it is the copy's
+   * own projection of that document, so the pair it publishes is coherent.
+   */
+  const sourceMotion = currentMotionDocument(source);
+  const copiedMotion = sourceMotion
+    ? motionForBlock(remapMotionItemIds(sourceMotion, ids), source.blockType)
+    : null;
 
   let created = 0;
   let revision = 0;
@@ -478,9 +491,11 @@ export async function duplicateStructureSection(
          *
          * So `draft_animation` is deliberately left null rather than copied. A
          * motion draft is a pending *change*, and a brand-new section has not
-         * changed from anything.
+         * changed from anything. The advanced document follows the same rule:
+         * `motion_config` holds it and `draft_motion_config` stays null.
          */
-        animation: effectiveMotion(source.animation, source.draftAnimation),
+        animation: legacyProjection(copiedMotion, effectiveMotion(source.animation, source.draftAnimation)),
+        motionConfig: copiedMotion && !isEmptyMotionDocument(copiedMotion) ? copiedMotion : null,
       })
       .returning({ id: pageSections.id });
     created = row!.id;

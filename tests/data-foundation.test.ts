@@ -502,8 +502,8 @@ describe("a draft structure is an order, checked against the page that owns it",
 
 describe("a version snapshot is of what was published, and of nothing global", () => {
   const rows = [
-    { id: 5, blockType: "hero", isPublished: true, published: { headline: { en: "A", ar: "أ" } }, styles: { v: 1, nodes: { root: { base: { align: "center" as const } } } }, animation: "fade-up" },
-    { id: 6, blockType: "faq", isPublished: false, published: null, styles: null, animation: "" },
+    { id: 5, blockType: "hero", isPublished: true, published: { headline: { en: "A", ar: "أ" } }, styles: { v: 1, nodes: { root: { base: { align: "center" as const } } } }, animation: "fade-up", motionConfig: null },
+    { id: 6, blockType: "faq", isPublished: false, published: null, styles: null, animation: "", motionConfig: null },
   ];
 
   test("rows become entries, in order, with the styles revalidated", () => {
@@ -680,8 +680,8 @@ describe("a stored snapshot is not a way round the CMS's own rules", () => {
     assert.deepEqual(snapshot.sections.map((section) => section.blockType), ["hero"]);
 
     const plan = planRestoreFrom(1, snapshot, [
-      { id: 5, blockType: "hero" },
-      { id: 6, blockType: "no-such-block" },
+      { id: 5, blockType: "hero", motionConfig: null },
+      { id: 6, blockType: "no-such-block", motionConfig: null },
     ]);
     assert.deepEqual(plan.drafts.map((d) => d.sectionId), [5]);
     assert.deepEqual(plan.untouched, [6], "the unknown section should be left alone");
@@ -714,7 +714,7 @@ describe("a stored snapshot is not a way round the CMS's own rules", () => {
       ],
     } as unknown as PageSnapshot;
 
-    const plan = planRestoreFrom(1, handmade, [{ id: 5, blockType: "rich-text" }]);
+    const plan = planRestoreFrom(1, handmade, [{ id: 5, blockType: "rich-text", motionConfig: null }]);
     const draft = plan.drafts[0]!.draft;
     assert.ok(!(draft.body as { en: string }).en.includes("<script"), "unsanitised markup reached a draft");
     assert.ok(!("evil" in draft));
@@ -751,7 +751,7 @@ describe("restoring a version writes drafts and only drafts", () => {
     validateBlockValues(getBlock(blockType)!, values);
 
   test("a section that is still there gets its history as a draft", () => {
-    const plan = planRestoreFrom(1, snapshot([entry(5, "hero")]), [{ id: 5, blockType: "hero" }]);
+    const plan = planRestoreFrom(1, snapshot([entry(5, "hero")]), [{ id: 5, blockType: "hero", motionConfig: null }]);
 
     assert.equal(plan.recreate.length, 0);
     assert.deepEqual(plan.drafts, [
@@ -760,6 +760,9 @@ describe("restoring a version writes drafts and only drafts", () => {
         draft: validated("hero", { headline: { en: "hero", ar: "hero" } }),
         draftStyles: { v: 1, nodes: {} },
         draftAnimation: "fade-up",
+        // Neither the version nor the section has advanced motion, so there is
+        // nothing for a motion document draft to change.
+        draftMotionConfig: null,
       },
     ]);
     assert.deepEqual(plan.drafts[0]!.draft.headline, { en: "hero", ar: "hero" }, "the copy did not survive");
@@ -770,7 +773,7 @@ describe("restoring a version writes drafts and only drafts", () => {
   });
 
   test("an id reused by a different kind of section is not a match", () => {
-    const plan = planRestoreFrom(1, snapshot([entry(5, "hero")]), [{ id: 5, blockType: "faq" }]);
+    const plan = planRestoreFrom(1, snapshot([entry(5, "hero")]), [{ id: 5, blockType: "faq", motionConfig: null }]);
     assert.equal(plan.drafts.length, 0);
     assert.deepEqual(plan.recreate.map((r) => r.blockType), ["hero"]);
     assert.deepEqual(plan.untouched, [5], "the live FAQ should be left exactly as it is");
@@ -780,7 +783,7 @@ describe("restoring a version writes drafts and only drafts", () => {
     const plan = planRestoreFrom(
       1,
       snapshot([entry(5, "hero"), entry(6, "process"), entry(7, "faq")]),
-      [{ id: 5, blockType: "hero" }, { id: 7, blockType: "faq" }],
+      [{ id: 5, blockType: "hero", motionConfig: null }, { id: 7, blockType: "faq", motionConfig: null }],
     );
 
     assert.deepEqual(plan.order, [
@@ -793,8 +796,8 @@ describe("restoring a version writes drafts and only drafts", () => {
 
   test("a live section the snapshot never mentioned is left alone, not deleted", () => {
     const plan = planRestoreFrom(1, snapshot([entry(5, "hero")]), [
-      { id: 5, blockType: "hero" },
-      { id: 8, blockType: "stats" },
+      { id: 5, blockType: "hero", motionConfig: null },
+      { id: 8, blockType: "stats", motionConfig: null },
     ]);
     assert.deepEqual(plan.untouched, [8]);
     assert.ok(!plan.order.some((slot) => slot.kind === "existing" && slot.sectionId === 8));
@@ -802,7 +805,7 @@ describe("restoring a version writes drafts and only drafts", () => {
 
   test("one live row is claimed once, however many times the snapshot names it", () => {
     const plan = planRestoreFrom(1, snapshot([entry(5, "hero"), entry(5, "hero")]), [
-      { id: 5, blockType: "hero" },
+      { id: 5, blockType: "hero", motionConfig: null },
     ]);
     assert.equal(plan.drafts.length, 1);
     assert.equal(plan.recreate.length, 1, "the second should become its own row");
@@ -811,7 +814,7 @@ describe("restoring a version writes drafts and only drafts", () => {
 
   test("hidden stays hidden through the restore", () => {
     const plan = planRestoreFrom(1, snapshot([entry(5, "hero", { visible: false }), entry(9, "faq", { visible: false })]), [
-      { id: 5, blockType: "hero" },
+      { id: 5, blockType: "hero", motionConfig: null },
     ]);
     assert.deepEqual(plan.order.map((slot) => slot.visible), [false, false]);
     assert.equal(plan.recreate[0]!.visible, false);
@@ -821,7 +824,7 @@ describe("restoring a version writes drafts and only drafts", () => {
     const plan = planRestoreFrom(
       1,
       { v: PAGE_SNAPSHOT_VERSION, sections: [entry(5, "hero", { styles: { v: 1, nodes: { "div > p": { base: { align: "end" } }, root: { base: { align: "end" } } } } })] } as PageSnapshot,
-      [{ id: 5, blockType: "hero" }],
+      [{ id: 5, blockType: "hero", motionConfig: null }],
     );
     assert.deepEqual(plan.drafts[0]!.draftStyles, { v: 1, nodes: { root: { base: { align: "end" } } } });
   });

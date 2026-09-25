@@ -3,15 +3,15 @@ import { mediaId, text } from "@/lib/cms/values";
 import { blockNode, mediaNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function PageHeroBlock({ values, ctx, index, editor, styles }: BlockProps) {
+export function PageHeroBlock({ values, ctx, index, editor, styles, motion }: BlockProps) {
   const { locale } = ctx;
   const eyebrow = text(values, "eyebrow", locale);
   const title = text(values, "title", locale);
   const lead = text(values, "lead", locale);
   const background = ctx.media.get(mediaId(values, "backgroundImage") ?? -1) ?? null;
   const Heading = index === 0 ? "h1" : "h2";
-  const node = blockNode({ editor, styles });
-  const backgroundNode = mediaNode({ editor, styles })("field:backgroundImage");
+  const node = blockNode({ editor, styles, motion });
+  const backgroundNode = mediaNode({ editor, styles, motion })("field:backgroundImage");
 
   return (
     <section

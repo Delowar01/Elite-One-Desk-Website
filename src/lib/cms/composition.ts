@@ -1,4 +1,5 @@
 import { effectiveMotion, motionOf, type MotionPreset } from "./motion";
+import { readMotionDocument, type MotionDocument } from "./motion-doc";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 import { type DraftStructure } from "./structure";
 
@@ -54,6 +55,17 @@ export type CompositionRow = {
    * from no draft at all if emptiness were the test.
    */
   draftStyles: Record<string, unknown> | null;
+  /**
+   * Published advanced motion (Batch 15), or `null` for a section that has
+   * never had any — which renders exactly the legacy entrance in `animation`.
+   */
+  motionConfig: Record<string, unknown> | null;
+  /**
+   * Pending advanced motion, or `null` for none. The same `null`-versus-empty
+   * rule as the style draft: an empty document is a real draft that removes
+   * every advanced motion when it is published.
+   */
+  draftMotionConfig: Record<string, unknown> | null;
   isPublished: boolean;
   isDraftOnly: boolean;
 };
@@ -76,6 +88,13 @@ export type ComposedSection = {
    * anything into a style property.
    */
   styles: StyleDocument;
+  /**
+   * The advanced motion this render should apply, already validated, or `null`
+   * when there is none — in which case the section renders its legacy entrance
+   * and nothing else, byte for byte as before Batch 15. Not yet cut down to the
+   * block's capabilities; `SectionRenderer` does that, where the block is known.
+   */
+  motion: MotionDocument | null;
   /** Any of the three domains has something unpublished. */
   isDraft: boolean;
   /** …and which, because the three are published and discarded together but
@@ -107,6 +126,7 @@ const published = (row: CompositionRow): ComposedSection => ({
   animation: motionOf(row.animation),
   values: row.published ?? {},
   styles: validateStyleDocument(row.styles),
+  motion: readMotionDocument(row.motionConfig),
   isDraft: false,
   hasContentDraft: false,
   hasStyleDraft: false,
@@ -118,7 +138,9 @@ const published = (row: CompositionRow): ComposedSection => ({
 const editing = (row: CompositionRow, visible = row.isPublished): ComposedSection => {
   const hasContentDraft = row.draft !== null;
   const hasStyleDraft = row.draftStyles !== null;
-  const hasMotionDraft = row.draftAnimation !== null;
+  // Motion is one domain with two columns: a pending preset, a pending
+  // document, or both are all "a motion draft".
+  const hasMotionDraft = row.draftAnimation !== null || row.draftMotionConfig !== null;
   return {
     id: row.id,
     blockType: row.blockType,
@@ -139,6 +161,8 @@ const editing = (row: CompositionRow, visible = row.isPublished): ComposedSectio
     // The draft document wins whole, including when it is empty — that is what
     // a reset looks like before it is published.
     styles: validateStyleDocument(hasStyleDraft ? row.draftStyles : row.styles),
+    // The draft document wins whole when there is one, exactly as styles do.
+    motion: readMotionDocument(row.draftMotionConfig !== null ? row.draftMotionConfig : row.motionConfig),
     isDraft: hasContentDraft || hasStyleDraft || hasMotionDraft,
     hasContentDraft,
     hasStyleDraft,

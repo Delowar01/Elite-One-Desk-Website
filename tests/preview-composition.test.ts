@@ -32,6 +32,10 @@ const row = (
   draft: null,
   styles: null,
   draftStyles: null,
+  // Batch 15: a section with no advanced motion, which is every section these
+  // tests describe.
+  motionConfig: null,
+  draftMotionConfig: null,
   isPublished: true,
   isDraftOnly: false,
   ...extra,

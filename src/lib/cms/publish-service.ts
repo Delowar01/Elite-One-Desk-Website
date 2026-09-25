@@ -15,7 +15,7 @@ import { recordRestorePointIn } from "@/lib/versions";
 
 import { getBlock } from "./blocks";
 import { draftDomainsOf } from "./drafts";
-import { readMotion } from "./motion";
+import { motionPromotion, type MotionColumns } from "./motion-write";
 import { validateStyleDocument } from "./styles";
 import {
   liveStructure,
@@ -336,20 +336,25 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
       const byId = new Map(rows.map((row) => [row.id, row]));
 
       /**
-       * Every motion draft that would actually become live, validated before
-       * anything is written.
+       * Every motion draft that would actually become live, decided and
+       * validated before anything is written.
        *
        * Only the ones being kept: a section on its way out is deleted, and
        * refusing to publish a page because a row that is about to cease to
        * exist holds an unreadable value would be strictness for its own sake.
+       *
+       * Both motion columns come out of one decision (`motionPromotion`), the
+       * same one a single-section publish makes: the advanced document and
+       * the legacy preset the release in `deploy/previous-release` reads are
+       * promoted together, in this transaction, or not at all.
        */
-      const motionFor = new Map<number, string>();
+      const motionFor = new Map<number, MotionColumns>();
       for (const [sectionId] of listed) {
         const row = byId.get(sectionId);
-        if (!row || row.draftAnimation === null) continue;
-        const motion = readMotion(row.draftAnimation);
-        if (!motion) throw new PublishStopped("invalid_motion");
-        motionFor.set(sectionId, motion);
+        if (!row) continue;
+        const promotion = motionPromotion(row, row.blockType);
+        if (!promotion.ok) throw new PublishStopped("invalid_motion");
+        if (Object.keys(promotion.values).length) motionFor.set(sectionId, promotion.values);
       }
 
       /* --- what each kept row becomes ---------------------------------- */
@@ -375,10 +380,7 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
           values.draftStyles = null;
         }
         const motion = motionFor.get(entry.sectionId);
-        if (motion !== undefined) {
-          values.animation = motion;
-          values.draftAnimation = null;
-        }
+        if (motion !== undefined) Object.assign(values, motion);
         if (row.draft !== null || row.draftStyles !== null || motion !== undefined) promoted += 1;
 
         // Contiguous from zero, in the order the draft listed them, so the
@@ -564,7 +566,10 @@ export async function discardPageChanges(context: {
         const result = await updateSectionGuardedIn(tx, row.id, row.revision, {
           draft: null,
           draftStyles: null,
+          // Both motion columns: a document left behind would keep the page
+          // publishable after the screen said it was clean.
           draftAnimation: null,
+          draftMotionConfig: null,
           updatedBy: userId,
         });
         if (!result.ok) throw new PublishStopped("conflict");

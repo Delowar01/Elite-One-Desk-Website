@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import type { MotionDocument } from "@/lib/cms/motion-doc";
 import { blockNode } from "@/lib/cms/node";
 import type { StyleDocument } from "@/lib/cms/styles";
 import type { EditorRender } from "@/lib/visual-editor/render";
@@ -32,6 +33,8 @@ type Props = {
    */
   editor?: EditorRender;
   styles?: StyleDocument;
+  /** The block's motion, passed straight through beside its styles. */
+  motion?: MotionDocument | null;
   fields?: { eyebrow?: string; title?: string; intro?: string };
 };
 
@@ -45,11 +48,12 @@ export function SectionHeading({
   level = 2,
   editor,
   styles,
+  motion,
   fields,
 }: Props) {
   if (!eyebrow && !title && !intro && !children) return null;
   const Tag = level === 1 ? "h1" : "h2";
-  const node = blockNode({ editor, styles });
+  const node = blockNode({ editor, styles, motion });
   const at = (name: string | undefined) => (name ? node(`field:${name}`) : {});
 
   return (

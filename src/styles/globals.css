@@ -96,6 +96,9 @@
   --duration-fast: 180ms;
   --duration-base: 380ms;
   --duration-slow: 760ms;
+  /* The one duration longer than the site's own motion uses, offered to the
+     Visual Editor as "Cinematic" and defined here, once, beside the others. */
+  --duration-cinematic: 1200ms;
 
   --container-site: 1240px;
   --container-wide: 1440px;
@@ -1351,4 +1354,265 @@
   /* A revealed element's opacity is its finished state, so it travels as the
      property the reveal rules read rather than as `opacity` itself. */
   [data-rs-m~="reveal-opacity"] { --eod-node-opacity: var(--rs-m-opacity) !important; }
+}
+
+/* ==========================================================================
+   Visual Editor — advanced motion (Batch 15a)
+   ==========================================================================
+
+   The whole of the advanced entrance mechanism. Like the responsive style
+   rules above it, every selector, property, media condition, keyframe name and
+   variable name here is written in source. A MotionDocument contributes values
+   drawn from `src/lib/cms/motion-css.ts` and the names of the variables a
+   breakpoint overrides, and nothing else.
+
+   **The legacy presets are untouched.** A section or node with no advanced
+   motion still wears `.reveal` / `.reveal-left` / `.reveal-scale` /
+   `.reveal-fade` and animates `transform` exactly as it did in Batch 9. The
+   rules below only ever match `[data-m-reveal]` and `[data-m-group]`, which the
+   renderer writes only where an advanced document asked for them.
+
+   **Transform ownership.** An advanced entrance never touches `transform`. It
+   moves with the individual `translate` and `scale` properties, which compose
+   with `transform` instead of replacing it — so a `.btn:hover` lift on the
+   same element survives an editor's entrance, and the entrance survives the
+   hover. Opacity, `filter` and `clip-path` finish the set.
+
+   **Opacity is a multiplier.** `--m-op` is 0 for an entrance that fades and 1
+   for one that does not, and the element's opacity is that fraction of its own
+   finished Style opacity, `--eod-node-opacity`. The Batch 14 rule therefore
+   still holds: a fade starts at 0 and lands on the editor's number. `--m-hold`
+   is the same fraction while the element waits to be reached.
+
+   **A mask is only ever clipped while it runs.** It waits invisible (`--m-hold`
+   0) rather than clipped, because Chromium's IntersectionObserver counts an
+   element's own `clip-path`: a box clipped away entirely is never "reached",
+   and would wait for ever. It wipes with a keyframe rather than a transition,
+   because a transition would have to rest on a clip at the box edge — which
+   would crop a Batch 14 shadow or glow for as long as the page was open. The
+   keyframe runs the one moving edge from 100% to 0% and then hands back
+   `clip-path: none`.
+
+   **No script, no hidden state.** Everything that hides lives inside
+   `@media (scripting: enabled)`, and reduced motion and print both force the
+   finished state below. A page without JavaScript shows everything at once.
+   ========================================================================== */
+
+/* A finished opacity belongs to the element that declares it.
+
+   Registered as non-inheriting because it is read by every revealed element —
+   a legacy `.reveal`, an advanced node, a staggered row — and a custom property
+   inherits by default. A section at Style opacity 0.5 would otherwise hand
+   0.5 to every revealed card inside it, which would then land at 0.5 of the
+   section's 0.5: a quarter, and a number nobody chose. Each element that has a
+   finished opacity declares it on itself (`revealStyle`, `withMotion`), so
+   nothing depends on inheriting one. A browser that does not know `@property`
+   keeps the inheriting behaviour it has always had. */
+@property --eod-node-opacity {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
+/* The resting values, declared on the element itself so a node nested inside a
+   staggering list does not inherit its parent's geometry. Every one of them
+   describes an element that is simply there. */
+[data-m-reveal],
+[data-m-group] {
+  --m-op: 1;
+  --m-hold: 1;
+  --m-anim: none;
+  --m-x: 0px;
+  --m-y: 0px;
+  --m-scale: 1;
+  --m-blur: 0px;
+  --m-clip-t: -100vmax;
+  --m-clip-e: -100vmax;
+  --m-clip-b: -100vmax;
+  --m-clip-s: -100vmax;
+  /* The legacy entrance timing, so an advanced entrance nobody has retimed
+     moves at exactly the speed and curve every other reveal on the site does. */
+  --m-dur: var(--duration-slow);
+  --m-ease: var(--ease-out-expo);
+  --m-delay: 0ms;
+  --m-stagger: 0ms;
+  /* Logical to physical, once. The inline pair swaps with the writing
+     direction, which is what makes a stored `start` the left edge in English
+     and the right edge in Arabic. */
+  --m-sign: 1;
+  --m-clip-r: var(--m-clip-e);
+  --m-clip-l: var(--m-clip-s);
+}
+[dir="rtl"] [data-m-reveal],
+[dir="rtl"] [data-m-group] {
+  --m-sign: -1;
+  --m-clip-r: var(--m-clip-s);
+  --m-clip-l: var(--m-clip-e);
+}
+
+/* A staggered list's rows, in presentation order. The index is the row's place
+   in the DOM *now*, read by the browser, never stored: reordering a list
+   reorders its cascade, and no row's identity depends on where it sits. Eight
+   is `STAGGER_CAP` in motion-css.ts — every row after the ninth arrives with
+   the ninth, so no list waits more than eight steps. */
+[data-m-group] > * { --m-i: 0; }
+[data-m-group] > :nth-child(2) { --m-i: 1; }
+[data-m-group] > :nth-child(3) { --m-i: 2; }
+[data-m-group] > :nth-child(4) { --m-i: 3; }
+[data-m-group] > :nth-child(5) { --m-i: 4; }
+[data-m-group] > :nth-child(6) { --m-i: 5; }
+[data-m-group] > :nth-child(7) { --m-i: 6; }
+[data-m-group] > :nth-child(8) { --m-i: 7; }
+[data-m-group] > :nth-child(n + 9) { --m-i: 8; }
+
+/* An advanced element's finished opacity, outside the scripting query — the
+   state a page without JavaScript, a print and a reduced-motion visitor all
+   see, and the state every entrance below lands on. The same rule the legacy
+   `.reveal` has always had. */
+[data-m-reveal],
+[data-m-group] > * {
+  opacity: var(--eod-node-opacity, 1);
+}
+
+/* The entrance itself, as keyframes rather than a transition.
+
+   A transition would have to be declared in `transition`, and an unlayered
+   `transition` here would replace the whole list a component already declares
+   in its own layer — a call-to-action given an entrance would lose its hover
+   transition. An animation touches only `animation`.
+
+   `backwards`, not `both`: the start values hold through the delay, so a row
+   waiting for its turn stays hidden, but the finished values are *not* held
+   afterwards. Once an entrance is over the element's own rules own its
+   `translate` and `scale` again, which is what lets anything that later moves
+   it on hover compose with it instead of being pinned under a filled
+   animation. */
+@keyframes eod-m-enter {
+  from {
+    opacity: calc(var(--m-op) * var(--eod-node-opacity, 1));
+    translate: calc(var(--m-x) * var(--m-sign)) var(--m-y);
+    scale: var(--m-scale);
+    filter: blur(var(--m-blur));
+  }
+  to {
+    opacity: var(--eod-node-opacity, 1);
+    translate: none;
+    scale: none;
+    filter: none;
+  }
+}
+
+@keyframes eod-m-mask {
+  from {
+    clip-path: inset(var(--m-clip-t) var(--m-clip-r) var(--m-clip-b) var(--m-clip-l));
+  }
+  99.9% {
+    clip-path: inset(
+      min(var(--m-clip-t), 0%) min(var(--m-clip-r), 0%) min(var(--m-clip-b), 0%) min(var(--m-clip-l), 0%)
+    );
+  }
+  to {
+    clip-path: none;
+  }
+}
+
+@media (scripting: enabled) {
+  /* Waiting to be reached: the entrance's start values, held statically so
+     nothing flashes between the first paint and the observer's answer. Never a
+     clip — see the mask note above. */
+  [data-m-reveal]:not([data-shown="true"]),
+  [data-m-group]:not([data-shown="true"]) > * {
+    opacity: calc(var(--m-hold) * var(--eod-node-opacity, 1));
+    translate: calc(var(--m-x) * var(--m-sign)) var(--m-y);
+    scale: var(--m-scale);
+    filter: blur(var(--m-blur));
+  }
+
+  /* Longhands rather than the `animation` shorthand: in the shorthand the
+     keyword `none` for a second, idle animation is read as its fill mode, and
+     `backwards` then becomes that animation's *name*. A list of names is
+     unambiguous, and every other value applies to both. */
+  [data-m-reveal][data-shown="true"] {
+    animation-name: eod-m-enter, var(--m-anim);
+    animation-duration: var(--m-dur);
+    animation-timing-function: var(--m-ease);
+    animation-delay: var(--m-delay);
+    animation-fill-mode: backwards;
+  }
+  /* A list's rows share its lifecycle and take their turn: one observer on the
+     list, a delay per row. */
+  [data-m-group][data-shown="true"] > * {
+    animation-name: eod-m-enter, var(--m-anim);
+    animation-duration: var(--m-dur);
+    animation-timing-function: var(--m-ease);
+    animation-delay: calc(var(--m-delay) + var(--m-i) * var(--m-stagger));
+    animation-fill-mode: backwards;
+  }
+}
+
+/* A narrower width overrides a variable, never a rule. One fixed promote rule
+   per variable per breakpoint, from the list the element publishes in
+   `data-m-t` / `data-m-m` — the same contract as `data-rs-t` above, and the
+   same reason for `!important`: the Base value is inline. Mobile is written
+   after tablet, so a phone inherits through the tablet branch. */
+@media screen and (max-width: 1024px) {
+  [data-m-t~="op"] { --m-op: var(--m-t-op) !important; }
+  [data-m-t~="hold"] { --m-hold: var(--m-t-hold) !important; }
+  [data-m-t~="anim"] { --m-anim: var(--m-t-anim) !important; }
+  [data-m-t~="x"] { --m-x: var(--m-t-x) !important; }
+  [data-m-t~="y"] { --m-y: var(--m-t-y) !important; }
+  [data-m-t~="scale"] { --m-scale: var(--m-t-scale) !important; }
+  [data-m-t~="blur"] { --m-blur: var(--m-t-blur) !important; }
+  [data-m-t~="clip-t"] { --m-clip-t: var(--m-t-clip-t) !important; }
+  [data-m-t~="clip-e"] { --m-clip-e: var(--m-t-clip-e) !important; }
+  [data-m-t~="clip-b"] { --m-clip-b: var(--m-t-clip-b) !important; }
+  [data-m-t~="clip-s"] { --m-clip-s: var(--m-t-clip-s) !important; }
+  [data-m-t~="dur"] { --m-dur: var(--m-t-dur) !important; }
+  [data-m-t~="ease"] { --m-ease: var(--m-t-ease) !important; }
+  [data-m-t~="delay"] { --m-delay: var(--m-t-delay) !important; }
+  [data-m-t~="stagger"] { --m-stagger: var(--m-t-stagger) !important; }
+}
+
+@media screen and (max-width: 640px) {
+  [data-m-m~="op"] { --m-op: var(--m-m-op) !important; }
+  [data-m-m~="hold"] { --m-hold: var(--m-m-hold) !important; }
+  [data-m-m~="anim"] { --m-anim: var(--m-m-anim) !important; }
+  [data-m-m~="x"] { --m-x: var(--m-m-x) !important; }
+  [data-m-m~="y"] { --m-y: var(--m-m-y) !important; }
+  [data-m-m~="scale"] { --m-scale: var(--m-m-scale) !important; }
+  [data-m-m~="blur"] { --m-blur: var(--m-m-blur) !important; }
+  [data-m-m~="clip-t"] { --m-clip-t: var(--m-m-clip-t) !important; }
+  [data-m-m~="clip-e"] { --m-clip-e: var(--m-m-clip-e) !important; }
+  [data-m-m~="clip-b"] { --m-clip-b: var(--m-m-clip-b) !important; }
+  [data-m-m~="clip-s"] { --m-clip-s: var(--m-m-clip-s) !important; }
+  [data-m-m~="dur"] { --m-dur: var(--m-m-dur) !important; }
+  [data-m-m~="ease"] { --m-ease: var(--m-m-ease) !important; }
+  [data-m-m~="delay"] { --m-delay: var(--m-m-delay) !important; }
+  [data-m-m~="stagger"] { --m-stagger: var(--m-m-stagger) !important; }
+}
+
+/* Reduced motion wins over every device choice, and print shows the finished
+   page. Written last so nothing above can outrank them; `!important` because
+   the hidden state and a mask's keyframe would otherwise hold. */
+@media (prefers-reduced-motion: reduce) {
+  [data-m-reveal],
+  [data-m-group] > * {
+    opacity: var(--eod-node-opacity, 1) !important;
+    translate: none !important;
+    scale: none !important;
+    filter: none !important;
+    clip-path: none !important;
+    animation: none !important;
+  }
+}
+@media print {
+  [data-m-reveal],
+  [data-m-group] > * {
+    opacity: var(--eod-node-opacity, 1) !important;
+    translate: none !important;
+    scale: none !important;
+    filter: none !important;
+    clip-path: none !important;
+    animation: none !important;
+  }
 }

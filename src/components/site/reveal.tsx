@@ -4,7 +4,9 @@ import { useEffect, useRef, useState, type CSSProperties, type ElementType, type
 
 import { MOTION_CLASS, type MotionPreset } from "@/lib/cms/motion";
 import type { NodeAttrs, ResponsiveAttrs } from "@/lib/cms/node";
-import { REVEAL_OPACITY_PROPERTY, RESPONSIVE_ATTR } from "@/lib/cms/style-css";
+import { FINAL_OPACITY, renameRevealOpacity, RESPONSIVE_ATTR } from "@/lib/cms/style-css";
+
+import { whenReached } from "./motion-observer";
 
 type Props = {
   children: ReactNode;
@@ -48,48 +50,38 @@ export const revealClassOf = (variant: MotionPreset): string => MOTION_CLASS[var
  * `Reveal` wraps its children in a tag of its choosing. A section's entrance
  * cannot do that — the section wrapper is already the editor's `root` node and
  * adding an element around it would move every address and every measured
- * rectangle — so it needs the same observer on an element it renders itself.
+ * rectangle — so it needs the same lifecycle on an element it renders itself.
  * One hook, two callers, one definition of when something counts as revealed.
  *
- * `variant === "none"` attaches nothing: there is no lifecycle to run, and an
- * observer that could only ever set a flag nobody reads is still an observer
- * per section on every page.
+ * From Batch 15 the observing is done by the page's one shared observer
+ * (`motion-observer.ts`) rather than by an observer per element. The semantics
+ * are the ones this hook always had: the same margin and threshold, shown once
+ * on the first intersection and never observed again, shown at once for a
+ * visitor who prefers reduced motion.
+ *
+ * `active: false` attaches nothing: there is no lifecycle to run, and a
+ * registration that could only ever set a flag nobody reads is still work per
+ * element on every page.
  */
-export function useRevealed(variant: MotionPreset) {
+export function useRevealed(active: boolean) {
   const ref = useRef<HTMLElement>(null);
   const [shown, setShown] = useState(false);
 
   useEffect(() => {
     const node = ref.current;
-    if (!node || variant === "none") return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      setShown(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            setShown(true);
-            observer.disconnect();
-          }
-        }
-      },
-      { rootMargin: "0px 0px -8% 0px", threshold: 0.08 },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [variant]);
+    if (!node || !active) return;
+    return whenReached(node, () => setShown(true));
+  }, [active]);
 
   return { ref, shown };
 }
 
 /**
  * The custom property the stylesheet reads a revealed element's finished
- * opacity from. Written here and in `globals.css`, and nowhere else: it is a
- * name in source, never a value from the database.
+ * opacity from. Defined beside the style renderer, where server code can reach
+ * it; exported from here as well because this is where it has always lived.
  */
-export const FINAL_OPACITY = "--eod-node-opacity";
+export { FINAL_OPACITY };
 
 /**
  * The node's own attributes, with any responsive opacity renamed.
@@ -105,13 +97,7 @@ export const FINAL_OPACITY = "--eod-node-opacity";
  * With `variant="none"` there is no reveal class and nothing is renamed: the
  * element takes the ordinary `opacity` rule, at every width.
  */
-const renameOpacity = (list: string | undefined): string | undefined =>
-  list === undefined
-    ? undefined
-    : list
-        .split(" ")
-        .map((name) => (name === "opacity" ? REVEAL_OPACITY_PROPERTY : name))
-        .join(" ");
+const renameOpacity = renameRevealOpacity;
 
 export function revealMarks<T extends ResponsiveAttrs>(revealClass: string, marks: T): T {
   if (!revealClass) return marks;
@@ -191,9 +177,23 @@ export function Reveal({
   stagger,
   nodeAttrs,
 }: Props) {
-  const { ref, shown } = useRevealed(variant);
+  /**
+   * Who owns this element's entrance — decided from the node's own marks, so
+   * one element never has two animations on it.
+   *
+   *   · A row of a list that sends its rows in turn (`data-m-member`) belongs
+   *     to the list: the list's one lifecycle drives it and this component
+   *     stands down completely — no class, no observer.
+   *   · A node with an advanced entrance of its own (`data-m-reveal`) is moved
+   *     by the advanced rules, so the legacy class, whose rise is on
+   *     `transform`, is not applied on top of it.
+   *   · Anything else is exactly the legacy reveal it has always been.
+   */
+  const member = nodeAttrs?.["data-m-member"] !== undefined;
+  const advanced = !member && nodeAttrs?.["data-m-reveal"] !== undefined;
+  const { ref, shown } = useRevealed(member ? false : advanced ? true : variant !== "none");
 
-  const revealClass = revealClassOf(variant);
+  const revealClass = member || advanced ? "" : revealClassOf(variant);
   const classes = [revealClass, className].filter(Boolean).join(" ");
   const { style: nodeStyle, ...rest } = nodeAttrs ?? {};
   const style = revealStyle({ delay, stagger, revealClass, node: nodeStyle });

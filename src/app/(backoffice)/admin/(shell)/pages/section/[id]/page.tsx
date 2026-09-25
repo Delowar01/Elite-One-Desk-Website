@@ -7,6 +7,7 @@ import { requirePermission } from "@/lib/auth/guard";
 import { getBlock } from "@/lib/cms/blocks";
 import { draftKindOf } from "@/lib/cms/drafts";
 import { effectiveMotion } from "@/lib/cms/motion";
+import { hasAdvancedMotion } from "@/lib/cms/motion-write";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
 import { media, pageSections, pages } from "@/lib/db/schema";
@@ -99,6 +100,7 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
              * column is not null and this read does not change that.
              */
             animation: effectiveMotion(row.section.animation, row.section.draftAnimation),
+            advancedMotion: hasAdvancedMotion(row.section),
             draftKind: draftKindOf(row.section),
             isDraftOnly: row.section.isDraftOnly,
             values,

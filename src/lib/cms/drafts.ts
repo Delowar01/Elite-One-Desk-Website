@@ -29,7 +29,21 @@ export type DraftKind =
   | "style+motion"
   | "content+style+motion";
 
-export type DraftRow = { draft: unknown; draftStyles: unknown; draftAnimation: unknown };
+/**
+ * The draft columns of a section row.
+ *
+ * `draftMotionConfig` is required rather than optional on purpose. Motion has
+ * two draft columns since Batch 15, and a reader that forgot the second would
+ * call a section with only element motion pending "published" — the Publish
+ * button would stay disabled over work that exists. Required, the compiler
+ * finds every such reader.
+ */
+export type DraftRow = {
+  draft: unknown;
+  draftStyles: unknown;
+  draftAnimation: unknown;
+  draftMotionConfig: unknown;
+};
 
 const pending = (value: unknown): boolean => value !== null && value !== undefined;
 
@@ -40,16 +54,17 @@ const pending = (value: unknown): boolean => value !== null && value !== undefin
  * not, so it is decided here once rather than by whatever order a caller
  * happened to test in.
  *
- * `null` means no draft in every domain. An empty style document and the
- * preset `"none"` are both *real* drafts — the first removes every override
- * when published, the second removes the section's entrance — so emptiness and
- * falsiness are never the test.
+ * `null` means no draft in every domain. An empty style document, an empty
+ * motion document and the preset `"none"` are all *real* drafts — the first two
+ * remove every override when published, the third removes the section's
+ * entrance — so emptiness and falsiness are never the test.
  */
 export function draftDomainsOf(row: DraftRow): DraftDomain[] {
   const domains: DraftDomain[] = [];
   if (pending(row.draft)) domains.push("content");
   if (pending(row.draftStyles)) domains.push("style");
-  if (pending(row.draftAnimation)) domains.push("motion");
+  // One domain, two columns: a pending preset or a pending document.
+  if (pending(row.draftAnimation) || pending(row.draftMotionConfig)) domains.push("motion");
   return domains;
 }
 

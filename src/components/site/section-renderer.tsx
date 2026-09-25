@@ -12,9 +12,18 @@ import { getMediaMap } from "@/lib/queries/site";
 import type { RenderedSection } from "@/lib/queries/content";
 import { getSettings, whatsappLink } from "@/lib/settings";
 import { motionOf } from "@/lib/cms/motion";
-import { blockNode } from "@/lib/cms/node";
+import { animatesAnywhere, motionStyle } from "@/lib/cms/motion-css";
+import {
+  effectiveSectionTarget,
+  legacySectionPreset,
+  type MotionDocument,
+  type MotionTarget,
+} from "@/lib/cms/motion-doc";
+import { blockNode, withMotion } from "@/lib/cms/node";
+import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 import type { EditorRender } from "@/lib/visual-editor/render";
 
+import { MotionRuntime } from "./motion-runtime";
 import { SectionMotion, type SectionWrapperAttrs } from "./section-motion";
 import { ContactDetailsBlock } from "./blocks/contact-details";
 import type { BlockContext, BlockProps } from "./blocks/context";
@@ -100,6 +109,23 @@ export async function buildBlockContext(locale: Locale): Promise<BlockContext> {
 }
 
 /**
+ * A short, stable fingerprint of the page's node motion.
+ *
+ * `MotionRuntime` re-scans the page when this changes, so it has to change when
+ * the motion does; it is a hash rather than the document itself because it is
+ * serialised into the page, and a page with a lot of motion should not ship all
+ * of it twice.
+ */
+function fingerprint(value: unknown): string {
+  const text = JSON.stringify(value);
+  let hash = 5381;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/**
  * `editorMode` is the one switch that turns the public renderer into a
  * selectable canvas, and it is passed in from the server rather than sniffed.
  *
@@ -122,6 +148,29 @@ export async function SectionRenderer({
 }) {
   const context = ctx ?? (await buildBlockContext(locale));
 
+  /**
+   * Each section's advanced motion, cut down to what its block's nodes can
+   * carry. Done here because this is where the block is known, and done at
+   * render as well as at save because it is a correctness rule, not a panel
+   * preference: an entrance stored against an element that already runs its
+   * own keyframes would be a second animation on that element's opacity.
+   */
+  const motions: (MotionDocument | null)[] = sections.map((section) =>
+    section.motion ? motionForBlock(section.motion, section.blockType) : null,
+  );
+
+  /**
+   * Whether anything below a section wrapper moves on its own. Only then does
+   * the page get a `MotionRuntime` — a page with no node motion ships exactly
+   * the client code it shipped before Batch 15.
+   */
+  const nodeMotion = motions.map((motion, index) =>
+    motion && Object.values(motion.nodes).some((target: MotionTarget) => animatesAnywhere(target))
+      ? [sections[index]!.id, motion.nodes]
+      : null,
+  );
+  const runtime = nodeMotion.some((entry) => entry !== null);
+
   return (
     <>
       {sections.map((section, index) => {
@@ -131,10 +180,11 @@ export async function SectionRenderer({
         const editor: EditorRender = editorMode
           ? { sectionId: section.id, blockType: section.blockType }
           : null;
+        const advancedMotion = motions[index] ?? null;
         // The wrapper is the section's `root` node: the thing Layers selects,
         // and the thing a root style override lands on. One element, one
         // address, whether or not anybody is editing.
-        const node = blockNode({ editor, styles: section.styles });
+        const node = blockNode({ editor, styles: section.styles, motion: advancedMotion });
 
         const attrs: SectionWrapperAttrs = {
           "data-section": section.blockType,
@@ -159,8 +209,40 @@ export async function SectionRenderer({
             index={index}
             editor={editor}
             styles={section.styles}
+            motion={advancedMotion}
           />
         );
+
+        /**
+         * The section's own entrance: the document's section target, with the
+         * legacy preset standing in for Base's entrance wherever the document
+         * names none — so retiming a section does not quietly change how it
+         * moves.
+         *
+         * A target that is nothing more than one of the legacy presets renders
+         * on the legacy classes below, which is also where every section with
+         * no document lands. Only a target that needs more — Blur, Mask, a
+         * direction, timing, a narrower width — takes the advanced layer.
+         */
+        const target = effectiveSectionTarget(advancedMotion, motionOf(section.animation));
+        // A target that moves at no width is the plain element, exactly as the
+        // legacy `none` is — whatever timing it happens to carry.
+        const motion = legacySectionPreset(target) ?? (animatesAnywhere(target) ? null : "none");
+
+        /** An advanced section entrance (Batch 15). */
+        if (motion === null) {
+          const { style, ...rest } = attrs;
+          const moved = withMotion(rest, style, "reveal", motionStyle(target));
+          const advanced = {
+            ...moved.attrs,
+            ...(moved.style ? { style: moved.style } : {}),
+          } as SectionWrapperAttrs;
+          return (
+            <SectionMotion key={section.id} motion={motionOf(section.animation)} attrs={advanced}>
+              {body}
+            </SectionMotion>
+          );
+        }
 
         /**
          * The entrance the editor chose, on the wrapper that already exists.
@@ -174,7 +256,6 @@ export async function SectionRenderer({
          * real answer rather than an animation that happens to end where it
          * began.
          */
-        const motion = motionOf(section.animation);
         return motion === "none" ? (
           <div key={section.id} {...attrs}>
             {body}
@@ -185,6 +266,7 @@ export async function SectionRenderer({
           </SectionMotion>
         );
       })}
+      {runtime ? <MotionRuntime signature={fingerprint(nodeMotion)} /> : null}
     </>
   );
 }

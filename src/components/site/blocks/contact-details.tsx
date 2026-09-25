@@ -11,7 +11,7 @@ import type { BlockProps } from "./context";
  * an address typed into one section and again into the footer is an address
  * that will eventually disagree with itself.
  */
-export function ContactDetailsBlock({ values, ctx, editor, styles }: BlockProps) {
+export function ContactDetailsBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale, dict, settings, catalog, whatsappHref } = ctx;
   const { contact } = settings;
   const showMap = bool(values, "showMap", true) && Boolean(contact.mapEmbedUrl);
@@ -55,6 +55,7 @@ export function ContactDetailsBlock({ values, ctx, editor, styles }: BlockProps)
           <SectionHeading
             editor={editor}
             styles={styles}
+            motion={motion}
             fields={{ title: "title", intro: "intro" }}
             title={text(values, "title", locale)}
             intro={text(values, "intro", locale)}

@@ -11,7 +11,7 @@ import type { BlockProps } from "./context";
  * that unsupported statistics stay off, so an empty list is not an empty
  * section, it is no section.
  */
-export function StatsBlock({ values, ctx, editor, styles }: BlockProps) {
+export function StatsBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale, settings } = ctx;
   if (!settings.features.showStats) return null;
 
@@ -19,7 +19,7 @@ export function StatsBlock({ values, ctx, editor, styles }: BlockProps) {
   const fields = def.fields.find((f) => f.name === "items")!.itemFields ?? [];
   const figures = items(values, "items", locale, fields).filter((f) => f.value?.trim());
   if (!figures.length) return null;
-  const node = blockNode({ editor, styles });
+  const node = blockNode({ editor, styles, motion });
 
   return (
     <section className="section-tight">

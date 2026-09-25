@@ -17,7 +17,7 @@ import type { BlockProps } from "./context";
  * and reads no region — so generalising it away from Egypt was a rename, not a
  * rewrite, and the copy an editor already wrote stays exactly as they wrote it.
  */
-export function DestinationFeatureBlock({ values, ctx, editor, styles }: BlockProps) {
+export function DestinationFeatureBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("destination-feature")!;
   const fields = def.fields.find((f) => f.name === "destinations")!.itemFields ?? [];
@@ -28,8 +28,8 @@ export function DestinationFeatureBlock({ values, ctx, editor, styles }: BlockPr
   const primaryLabel = text(values, "primaryCtaLabel", locale);
   const secondaryHref = str(values, "secondaryCtaHref", "/contact");
   const secondaryLabel = text(values, "secondaryCtaLabel", locale);
-  const node = blockNode({ editor, styles });
-  const imageNode = mediaNode({ editor, styles })("field:image");
+  const node = blockNode({ editor, styles, motion });
+  const imageNode = mediaNode({ editor, styles, motion })("field:image");
   const eyebrowNode = node("field:eyebrow");
 
   return (

@@ -4,6 +4,7 @@ import { and, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { AdminPageHeader } from "@/components/admin/page-header";
 import { Icon } from "@/components/ui/icon";
 import { requirePermission } from "@/lib/auth/guard";
+import { sectionHasDraft } from "@/lib/cms/draft-sql";
 import { db } from "@/lib/db";
 import {
   activityLogs,
@@ -130,7 +131,7 @@ export default async function DashboardPage() {
       db
         .select({ n: sql<number>`count(*)::int` })
         .from(pageSections)
-        .where(isNotNull(pageSections.draft)),
+        .where(sectionHasDraft),
       db
         .select({ n: sql<number>`count(*)::int` })
         .from(testimonials)

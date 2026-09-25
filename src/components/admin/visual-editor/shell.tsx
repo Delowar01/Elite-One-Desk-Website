@@ -28,6 +28,7 @@ import { GlobalsPanel } from "@/components/admin/visual-editor/globals-panel";
 import { Icon } from "@/components/ui/icon";
 import type { BlockDef } from "@/lib/cms/blocks";
 import type { MotionPreset } from "@/lib/cms/motion";
+import type { MotionDocument } from "@/lib/cms/motion-doc";
 import type { StyleDocument } from "@/lib/cms/styles";
 import { removedSections, type PageStructure } from "@/lib/cms/structure";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
@@ -537,7 +538,7 @@ export function VisualEditorShell({
               data: result.section,
               values: result.section.values,
               styles: result.section.styles,
-              motion: result.section.motion,
+              motion: result.section.motionDocument,
               contentDirty: false,
               styleDirty: false,
               motionDirty: false,
@@ -826,17 +827,18 @@ export function VisualEditorShell({
   );
 
   /**
-   * The chosen entrance, held in the buffer until somebody saves it.
+   * The section's motion document, held in the buffer until it is saved.
    *
-   * Not sent on click. A five-button radio group is exactly the control an
-   * editor tries all of, and saving each press would write five drafts, bump
-   * the revision five times and reload the canvas five times — and there would
-   * be no way back to where they started that did not go through the server.
-   * So it is dirty state like any other, with the same Save and the same
-   * Discard changes beside it.
+   * Not sent on change. A menu of entrances and a delay slider are exactly the
+   * controls an editor sweeps through, and saving each step would write a
+   * draft, bump the revision and reload the canvas every time — with no way
+   * back to where they started that did not go through the server. So it is
+   * dirty state like any other: the autosave debounce collects it, and the same
+   * Save now and Discard changes sit beside it. Dirtiness is a comparison by
+   * meaning (`sameValues`), so setting a value and clearing it again is clean.
    */
   const onMotion = useCallback(
-    (motion: MotionPreset) => {
+    (motion: MotionDocument) => {
       if (activeId === null || !canManageContent) return;
       writeBuffers((prev) => {
         const entry = prev[activeId];
@@ -846,7 +848,7 @@ export function VisualEditorShell({
           [activeId]: {
             ...entry,
             motion,
-            motionDirty: motion !== entry.data.motion,
+            motionDirty: !sameValues(motion, entry.data.motionDocument),
             status: entry.status === "conflict" ? "conflict" : "idle",
             statusDomain: entry.status === "conflict" ? entry.statusDomain : null,
             message: entry.status === "conflict" ? entry.message : undefined,
@@ -878,7 +880,7 @@ export function VisualEditorShell({
             ? { values: entry.data.values, contentDirty: false }
             : domain === "style"
               ? { styles: entry.data.styles, styleDirty: false }
-              : { motion: entry.data.motion, motionDirty: false };
+              : { motion: entry.data.motionDocument, motionDirty: false };
         return {
           ...prev,
           [activeId]: { ...entry, ...reset, status: "idle", statusDomain: null, message: undefined },
@@ -907,7 +909,7 @@ export function VisualEditorShell({
           data: entry.latest,
           values: entry.latest.values,
           styles: entry.latest.styles,
-          motion: entry.latest.motion,
+          motion: entry.latest.motionDocument,
           contentDirty: false,
           styleDirty: false,
           motionDirty: false,
@@ -960,8 +962,7 @@ export function VisualEditorShell({
       form.set("sectionId", String(sectionId));
       form.set("pageId", String(entry.data.pageId));
       form.set("expectedRevision", String(entry.data.revision));
-      if (domain === "motion") form.set("motion", entry.motion);
-      else form.set(domain === "content" ? "values" : "styles", sent);
+      form.set(domain === "content" ? "values" : domain === "style" ? "styles" : "motionDocument", sent);
 
       const settle = (patch: Partial<SectionBuffer>) =>
         writeBuffers((prev) => {
@@ -974,7 +975,7 @@ export function VisualEditorShell({
         revision: number;
         section?: VisualSectionData;
         styles?: StyleDocument;
-        motion?: MotionPreset;
+        motion?: { preset: MotionPreset; document: MotionDocument | null; legacy: MotionPreset };
       };
       try {
         if (domain === "content") {
@@ -1009,7 +1010,10 @@ export function VisualEditorShell({
             settle({ status: "error", message: answer.message });
             return "error";
           }
-          accepted = { revision: answer.revision, motion: answer.motion };
+          accepted = {
+            revision: answer.revision,
+            motion: { preset: answer.motion, document: answer.motionDocument, legacy: answer.legacyEntrance },
+          };
         }
       } catch {
         settle({ status: "error", message: "The save could not be sent. Try again." });
@@ -1037,6 +1041,8 @@ export function VisualEditorShell({
               styles: live.data.styles,
               hasStyleDraft: live.data.hasStyleDraft,
               motion: live.data.motion,
+              motionDocument: live.data.motionDocument,
+              legacyEntrance: live.data.legacyEntrance,
               hasMotionDraft: live.data.hasMotionDraft,
             }
           : accepted.styles
@@ -1049,7 +1055,11 @@ export function VisualEditorShell({
             : {
                 ...live.data,
                 revision: accepted.revision,
-                motion: accepted.motion ?? live.data.motion,
+                motion: accepted.motion?.preset ?? live.data.motion,
+                // The server's rebuilt document — canonical, and cut down to
+                // what this block can carry — is the new baseline.
+                motionDocument: accepted.motion?.document ?? live.data.motionDocument,
+                legacyEntrance: accepted.motion?.legacy ?? live.data.legacyEntrance,
                 hasMotionDraft: true,
               };
 
@@ -1058,7 +1068,7 @@ export function VisualEditorShell({
             ? { values: movedOn ? live.values : data.values, contentDirty: movedOn }
             : domain === "style"
               ? { styles: movedOn ? live.styles : data.styles, styleDirty: movedOn }
-              : { motion: movedOn ? live.motion : data.motion, motionDirty: movedOn };
+              : { motion: movedOn ? live.motion : data.motionDocument, motionDirty: movedOn };
 
         return {
           ...prev,

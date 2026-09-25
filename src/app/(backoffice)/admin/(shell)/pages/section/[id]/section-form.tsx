@@ -51,6 +51,8 @@ export function SectionForm({
     id: number;
     /** The preset this screen is editing — the motion draft when there is one. */
     animation: string;
+    /** The section also has motion set in the Visual Editor that one menu cannot show. */
+    advancedMotion: boolean;
     draftKind: DraftKind;
     /**
      * Whether this section exists only in the page's layout draft.
@@ -117,6 +119,7 @@ export function SectionForm({
     revision: section.revision,
     draftKind: section.draftKind,
     animation: section.animation,
+    advancedMotion: section.advancedMotion,
     isDraftOnly: section.isDraftOnly,
     values: section.values,
   });
@@ -134,6 +137,7 @@ export function SectionForm({
       revision: next.revision,
       draftKind: next.draftKind,
       animation: next.animation,
+      advancedMotion: next.advancedMotion,
       isDraftOnly: next.isDraftOnly,
       values: next.values ?? current.values,
     }));
@@ -280,6 +284,18 @@ export function SectionForm({
             everything else on this screen, and ignored for visitors who have asked their device
             for reduced motion.
           </p>
+          {/*
+            One menu cannot show a Blur, a timing or an element's own entrance,
+            so the screen says it is showing the nearest preset — and that the
+            menu, left alone, leaves all of that exactly as it is.
+          */}
+          {screen.advancedMotion ? (
+            <p className="mt-1.5 text-[0.73rem] text-muted" data-advanced-motion="true">
+              This section also has motion set in the Visual Editor, which this menu shows as the
+              nearest of these five. Leaving the menu as it is keeps all of it; choosing another
+              entrance replaces only the section’s own entrance.
+            </p>
+          ) : null}
         </div>
 
         <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--admin-line)] pt-5">

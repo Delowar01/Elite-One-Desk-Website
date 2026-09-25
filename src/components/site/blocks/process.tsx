@@ -11,12 +11,12 @@ import type { BlockProps } from "./context";
  * timeline: the numbers stay in view while the steps scroll past them, which is
  * the "visually modern rather than a basic timeline" the brief asks for.
  */
-export function ProcessBlock({ values, ctx, editor, styles }: BlockProps) {
+export function ProcessBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale, dict } = ctx;
   const def = getBlock("process")!;
   const fields = def.fields.find((f) => f.name === "steps")!.itemFields ?? [];
   const steps = items(values, "steps", locale, fields);
-  const node = blockNode({ editor, styles });
+  const node = blockNode({ editor, styles, motion });
   if (!steps.length) return null;
 
   return (
@@ -26,6 +26,7 @@ export function ProcessBlock({ values, ctx, editor, styles }: BlockProps) {
           <SectionHeading
             editor={editor}
             styles={styles}
+            motion={motion}
             fields={{ eyebrow: "eyebrow", title: "title" }}
             eyebrow={text(values, "eyebrow", locale) || dict.sections.processEyebrow}
             title={text(values, "title", locale)}

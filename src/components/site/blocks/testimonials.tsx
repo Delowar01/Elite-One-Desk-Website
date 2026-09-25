@@ -5,7 +5,7 @@ import { pick } from "@/lib/i18n/config";
 import { mediaSrc, mediaSrcSet } from "@/lib/media/url";
 import type { BlockProps } from "./context";
 
-export function TestimonialsBlock({ values, ctx, editor, styles }: BlockProps) {
+export function TestimonialsBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale, dict, settings } = ctx;
   if (!settings.features.showTestimonials) return null;
 
@@ -34,6 +34,7 @@ export function TestimonialsBlock({ values, ctx, editor, styles }: BlockProps) {
         <SectionHeading
           editor={editor}
           styles={styles}
+          motion={motion}
           fields={{ eyebrow: "eyebrow", title: "title" }}
           eyebrow={text(values, "eyebrow", locale) || dict.sections.testimonialsEyebrow}
           title={text(values, "title", locale)}

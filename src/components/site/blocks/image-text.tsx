@@ -8,15 +8,15 @@ import { localeHref } from "@/lib/i18n/config";
 import { blockNode, mediaNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function ImageTextBlock({ values, ctx, editor, styles }: BlockProps) {
+export function ImageTextBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale } = ctx;
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const imageSide = str(values, "imageSide", "start");
   const ctaHref = str(values, "ctaHref");
   const ctaLabel = text(values, "ctaLabel", locale);
   const body = text(values, "body", locale);
-  const node = blockNode({ editor, styles });
-  const imageNode = mediaNode({ editor, styles })("field:image");
+  const node = blockNode({ editor, styles, motion });
+  const imageNode = mediaNode({ editor, styles, motion })("field:image");
 
   return (
     <section className="section-tight">

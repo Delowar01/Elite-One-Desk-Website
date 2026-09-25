@@ -4,6 +4,7 @@ import { asc, eq, sql } from "drizzle-orm";
 import { AdminPageHeader } from "@/components/admin/page-header";
 import { Icon } from "@/components/ui/icon";
 import { requirePermission } from "@/lib/auth/guard";
+import { sectionHasDraft } from "@/lib/cms/draft-sql";
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
 import { NewPageForm } from "./page-forms";
@@ -24,7 +25,8 @@ export default async function PagesIndex() {
       isPublished: pages.isPublished,
       updatedAt: pages.updatedAt,
       sections: sql<number>`count(${pageSections.id})::int`,
-      drafts: sql<number>`count(${pageSections.draft})::int`,
+      // Sections with anything unpublished, in any domain — see `sectionHasDraft`.
+      drafts: sql<number>`count(*) filter (where ${sectionHasDraft})::int`,
       hidden: sql<number>`count(*) filter (where ${pageSections.isPublished} = false)::int`,
     })
     .from(pages)

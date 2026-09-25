@@ -9,12 +9,12 @@ import type { BlockProps } from "./context";
 
 const ICONS = ["users", "layers", "route", "landmark", "briefcase", "shield", "globe", "desk"];
 
-export function WhyUsBlock({ values, ctx, editor, styles }: BlockProps) {
+export function WhyUsBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("why-us")!;
   const fields = def.fields.find((f) => f.name === "points")!.itemFields ?? [];
   const points = items(values, "points", locale, fields);
-  const node = blockNode({ editor, styles });
+  const node = blockNode({ editor, styles, motion });
   if (!points.length) return null;
 
   return (
@@ -23,6 +23,7 @@ export function WhyUsBlock({ values, ctx, editor, styles }: BlockProps) {
         <SectionHeading
           editor={editor}
           styles={styles}
+          motion={motion}
           fields={{ eyebrow: "eyebrow", title: "title", intro: "intro" }}
           eyebrow={text(values, "eyebrow", locale)}
           title={text(values, "title", locale)}

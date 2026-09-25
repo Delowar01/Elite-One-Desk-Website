@@ -11,16 +11,24 @@
  * only ever produces draft content and a draft order. No published value, no
  * position and no visibility flag is in it.
  */
+import { emptyMotionDocument, readMotionDocument, type MotionDocument } from "./motion-doc";
+import { sameMotion } from "./motion-write";
 import { validatePageSnapshot, type PageSnapshot } from "./snapshot";
 
-/** A section as it exists on the page today. All the planner needs of one. */
-export type LiveSection = { id: number; blockType: string };
+/**
+ * A section as it exists on the page today. All the planner needs of one:
+ * which section it is, and — since Batch 15 — the advanced motion it is
+ * publishing, because putting a version back has to be able to *remove* that.
+ */
+export type LiveSection = { id: number; blockType: string; motionConfig: unknown };
 
 export type RestoreDraft = {
   sectionId: number;
   draft: Record<string, unknown>;
   draftStyles: Record<string, unknown>;
   draftAnimation: string;
+  /** `null` when the version's advanced motion is what the section already publishes. */
+  draftMotionConfig: MotionDocument | null;
 };
 
 export type RestoreRecreate = {
@@ -28,8 +36,29 @@ export type RestoreRecreate = {
   draft: Record<string, unknown>;
   draftStyles: Record<string, unknown>;
   draftAnimation: string;
+  draftMotionConfig: MotionDocument | null;
   visible: boolean;
 };
+
+/**
+ * The motion document a restore writes into `draft_motion_config`.
+ *
+ * The version's document when it differs from what the section publishes now,
+ * and the **empty** document when the version had none but the section has one
+ * — an empty draft is a pending reset, so publishing the restore takes the
+ * advanced motion away, exactly as the version looked. `null` when the two
+ * already agree: there is nothing for the draft to change, and a page with no
+ * advanced motion restores exactly as it did before Batch 15.
+ *
+ * `draft_animation` carries the version's own `animation` beside it, which is
+ * that document's projection at the time — so the pair a restore writes is the
+ * pair the version published.
+ */
+function restoredMotion(version: MotionDocument | undefined, live: unknown): MotionDocument | null {
+  const current = readMotionDocument(live);
+  if (sameMotion(version ?? null, current)) return null;
+  return version ?? emptyMotionDocument();
+}
 
 /**
  * The restored order, before the recreated rows have ids.
@@ -105,6 +134,7 @@ export function planRestoreFrom(
         draft: entry.published,
         draftStyles: entry.styles,
         draftAnimation: entry.animation,
+        draftMotionConfig: restoredMotion(entry.motion, match.motionConfig),
       });
       order.push({ kind: "existing", sectionId: match.id, visible: entry.visible });
       continue;
@@ -114,6 +144,9 @@ export function planRestoreFrom(
       draft: entry.published,
       draftStyles: entry.styles,
       draftAnimation: entry.animation,
+      // A new row publishes nothing yet, so only a version that had a document
+      // needs one.
+      draftMotionConfig: restoredMotion(entry.motion, null),
       visible: entry.visible,
     });
     order.push({ kind: "recreate", index: recreate.length - 1, visible: entry.visible });

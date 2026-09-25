@@ -24,6 +24,12 @@ export type SectionSnapshot = {
   draftKind: DraftKind;
   /** The preset this screen should now show: the motion draft, or the live one. */
   animation: string;
+  /**
+   * Whether the section also has motion this screen's one menu cannot show —
+   * element entrances, timing, widths or an entrance beyond the five (Batch
+   * 15). The menu then shows the nearest preset, and the screen says so.
+   */
+  advancedMotion: boolean;
   isDraftOnly: boolean;
   /**
    * Present only when the write changed what the fields should hold — a

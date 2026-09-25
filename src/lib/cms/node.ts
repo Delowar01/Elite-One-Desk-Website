@@ -6,9 +6,21 @@ import {
   type EditorNodeKind,
   type EditorRender,
 } from "@/lib/visual-editor/render";
+import { formatNodePath, parseNodePath } from "./address";
 import {
+  animatesAnywhere,
+  isStaggerGroup,
+  motionStyle,
+  staggersAnywhere,
+  type MotionAttrs,
+  type MotionStyle,
+} from "./motion-css";
+import type { MotionDocument } from "./motion-doc";
+import {
+  FINAL_OPACITY,
   mediaNodeStyle,
   nodeStyle,
+  renameRevealOpacity,
   responsiveMediaStyle,
   responsiveStyle,
   type ResponsiveStyle,
@@ -45,7 +57,27 @@ import type { StyleDocument } from "./styles";
  */
 export type ResponsiveAttrs = { "data-rs-t"?: string; "data-rs-m"?: string };
 
-export type NodeAttrs = EditorAttrs & ResponsiveAttrs & { style?: CSSProperties };
+/**
+ * What a node's advanced motion looks like in markup (Batch 15).
+ *
+ * Page rendering, like the responsive attributes, and so outside `data-eod-`:
+ * a visitor's page carries them because a visitor's page moves.
+ *
+ *   · `data-m-reveal` — this element has an entrance of its own.
+ *   · `data-m-group` — this element is a list whose rows arrive in turn; the
+ *     list is observed and the rows are animated, the list itself stays still.
+ *   · `data-m-member` — this element is one of those rows. Its entrance belongs
+ *     to the list, so anything that would have animated it on its own — a
+ *     `Reveal`'s legacy class, its own stored motion — stands down.
+ *   · `data-m-t` / `data-m-m` — which motion variables a breakpoint overrides.
+ */
+export type MotionNodeAttrs = MotionAttrs & {
+  "data-m-reveal"?: "";
+  "data-m-group"?: "";
+  "data-m-member"?: "";
+};
+
+export type NodeAttrs = EditorAttrs & ResponsiveAttrs & MotionNodeAttrs & { style?: CSSProperties };
 
 /** Base style and responsive variables are one style object on one element. */
 const withVars = (
@@ -56,21 +88,136 @@ const withVars = (
   return { ...base, ...responsive.vars } as CSSProperties;
 };
 
-/** What a block needs to annotate and style its own nodes. */
+/** What a block needs to annotate, style and move its own nodes. */
 export type NodeSource = {
   editor?: EditorRender;
   /** Already validated, already resolved to what this render should show. */
   styles?: StyleDocument;
+  /**
+   * Already validated, already resolved to what this render should show, and
+   * already cut down to what the block's nodes can carry (`motionForBlock`).
+   * `null` or absent for a section with no advanced motion, which renders
+   * exactly what it rendered before Batch 15.
+   */
+  motion?: MotionDocument | null;
 };
+
+/* -------------------------------------------------------------------------- */
+/* Motion roles                                                               */
+/* -------------------------------------------------------------------------- */
+
+type MotionRole =
+  | { role: "reveal"; motion: MotionStyle | null }
+  | { role: "group"; motion: MotionStyle | null }
+  | { role: "member" };
+
+/** `field:links/item:i_…` → `field:links`; a top-level field has no parent node. */
+const parentOf = (path: string): string | null => {
+  const parsed = parseNodePath(path);
+  if (!parsed || parsed.length < 2) return null;
+  return formatNodePath(parsed.slice(0, -1));
+};
+
+/**
+ * What one node does, decided from its stable address and nothing else.
+ *
+ * **A staggering list owns its rows.** A row whose parent list sends its rows
+ * in turn is a member, whatever motion the row itself might hold: the list's
+ * one lifecycle and the row's index in the DOM decide when it arrives, and a
+ * second entrance on the same element would be two animations fighting over
+ * its opacity. That check comes first for exactly that reason.
+ *
+ * The section's own wrapper is never a node here: its entrance has a legacy
+ * spelling and is rendered by `SectionRenderer`, which is the one place that
+ * knows the legacy preset.
+ */
+function motionRoleOf(document: MotionDocument | null | undefined, path: string | undefined): MotionRole | null {
+  if (!document || path === undefined) return null;
+  const parsed = parseNodePath(path);
+  if (!parsed || parsed.length === 0) return null;
+  const normalized = formatNodePath(parsed);
+
+  const parent = parentOf(normalized);
+  if (parent && isStaggerGroup(document.nodes[parent])) return { role: "member" };
+
+  const own = document.nodes[normalized];
+  if (!animatesAnywhere(own)) return null;
+  if (staggersAnywhere(own)) return { role: "group", motion: motionStyle(own) };
+  return { role: "reveal", motion: motionStyle(own) };
+}
+
+/**
+ * A style object with its opacity turned into a finished state.
+ *
+ * The Batch 14 rule, applied to every element that now animates its opacity: an
+ * inline `opacity` outranks the stylesheet, so it would hold the element at its
+ * finished strength *before* it had arrived and leave the fade nothing to do.
+ * It travels as `--eod-node-opacity` instead, which the entrance lands on.
+ */
+const asFinishedOpacity = (style: CSSProperties | undefined): CSSProperties | undefined => {
+  if (!style || style.opacity === undefined) return style;
+  const { opacity, ...rest } = style;
+  return { ...rest, [FINAL_OPACITY]: String(opacity) } as CSSProperties;
+};
+
+/** The same rule at the other two widths: the list the element publishes, renamed. */
+const withFinishedMarks = <T extends ResponsiveAttrs>(attrs: T): T => {
+  const next = { ...attrs };
+  const tablet = renameRevealOpacity(attrs["data-rs-t"]);
+  const mobile = renameRevealOpacity(attrs["data-rs-m"]);
+  if (tablet !== undefined) next["data-rs-t"] = tablet;
+  if (mobile !== undefined) next["data-rs-m"] = mobile;
+  return next;
+};
+
+/**
+ * One node's motion folded into attributes and style it already has.
+ *
+ * Exported for the section wrapper, which decides its own role and then needs
+ * exactly this. The motion variables are merged *after* the style, so a style
+ * token can never write a motion variable — it could not anyway, the names are
+ * disjoint, but the order says which one owns the property.
+ */
+export function withMotion(
+  attrs: NodeAttrs,
+  style: CSSProperties | undefined,
+  role: "reveal" | "group" | "member",
+  motion: MotionStyle | null,
+): { attrs: NodeAttrs; style: CSSProperties | undefined } {
+  let nextAttrs: NodeAttrs = { ...attrs };
+  let nextStyle = style;
+  if (role !== "group") {
+    // Only something that animates its own opacity needs it as a finished
+    // state. A list that staggers its rows stays still itself.
+    nextStyle = asFinishedOpacity(nextStyle);
+    nextAttrs = withFinishedMarks(nextAttrs);
+  }
+  if (role === "reveal") nextAttrs["data-m-reveal"] = "";
+  if (role === "group") nextAttrs["data-m-group"] = "";
+  if (role === "member") nextAttrs["data-m-member"] = "";
+  if (motion) {
+    nextAttrs = { ...nextAttrs, ...motion.attrs };
+    if (Object.keys(motion.vars).length) {
+      nextStyle = { ...nextStyle, ...motion.vars } as CSSProperties;
+    }
+  }
+  return { attrs: nextAttrs, style: nextStyle };
+}
 
 export function blockNode(source: NodeSource) {
   return (path: string | undefined, kind: EditorNodeKind = "field"): NodeAttrs => {
     const responsive = responsiveStyle(source.styles, path);
-    const attrs: NodeAttrs = {
+    let attrs: NodeAttrs = {
       ...editorNodeAttrs(source.editor ?? null, { path, kind }),
       ...responsive?.attrs,
     };
-    const style = withVars(nodeStyle(source.styles, path), responsive);
+    let style = withVars(nodeStyle(source.styles, path), responsive);
+
+    const role = kind === "section" ? null : motionRoleOf(source.motion, path);
+    if (role) {
+      ({ attrs, style } = withMotion(attrs, style, role.role, role.role === "member" ? null : role.motion));
+    }
+
     if (style) attrs.style = style;
     return attrs;
   };
@@ -100,11 +247,22 @@ export function mediaNode(source: NodeSource) {
     const { box, image } = mediaNodeStyle(source.styles, path);
     const responsive = responsiveMediaStyle(source.styles, path);
 
-    const attrs: NodeAttrs = {
+    let attrs: NodeAttrs = {
       ...editorNodeAttrs(source.editor ?? null, { path, kind: "field" }),
       ...responsive.box?.attrs,
     };
-    const boxStyle = withVars(box, responsive.box);
+    let boxStyle = withVars(box, responsive.box);
+    // A picture moves as one thing: the frame carries the entrance, and the
+    // image inside it goes with it.
+    const role = motionRoleOf(source.motion, path);
+    if (role) {
+      ({ attrs, style: boxStyle } = withMotion(
+        attrs,
+        boxStyle,
+        role.role,
+        role.role === "member" ? null : role.motion,
+      ));
+    }
     if (boxStyle) attrs.style = boxStyle;
 
     const picture: MediaImagePart = { ...responsive.image?.attrs };

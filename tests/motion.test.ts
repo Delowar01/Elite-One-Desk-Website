@@ -54,6 +54,10 @@ const row = (extra: Partial<CompositionRow> = {}): CompositionRow => ({
   draft: null,
   styles: null,
   draftStyles: null,
+  // Batch 15: a section with no advanced motion, which is every section these
+  // tests describe.
+  motionConfig: null,
+  draftMotionConfig: null,
   isPublished: true,
   isDraftOnly: false,
   ...extra,
@@ -236,6 +240,7 @@ describe("three domains make seven ways to be pending, and all seven are named",
     draft: null,
     draftStyles: null,
     draftAnimation: null,
+    draftMotionConfig: null,
     ...partial,
   });
 
@@ -337,14 +342,17 @@ describe("the renderer puts the entrance on the section's own wrapper", () => {
 describe("each domain writes its own column, and only one writes at a time", () => {
   const read = (file: string) => readFileSync(path.join(REPO_ROOT, file), "utf8");
 
-  test("the Visual Editor's motion save names one column", () => {
+  test("the Visual Editor's motion save names the motion draft columns and nothing else", () => {
+    // Batch 15 gave motion a second draft column — the advanced document —
+    // and one guarded write carries both, so they cannot disagree. Neither
+    // live column, no other domain, no visibility and no position.
     const actions = read("src/app/(backoffice)/admin/visual-editor/actions.ts");
     const body = actions.slice(actions.indexOf("export async function saveVisualSectionMotion"));
     const write = body.slice(body.indexOf("updateSectionGuarded("), body.indexOf("if (!result.ok)"));
     assert.ok(write.length > 0, "the motion action no longer makes one guarded write");
-    assert.match(write, /draftAnimation: motion/);
-    // Not the published column, not another domain's, not visibility, not
-    // position. The guard adds the revision, the author and the timestamp.
+    assert.match(write, /draftAnimation: draft\.draftAnimation/);
+    assert.match(write, /draftMotionConfig: draft\.draftMotionConfig/);
+    // The guard adds the revision, the author and the timestamp.
     for (const forbidden of [
       /\bpublished:/,
       /\bdraft:/,
@@ -353,7 +361,8 @@ describe("each domain writes its own column, and only one writes at a time", () 
       /\bisPublished\b/,
       /\bisDraftOnly\b/,
       /\bposition\b/,
-      /(?<!draft)Animation: motion/,
+      /(?<![a-zA-Z])animation:/,
+      /(?<![a-zA-Z])motionConfig:/,
     ]) {
       assert.ok(!forbidden.test(write), `the motion save writes ${forbidden}`);
     }
@@ -513,7 +522,7 @@ describe("an unreadable motion draft falls back to what is live, never to the de
 
   test("a section with an unreadable draft still counts as a motion draft", () => {
     assert.equal(
-      draftKindOf({ draft: null, draftStyles: null, draftAnimation: "nonsense" }),
+      draftKindOf({ draft: null, draftStyles: null, draftAnimation: "nonsense", draftMotionConfig: null }),
       "motion",
     );
   });
@@ -525,12 +534,27 @@ describe("publishing refuses a stored draft it cannot read", () => {
   const actions = read("src/app/(backoffice)/admin/(shell)/pages/actions.ts");
 
   test("promotion validates the stored preset strictly and can refuse", () => {
+    // Since Batch 15 both motion columns are promoted by one decision,
+    // `motionPromotion`, which a page publication makes too — so the strict
+    // read of the stored draft lives there, and this path must still refuse
+    // when it does.
     const body = actions.slice(actions.indexOf("function promotion("), actions.indexOf("async function pageOf"));
-    assert.match(body, /const motion = readMotion\(row\.draftAnimation\);/);
-    assert.match(body, /if \(!motion\) return \{ ok: false, reason: "motion" \};/);
+    assert.match(body, /const motion = motionPromotion\(row, row\.blockType\);/);
+    assert.match(body, /if \(!motion\.ok\) return \{ ok: false, reason: "motion" \};/);
     // The forgiving reader must not be *called* in the promotion path. The
     // comment beside it names it, which is prose rather than behaviour.
     assert.ok(!/motionOf\(/.test(body), `promotion still normalises a stored draft:\n${body}`);
+
+    const write = read("src/lib/cms/motion-write.ts");
+    const decide = write.slice(
+      write.indexOf("export function motionPromotion("),
+      write.indexOf("export function classicMotionWrite("),
+    );
+    assert.match(decide, /const pending = hasPreset \? readMotion\(row\.draftAnimation\) : null;/);
+    assert.match(decide, /if \(hasPreset && pending === null\) return \{ ok: false \};/);
+    assert.match(decide, /if \(hasDocument && !isReadableMotionDocument\(row\.draftMotionConfig\)\) return \{ ok: false \};/);
+    // `motionOf` is right for the *live* column and only the live column.
+    assert.ok(!/motionOf\(row\.draft/.test(decide), "a stored draft is normalised on its way to the live site");
   });
 
   test("Publish draft decides before it writes", () => {
@@ -545,15 +569,20 @@ describe("publishing refuses a stored draft it cannot read", () => {
     // Batch 10 replaced the section-only "Publish all" with a complete page
     // publication, so the strict gate moved with it — into the service, still
     // ahead of the first write, and now ahead of the restore point too.
+    // Batch 15: the decision is `motionPromotion`, the same one a single
+    // section's publication makes, covering both motion columns.
     const service = read("src/lib/cms/publish-service.ts");
     const body = service.slice(service.indexOf("export async function publishPageChanges"));
-    const validate = body.indexOf("const motion = readMotion(row.draftAnimation);");
+    const validate = body.indexOf("const promotion = motionPromotion(row, row.blockType);");
     const version = body.indexOf("await recordRestorePointIn(tx");
     const write = body.indexOf("await updateSectionGuardedIn(tx");
     assert.ok(validate > 0, "the page publisher no longer validates stored motion");
     assert.ok(version > validate, "a restore point is taken before motion is checked");
     assert.ok(write > version, "sections are promoted before the restore point");
-    assert.match(body.slice(validate, version), /if \(!motion\) throw new PublishStopped\("invalid_motion"\)/);
+    assert.match(
+      body.slice(validate, version),
+      /if \(!promotion\.ok\) throw new PublishStopped\("invalid_motion"\)/,
+    );
   });
 
   test("discarding never reads the value it is deleting", () => {

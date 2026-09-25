@@ -15,7 +15,7 @@ import type { BlockProps } from "./context";
  * word rather than animating the whole sentence: the fixed part is in the HTML
  * a crawler reads, and the motion is confined to a single element.
  */
-export function HeroBlock({ values, ctx, editor, styles }: BlockProps) {
+export function HeroBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale, dict } = ctx;
   const def = getBlock("hero")!;
   const wordField = def.fields.find((f) => f.name === "words")!;
@@ -30,8 +30,8 @@ export function HeroBlock({ values, ctx, editor, styles }: BlockProps) {
   const secondaryHref = str(values, "secondaryCtaHref", "/services");
   const primaryLabel = text(values, "primaryCtaLabel", locale) || dict.nav.primaryCta;
   const secondaryLabel = text(values, "secondaryCtaLabel", locale) || dict.nav.secondaryCta;
-  const node = blockNode({ editor, styles });
-  const backgroundNode = mediaNode({ editor, styles })("field:backgroundImage");
+  const node = blockNode({ editor, styles, motion });
+  const backgroundNode = mediaNode({ editor, styles, motion })("field:backgroundImage");
 
   return (
     <section

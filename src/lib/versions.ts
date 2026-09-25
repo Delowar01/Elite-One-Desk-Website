@@ -94,6 +94,7 @@ export async function capturePageSnapshotIn(on: Executor, pageId: number): Promi
       published: pageSections.published,
       styles: pageSections.styles,
       animation: pageSections.animation,
+      motionConfig: pageSections.motionConfig,
     })
     .from(pageSections)
     .where(and(eq(pageSections.pageId, pageId), eq(pageSections.isDraftOnly, false)))
@@ -328,7 +329,11 @@ export type {
  */
 export async function planRestore(pageId: number, input: PageSnapshot): Promise<RestorePlan> {
   const live = await db
-    .select({ id: pageSections.id, blockType: pageSections.blockType })
+    .select({
+      id: pageSections.id,
+      blockType: pageSections.blockType,
+      motionConfig: pageSections.motionConfig,
+    })
     .from(pageSections)
     .where(eq(pageSections.pageId, pageId))
     .orderBy(asc(pageSections.position), asc(pageSections.id));
@@ -436,6 +441,7 @@ export async function applyRestorePlanIn(
             draft: draft.draft,
             draftStyles: draft.draftStyles,
             draftAnimation: draft.draftAnimation,
+            draftMotionConfig: draft.draftMotionConfig,
             revision: sql`${pageSections.revision} + 1`,
             updatedBy,
             updatedAt: new Date(),
@@ -471,6 +477,7 @@ export async function applyRestorePlanIn(
             draft: entry.draft,
             draftStyles: entry.draftStyles,
             draftAnimation: entry.draftAnimation,
+            draftMotionConfig: entry.draftMotionConfig,
             // It exists only because this restore is pending. It is not part of
             // the published page and a snapshot taken now must not contain it —
             // publishing the structural draft is what would change that.
@@ -614,7 +621,8 @@ export async function restoreVersionToDraft(
             row.isDraftOnly ||
             row.draft !== null ||
             row.draftStyles !== null ||
-            row.draftAnimation !== null,
+            row.draftAnimation !== null ||
+            row.draftMotionConfig !== null,
         );
       if (dirty) throw new RestoreStopped("not_clean");
 
@@ -623,7 +631,7 @@ export async function restoreVersionToDraft(
       const plan = planRestoreFrom(
         record.pageId,
         record.snapshot,
-        rows.map((row) => ({ id: row.id, blockType: row.blockType })),
+        rows.map((row) => ({ id: row.id, blockType: row.blockType, motionConfig: row.motionConfig })),
       );
       const applied = await applyRestorePlanIn(tx, plan, actor);
       if (!applied.ok) throw new RestoreStopped("unowned_sections");

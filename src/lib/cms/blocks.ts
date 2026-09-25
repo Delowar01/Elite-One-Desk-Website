@@ -43,7 +43,22 @@ export type ItemFieldDef = {
   help?: string;
   /** See `BoxKind`. */
   box?: BoxKind;
+  /** See `OwnMotion`. */
+  motion?: OwnMotion;
 };
+
+/**
+ * Whether a field's element already runs a source-owned entrance of its own.
+ *
+ * `"own"` means the block puts a keyframe animation (`eod-fade-up` and friends)
+ * on the very element this field is annotated on. An editor entrance there
+ * would be a second animation on the same element's `opacity`, and the two
+ * would fight — the bespoke one on first paint, the editor's when the observer
+ * answered — so the Motion panel offers nothing on these fields and the
+ * renderer drops any motion stored against them. Motion on the *section* around
+ * them, and on siblings without a keyframe, is unaffected.
+ */
+export type OwnMotion = "own";
 
 /**
  * What kind of box the renderer gives a field's element.
@@ -83,6 +98,8 @@ export type FieldDef = {
   itemFields?: ItemFieldDef[];
   /** See `BoxKind`. On an `items` field this describes the list's container. */
   box?: BoxKind;
+  /** See `OwnMotion`. */
+  motion?: OwnMotion;
   /** Repeatable lists only. Keeps a section from becoming a page of its own. */
   maxItems?: number;
   rows?: number;
@@ -111,12 +128,18 @@ const localisedText = (name: string, label: string, extra: Partial<FieldDef> = {
   ...extra,
 });
 
-const localisedArea = (name: string, label: string, rows = 3): FieldDef => ({
+const localisedArea = (
+  name: string,
+  label: string,
+  rows = 3,
+  extra: Partial<FieldDef> = {},
+): FieldDef => ({
   name,
   label,
   type: "textarea",
   localised: true,
   rows,
+  ...extra,
 });
 
 const ctaFields = (prefix = "", label = "Call to action"): FieldDef[] => [
@@ -137,7 +160,8 @@ export const BLOCKS: BlockDef[] = [
     description: "The opening screen: rotating service words, headline and the two main calls to action.",
     scope: "home",
     fields: [
-      localisedText("eyebrow", "Eyebrow"),
+      // These three run the hero's own `eod-fade-up` keyframes; see `OwnMotion`.
+      localisedText("eyebrow", "Eyebrow", { motion: "own" }),
       {
         name: "words",
         label: "Rotating words",
@@ -149,8 +173,8 @@ export const BLOCKS: BlockDef[] = [
         help: "Animated one after another above the headline. Three or four reads best.",
         itemFields: [{ name: "label", label: "Word", localised: true }],
       },
-      localisedText("headline", "Headline"),
-      localisedArea("lead", "Supporting sentence", 3),
+      localisedText("headline", "Headline", { motion: "own" }),
+      localisedArea("lead", "Supporting sentence", 3, { motion: "own" }),
       ...ctaFields("primary", "Primary"),
       ...ctaFields("secondary", "Secondary"),
       { name: "backgroundImage", label: "Background image", type: "media", help: "Optional. The animated composition shows through it." },
@@ -468,9 +492,10 @@ export const BLOCKS: BlockDef[] = [
     description: "A compact hero for an inner page.",
     scope: "any",
     fields: [
-      localisedText("eyebrow", "Eyebrow"),
-      localisedText("title", "Title"),
-      localisedArea("lead", "Lead paragraph", 3),
+      // The same bespoke keyframes as the home hero; see `OwnMotion`.
+      localisedText("eyebrow", "Eyebrow", { motion: "own" }),
+      localisedText("title", "Title", { motion: "own" }),
+      localisedArea("lead", "Lead paragraph", 3, { motion: "own" }),
       { name: "backgroundImage", label: "Background image", type: "media" },
     ],
   },

@@ -12,6 +12,7 @@ import type {
 import type { Locale } from "@/lib/i18n/config";
 import type { Dictionary } from "@/lib/i18n/dictionary";
 import type { SiteSettings } from "@/lib/settings";
+import type { MotionDocument } from "@/lib/cms/motion-doc";
 import type { StyleDocument } from "@/lib/cms/styles";
 import type { EditorRender } from "@/lib/visual-editor/render";
 
@@ -64,4 +65,14 @@ export type BlockProps = {
    * document with no nodes, which produces no `style` at all.
    */
   styles?: StyleDocument;
+  /**
+   * This section's advanced motion (Batch 15), validated and already cut down
+   * to what this block's nodes can carry — or `null` for a section with none.
+   *
+   * Handed to `blockNode` and `mediaNode` beside `styles`, through the same
+   * door and for the same reason: the element an editor selects, the element
+   * its style lands on and the element its entrance moves have to be the same
+   * element, so all three come from naming the node once.
+   */
+  motion?: MotionDocument | null;
 };

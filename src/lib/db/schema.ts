@@ -333,6 +333,39 @@ export const pageSections = pgTable(
      * guarded write that promotes the other two domains.
      */
     draftAnimation: varchar("draft_animation", { length: 32 }),
+    /**
+     * Published advanced motion — a validated, closed-vocabulary document, never
+     * CSS, a class, a transform or a timing function. Keys under `nodes` are
+     * section-*relative* node paths, the same identity styles and Layers use.
+     * See `lib/cms/motion-doc.ts`.
+     *
+     * **Additive, and beside the legacy columns rather than instead of them.**
+     * `animation` and `draft_animation` keep their exact meaning: the release in
+     * `deploy/previous-release` reads those two and understands five preset
+     * strings, so a publication continues to write one of the five into
+     * `animation` (`legacyProjection`) even when the advanced document says
+     * something richer. An older build therefore still shows a sensible section
+     * entrance and simply cannot see these two columns; a newer build prefers
+     * this document where it names something and the legacy preset otherwise.
+     * Reinterpreting the varchar columns would have been the destructive
+     * alternative, and it would have broken rollback.
+     *
+     * `NULL` is the one spelling of "no advanced motion" on the published side:
+     * publishing an emptied document writes `NULL` (`motionPromotion`), so a
+     * row that never had advanced motion and one whose motion was reset render,
+     * snapshot and restore identically — as the legacy preset alone.
+     */
+    motionConfig: jsonb("motion_config").$type<Record<string, unknown>>(),
+    /**
+     * The same document, unpublished — motion's second draft column.
+     *
+     * `NULL` means "no advanced motion draft"; an empty-but-present document is
+     * a real draft meaning "publishing me removes every advanced motion this
+     * section has". `drafts.ts` folds it into the existing `motion` domain
+     * rather than inventing a fourth, so a section still has seven ways to be
+     * pending and one Motion save owns both motion columns together.
+     */
+    draftMotionConfig: jsonb("draft_motion_config").$type<Record<string, unknown>>(),
     /** Optimistic-concurrency token — see `lib/db/revision.ts`. */
     revision: integer("revision").notNull().default(0),
     updatedBy: integer("updated_by").references(() => users.id, { onDelete: "set null" }),

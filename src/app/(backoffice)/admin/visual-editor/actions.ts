@@ -13,6 +13,14 @@ import {
 } from "@/lib/visual-editor/globals";
 import { getBlock, type BlockDef } from "@/lib/cms/blocks";
 import { effectiveMotion, readMotion } from "@/lib/cms/motion";
+import {
+  currentMotionDocument,
+  legacyFallback,
+  motionDraftFromDocument,
+  motionDraftFromPreset,
+} from "@/lib/cms/motion-write";
+import { emptyMotionDocument, isReadableMotionDocument } from "@/lib/cms/motion-doc";
+import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { parseBlockPayload, validateBlockValues } from "@/lib/cms/validate";
 import { emptyValues } from "@/lib/cms/values";
@@ -106,7 +114,8 @@ const MESSAGES = {
 function toData(row: typeof pageSections.$inferSelect, block: BlockDef): VisualSectionData {
   const stored = (row.draft ?? row.published) as Record<string, unknown>;
   const hasStyleDraft = row.draftStyles !== null;
-  const hasMotionDraft = row.draftAnimation !== null;
+  // One domain, two columns: a pending preset or a pending document.
+  const hasMotionDraft = row.draftAnimation !== null || row.draftMotionConfig !== null;
   return {
     sectionId: row.id,
     pageId: row.pageId,
@@ -132,6 +141,13 @@ function toData(row: typeof pageSections.$inferSelect, block: BlockDef): VisualS
      * says there is something pending. Reading never repairs and never writes.
      */
     motion: effectiveMotion(row.animation, row.draftAnimation),
+    /**
+     * The document the panel edits, cut down to what this block can carry so a
+     * setting it shows is a setting a save keeps. An empty document when there
+     * is none, so the panel always edits the same shape.
+     */
+    motionDocument: motionForBlock(currentMotionDocument(row) ?? emptyMotionDocument(), block.type),
+    legacyEntrance: legacyFallback(row),
   };
 }
 
@@ -383,15 +399,18 @@ export async function saveVisualSectionStyles(form: FormData): Promise<VisualSty
  * would be the weakest lock on the site, and a domain that guarded itself
  * differently would be the one that loses somebody's work.
  *
- * What it writes is `draft_animation` and only that. `animation` is what the
- * live wrapper renders, and the whole of this batch's promise — editing motion
- * does not change the live site until the motion draft is published — is that
- * this action cannot reach it.
+ * What it writes is the motion *draft* — `draft_motion_config` and
+ * `draft_animation`, together — and only that. `motion_config` and `animation`
+ * are what the live page renders, and the whole of the motion promise — editing
+ * motion does not change the live site until the motion draft is published — is
+ * that this action cannot reach them.
  *
- * The preset is read by `readMotion`, the single validator, which accepts the
- * five exactly. There is no fallback to the default: a value outside the
- * vocabulary is a stale or tampered request, and storing a guess for it would
- * report success while leaving the section moving in a way nobody chose.
+ * A preset is read by `readMotion`, the single validator, which accepts the
+ * five exactly, and a document by `validateMotionDocument`, which rebuilds it
+ * from the closed vocabulary. There is no fallback to a default: a preset
+ * outside the vocabulary is a stale or tampered request, and storing a guess
+ * for it would report success while leaving the section moving in a way nobody
+ * chose.
  */
 export async function saveVisualSectionMotion(form: FormData): Promise<VisualMotionSaveResult> {
   try {
@@ -404,10 +423,47 @@ export async function saveVisualSectionMotion(form: FormData): Promise<VisualMot
     const found = await ownedSection(sectionId, pageId);
     if (!found.ok) return found;
 
-    const motion = readMotion(form.get("motion"));
-    if (!motion) return { ok: false, reason: "invalid", message: MESSAGES.invalidMotion };
     if (!Number.isInteger(expected) || expected < 0) {
       return { ok: false, reason: "invalid", message: MESSAGES.invalid };
+    }
+
+    /**
+     * Two shapes of request, one decision.
+     *
+     * The Visual Editor sends `motionDocument` — the whole advanced document,
+     * JSON. Older callers send `motion`, a single preset. Either way the answer
+     * is written through `motion-write`, which produces **both** draft columns:
+     * the document, and its legacy projection for the release a rollback would
+     * return to. Neither shape can write one column without the other.
+     *
+     * A document is rebuilt key by key against the closed vocabulary and cut
+     * down to what this block's nodes can carry, so a selector, a CSS string, a
+     * runtime address, an off-grid delay or an entrance on an element that
+     * already animates itself is simply not in what is stored.
+     *
+     * Something that is not a document of a version this build knows is
+     * refused outright rather than read as the empty document. Reading may
+     * fail closed that way; a *write* may not, because an empty draft is a
+     * real one — publishing it would remove every advanced motion the section
+     * has, on the strength of a request nobody could have meant.
+     */
+    const rawDocument = form.get("motionDocument");
+    let draft;
+    if (rawDocument !== null) {
+      let submitted: unknown;
+      try {
+        submitted = JSON.parse(String(rawDocument));
+      } catch {
+        return { ok: false, reason: "invalid", message: MESSAGES.invalidMotion };
+      }
+      if (!isReadableMotionDocument(submitted)) {
+        return { ok: false, reason: "invalid", message: MESSAGES.invalidMotion };
+      }
+      draft = motionDraftFromDocument(found.row, found.block.type, submitted);
+    } else {
+      const preset = readMotion(form.get("motion"));
+      if (!preset) return { ok: false, reason: "invalid", message: MESSAGES.invalidMotion };
+      draft = motionDraftFromPreset(found.row, found.block.type, preset);
     }
 
     /**
@@ -416,12 +472,17 @@ export async function saveVisualSectionMotion(form: FormData): Promise<VisualMot
      * Deliberately different from the ordinary admin form, which folds a
      * matching choice back to `null` because motion rides along with a content
      * save there and an editor who never touched the menu must not acquire a
-     * draft. Here the editor pressed "Save motion" about motion specifically,
-     * so the draft is what they asked for — and `"none"` beside a published
-     * `"none"` is still a real, publishable "leave this section still".
+     * draft. Here the editor changed motion specifically, so the draft is what
+     * they asked for — and `"none"` beside a published `"none"` is still a
+     * real, publishable "leave this section still".
+     *
+     * One guarded update for both columns: they share the section's revision
+     * with content and style, and a motion save that could land half of itself
+     * would be a motion domain that could disagree with itself.
      */
     const result = await updateSectionGuarded(sectionId, expected, {
-      draftAnimation: motion,
+      draftAnimation: draft.draftAnimation,
+      ...(draft.draftMotionConfig ? { draftMotionConfig: draft.draftMotionConfig } : {}),
       updatedBy: session.user.id,
     });
 
@@ -454,7 +515,17 @@ export async function saveVisualSectionMotion(form: FormData): Promise<VisualMot
     if (page) revalidatePath(`/admin/pages/${page.slug}`);
     revalidatePath("/admin/pages");
 
-    return { ok: true, revision: result.revision, motion };
+    return {
+      ok: true,
+      revision: result.revision,
+      motion: draft.draftAnimation,
+      motionDocument: draft.draftMotionConfig,
+      legacyEntrance: legacyFallback({
+        ...found.row,
+        draftAnimation: draft.draftAnimation,
+        draftMotionConfig: draft.draftMotionConfig ?? found.row.draftMotionConfig,
+      }),
+    };
   } catch (error) {
     if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };
     console.error("[visual-editor:motion]", error);

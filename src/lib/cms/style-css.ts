@@ -544,6 +544,30 @@ export const RESPONSIVE_PROPERTIES = [
  */
 export const REVEAL_OPACITY_PROPERTY = "reveal-opacity";
 
+/**
+ * The custom property a revealed element's *finished* opacity lives in.
+ *
+ * Written here rather than in the `Reveal` component so that server code can
+ * name it too: from Batch 15 a server-rendered node with an entrance of its own
+ * carries its Style opacity the same way a `Reveal` does, and the name must be
+ * the one the stylesheet reads. `reveal.tsx` re-exports it.
+ */
+export const FINAL_OPACITY = "--eod-node-opacity";
+
+/**
+ * A responsive attribute's declaration list with `opacity` renamed to the
+ * property the reveal rules read — the breakpoint half of the finished-opacity
+ * rule. Shared by `Reveal`, `SectionMotion` and the server-side node helper, so
+ * every element that animates its opacity publishes the same name.
+ */
+export const renameRevealOpacity = (list: string | undefined): string | undefined =>
+  list === undefined
+    ? undefined
+    : list
+        .split(" ")
+        .map((name) => (name === "opacity" ? REVEAL_OPACITY_PROPERTY : name))
+        .join(" ");
+
 /** React's camelCase property name, as CSS writes it. */
 const kebab = (property: string): string =>
   property.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);

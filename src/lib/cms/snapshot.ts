@@ -4,7 +4,8 @@
  * The boundary is the whole design of this file, so it is stated plainly:
  *
  *   In    block type · order · published visibility · published values ·
- *         published styles · the published `animation` value
+ *         published styles · the published `animation` value · the published
+ *         advanced motion document (`motion_config`, Batch 15)
  *   Out   drafts · draft styles · the page's own title and settings ·
  *         site settings · navigation · footer · social links · catalogue
  *         records · media bytes
@@ -28,8 +29,15 @@
  */
 import { getBlock } from "./blocks";
 import { motionOf } from "./motion";
+import {
+  isEmptyMotionDocument,
+  isReadableMotionDocument,
+  readMotionDocument,
+  type MotionDocument,
+} from "./motion-doc";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 import { validateBlockValues } from "./validate";
+import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 
 export const PAGE_SNAPSHOT_VERSION = 1;
 
@@ -41,9 +49,33 @@ export type SnapshotSection = {
   published: Record<string, unknown>;
   styles: StyleDocument;
   animation: string;
+  /**
+   * The published advanced motion document, when the section had one.
+   *
+   * An additive key of the same v1 snapshot rather than a new snapshot version,
+   * and absent rather than `null` when there is none — deliberately. The
+   * release in `deploy/previous-release` rebuilds a snapshot key by key and
+   * refuses a version it does not know, so a v2 would make every restore point
+   * written from now on unrestorable after a rollback. As an extra key it is
+   * simply ignored there, and that release restores `animation` — the
+   * document's own legacy projection — which is the entrance it can show.
+   */
+  motion?: MotionDocument;
 };
 
 export type PageSnapshot = { v: number; sections: SnapshotSection[] };
+
+/**
+ * A published document as a snapshot keeps it: validated, cut down to what the
+ * block can carry, and absent when there is nothing in it, so a page with no
+ * advanced motion snapshots exactly as it did before Batch 15.
+ */
+const snapshotMotion = (stored: unknown, blockType: string): MotionDocument | undefined => {
+  const document = readMotionDocument(stored);
+  if (!document) return undefined;
+  const kept = motionForBlock(document, blockType);
+  return isEmptyMotionDocument(kept) ? undefined : kept;
+};
 
 export const EMPTY_PAGE_SNAPSHOT: PageSnapshot = { v: PAGE_SNAPSHOT_VERSION, sections: [] };
 
@@ -99,6 +131,7 @@ export function validatePageSnapshot(input: unknown): PageSnapshot {
     if (!blockType) continue;
     const block = getBlock(blockType);
     if (!block) continue;
+    const motion = snapshotMotion(row.motion, blockType);
     sections.push({
       sourceSectionId: isId(row.sourceSectionId) ? row.sourceSectionId : 0,
       blockType,
@@ -110,6 +143,9 @@ export function validatePageSnapshot(input: unknown): PageSnapshot {
       // so a version captured before the vocabulary existed must come back as
       // a preset rather than as whatever string it happened to hold.
       animation: motionOf(asString(row.animation, 32)),
+      // The same trust boundary for the document: rebuilt from the closed
+      // vocabulary and the block's capabilities, never replayed as stored.
+      ...(motion ? { motion } : {}),
     });
   }
 
@@ -125,18 +161,23 @@ export function snapshotFromSections(
     published: Record<string, unknown> | null;
     styles: Record<string, unknown> | null;
     animation: string;
+    motionConfig: unknown;
   }[],
 ): PageSnapshot {
   return {
     v: PAGE_SNAPSHOT_VERSION,
-    sections: rows.map((row) => ({
-      sourceSectionId: row.id,
-      blockType: row.blockType,
-      visible: row.isPublished,
-      published: row.published ?? {},
-      styles: validateStyleDocument(row.styles),
-      animation: motionOf(row.animation),
-    })),
+    sections: rows.map((row) => {
+      const motion = snapshotMotion(row.motionConfig, row.blockType);
+      return {
+        sourceSectionId: row.id,
+        blockType: row.blockType,
+        visible: row.isPublished,
+        published: row.published ?? {},
+        styles: validateStyleDocument(row.styles),
+        animation: motionOf(row.animation),
+        ...(motion ? { motion } : {}),
+      };
+    }),
   };
 }
 
@@ -181,6 +222,11 @@ export function readPageSnapshot(input: unknown): SnapshotRead {
     // *without* that section. Refusing says so instead.
     if (!getBlock(row.blockType)) return UNSUPPORTED;
     if (typeof row.visible !== "boolean") return UNSUPPORTED;
+    // A motion document this build cannot read — a newer build's — would be
+    // restored as no motion at all. Refused by name, like a newer snapshot.
+    if (row.motion !== undefined && row.motion !== null && !isReadableMotionDocument(row.motion)) {
+      return UNSUPPORTED;
+    }
   }
 
   // Shape accepted; the values still go through the same sanitiser a save does.

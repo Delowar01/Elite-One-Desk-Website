@@ -27,14 +27,14 @@ import type { BlockProps } from "./context";
  * the homepage is the heaviest page on the site and this section is the last
  * place that should be adding observers to it.
  */
-export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
+export function QuickLinksBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale, media, catalog, packages, destinations } = ctx;
   const def = getBlock("quick-links")!;
   const fields = def.fields.find((f) => f.name === "links")!.itemFields ?? [];
   const links = items(values, "links", locale, fields);
   if (!links.length) return null;
-  const node = blockNode({ editor, styles });
-  const picture = mediaNode({ editor, styles });
+  const node = blockNode({ editor, styles, motion });
+  const picture = mediaNode({ editor, styles, motion });
 
   const catalogue = { ...catalog, packages, destinations };
 
@@ -44,6 +44,7 @@ export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
         <SectionHeading
           editor={editor}
           styles={styles}
+          motion={motion}
           fields={{ eyebrow: "title", intro: "intro" }}
           eyebrow={text(values, "title", locale) || ctx.dict.sections.quickAccess}
           intro={text(values, "intro", locale)}

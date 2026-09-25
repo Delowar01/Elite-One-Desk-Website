@@ -4,7 +4,7 @@ import { Icon } from "@/components/ui/icon";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { getBlock } from "@/lib/cms/blocks";
 import { DRAFT_LABEL, draftKindOf, type DraftKind } from "@/lib/cms/drafts";
-import type { MotionPreset } from "@/lib/cms/motion";
+import type { MotionDocument } from "@/lib/cms/motion-doc";
 import type { Breakpoint, StyleDocument } from "@/lib/cms/styles";
 import type { Locale } from "@/lib/i18n/config";
 import type { VisualSectionData } from "@/lib/visual-editor/content";
@@ -47,7 +47,8 @@ export type SectionBuffer = {
   data: VisualSectionData;
   values: Record<string, unknown>;
   styles: StyleDocument;
-  motion: MotionPreset;
+  /** The whole motion document — section and elements, every width (Batch 15a). */
+  motion: MotionDocument;
   contentDirty: boolean;
   styleDirty: boolean;
   motionDirty: boolean;
@@ -81,7 +82,9 @@ const draftKindOfData = (data: VisualSectionData): DraftKind =>
   draftKindOf({
     draft: data.hasDraft ? {} : null,
     draftStyles: data.hasStyleDraft ? {} : null,
+    // `hasMotionDraft` already answers for both motion columns.
     draftAnimation: data.hasMotionDraft ? "" : null,
+    draftMotionConfig: null,
   });
 
 /**
@@ -128,7 +131,7 @@ export function InspectorPanel({
   loadError: string | null;
   onValues: (values: Record<string, unknown>) => void;
   onStyles: (styles: StyleDocument) => void;
-  onMotion: (motion: MotionPreset) => void;
+  onMotion: (next: MotionDocument) => void;
   onSave: () => void;
   onRevert: (domain: EditDomain) => void;
   onTakeLatest: () => void;
@@ -254,7 +257,10 @@ export function InspectorPanel({
                   />
                 ) : (
                   <MotionInspector
-                    motion={buffer.motion}
+                    node={node}
+                    document={buffer.motion}
+                    legacy={buffer.data.legacyEntrance}
+                    breakpoint={breakpoint}
                     locale={locale}
                     canManage={canManage}
                     onChange={onMotion}
@@ -392,7 +398,7 @@ function Conflict({ message, onTakeLatest }: { message?: string; onTakeLatest: (
 const SAVE_LABEL: Record<EditDomain, { saved: string; unsaved: string }> = {
   content: { saved: "Draft saved", unsaved: "Unsaved content" },
   style: { saved: "Styles saved", unsaved: "Unsaved styles" },
-  motion: { saved: "Motion saved", unsaved: "Unsaved entrance" },
+  motion: { saved: "Motion saved", unsaved: "Unsaved motion" },
 };
 
 /**
@@ -431,7 +437,7 @@ function SaveBar({
   const label = SAVE_LABEL[domain];
   /**
    * What the *server* is holding for this domain, which is a different
-   * sentence from what this browser has unsaved. "Unsaved entrance" means
+   * sentence from what this browser has unsaved. "Unsaved motion" means
    * nobody else can see it yet; "Draft on file" means it is stored and waiting
    * to be published. Conflating them is how somebody closes a tab believing
    * their work is safe.

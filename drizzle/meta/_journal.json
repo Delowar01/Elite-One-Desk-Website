@@ -29,6 +29,13 @@
       "when": 1789398536174,
       "tag": "0003_lazy_skreet",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790341373279,
+      "tag": "0004_spooky_shadow_king",
+      "breakpoints": true
     }
   ]
 }

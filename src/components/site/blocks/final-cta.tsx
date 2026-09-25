@@ -7,14 +7,14 @@ import { localeHref } from "@/lib/i18n/config";
 import { blockNode } from "@/lib/cms/node";
 import type { BlockProps } from "./context";
 
-export function FinalCtaBlock({ values, ctx, editor, styles }: BlockProps) {
+export function FinalCtaBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale, dict, whatsappHref } = ctx;
   const title = text(values, "title", locale);
   const body = text(values, "body", locale);
   const ctaHref = str(values, "primaryCtaHref", "/contact");
   const ctaLabel = text(values, "primaryCtaLabel", locale) || dict.nav.primaryCta;
   const showWhatsapp = bool(values, "showWhatsapp", true) && Boolean(whatsappHref);
-  const node = blockNode({ editor, styles });
+  const node = blockNode({ editor, styles, motion });
 
   return (
     <section className="section-tight">

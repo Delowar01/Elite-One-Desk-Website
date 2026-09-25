@@ -16,7 +16,7 @@ import type { BlockProps } from "./context";
  * wall of colourful destination cards — §49 rules out the ThemeForest travel
  * look, and the corporate ground has to survive the travel content.
  */
-export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) {
+export function TravelFeatureBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const { locale } = ctx;
   const def = getBlock("travel-feature")!;
   const fields = def.fields.find((f) => f.name === "capabilities")!.itemFields ?? [];
@@ -24,8 +24,8 @@ export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) 
   const image = ctx.media.get(mediaId(values, "image") ?? -1) ?? null;
   const ctaHref = str(values, "ctaHref", "/services/travel-tourism");
   const ctaLabel = text(values, "ctaLabel", locale);
-  const node = blockNode({ editor, styles });
-  const imageNode = mediaNode({ editor, styles })("field:image");
+  const node = blockNode({ editor, styles, motion });
+  const imageNode = mediaNode({ editor, styles, motion })("field:image");
 
   return (
     <section className="section relative">
@@ -64,6 +64,7 @@ export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) 
           <SectionHeading
             editor={editor}
             styles={styles}
+            motion={motion}
             fields={{ eyebrow: "eyebrow", title: "title", intro: "body" }}
             eyebrow={text(values, "eyebrow", locale)}
             title={text(values, "title", locale)}

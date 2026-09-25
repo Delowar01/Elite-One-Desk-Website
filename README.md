@@ -231,8 +231,10 @@ stylesheet. Decorative glyphs that imply direction carry `.flip-rtl`.
   arrive, so images never shift the layout.
 - The video showcase requests nothing from YouTube until someone presses play.
 - Third-party tags are `afterInteractive` and only load when an id is configured.
-- Scroll reveals are CSS classes toggled by one IntersectionObserver, not a
-  motion library. The resting state is the visible state, so a visitor with no
+- Scroll reveals are CSS — classes for the five legacy entrance presets,
+  source-owned custom properties and keyframes for the Visual Editor's advanced
+  motion — started by one shared IntersectionObserver per page, not a motion
+  library. The resting state is the visible state, so a visitor with no
   JavaScript — or a crawler — sees the finished page.
 - `prefers-reduced-motion` disables every animation, including the hero.
 

@@ -1,5 +1,6 @@
 import { formatNodePath, parseNodePath } from "./address";
 import { ITEM_ID_KEY, isItemId, newItemId } from "./item-id";
+import { validateMotionDocument, type MotionDocument } from "./motion-doc";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 
 /**
@@ -77,23 +78,49 @@ export function remapStyleItemIds(document: StyleDocument, ids: IdMap): StyleDoc
 
   const nodes: StyleDocument["nodes"] = {};
   for (const [path, node] of Object.entries(document.nodes)) {
-    const parsed = parseNodePath(path);
-    if (!parsed) continue;
-
-    let dropped = false;
-    const moved = parsed.map((segment) => {
-      if (segment.kind !== "item") return segment;
-      const fresh = ids.get(segment.name);
-      if (!fresh) {
-        dropped = true;
-        return segment;
-      }
-      return { ...segment, name: fresh };
-    });
-    if (dropped) continue;
-
-    nodes[formatNodePath(moved)] = node;
+    const moved = remapPath(path, ids);
+    if (moved) nodes[moved] = node;
   }
 
   return validateStyleDocument({ v: document.v, nodes });
+}
+
+/**
+ * One section-relative path, pointing at the copy's row instead of the
+ * original's — or `null` when it names a row the copy does not have.
+ */
+function remapPath(path: string, ids: IdMap): string | null {
+  const parsed = parseNodePath(path);
+  if (!parsed) return null;
+
+  let dropped = false;
+  const moved = parsed.map((segment) => {
+    if (segment.kind !== "item") return segment;
+    const fresh = ids.get(segment.name);
+    if (!fresh) {
+      dropped = true;
+      return segment;
+    }
+    return { ...segment, name: fresh };
+  });
+  return dropped ? null : formatNodePath(moved);
+}
+
+/**
+ * The same remapping for the advanced motion document (Batch 15).
+ *
+ * The section's own target has no path and is carried as it is. Every node is
+ * moved through the same table as the styles, so a list's stagger and a card's
+ * own entrance land on the copy's list and the copy's card. A node naming a
+ * row the table does not know is dropped — including when the table is empty:
+ * a copy of a section whose list is now empty has no row for that motion to
+ * mean, and must not point at the original's.
+ */
+export function remapMotionItemIds(document: MotionDocument, ids: IdMap): MotionDocument {
+  const nodes: MotionDocument["nodes"] = {};
+  for (const [path, target] of Object.entries(document.nodes)) {
+    const moved = remapPath(path, ids);
+    if (moved) nodes[moved] = target;
+  }
+  return validateMotionDocument({ v: document.v, section: document.section, nodes });
 }

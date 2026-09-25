@@ -1,6 +1,7 @@
 import type { PageStructure } from "@/lib/cms/structure";
 import { parseNodePath } from "@/lib/cms/address";
 import type { MotionPreset } from "@/lib/cms/motion";
+import type { MotionDocument } from "@/lib/cms/motion-doc";
 import type { StyleDocument } from "@/lib/cms/styles";
 
 /**
@@ -36,7 +37,9 @@ export type VisualSectionData = {
    */
   hasStyleDraft: boolean;
   /**
-   * A motion draft is on file — `draft_animation IS NOT NULL`.
+   * A motion draft is on file — `draft_animation` or `draft_motion_config` is
+   * not null. Motion is one domain with two columns (Batch 15), so either one
+   * pending is a motion draft.
    *
    * The same null-versus-value distinction as the styles above, and the same
    * consequence if it were got wrong. `"none"` is a preset: it means
@@ -61,6 +64,19 @@ export type VisualSectionData = {
    * out, so the chooser never has to render an option that does not exist.
    */
   motion: MotionPreset;
+  /**
+   * The advanced motion the panel edits (Batch 15): the draft document when
+   * there is one, otherwise the published one, otherwise an empty document —
+   * validated and cut down to what this block's nodes can carry, so the panel
+   * never shows a setting a save would drop.
+   */
+  motionDocument: MotionDocument;
+  /**
+   * The preset the section's Base entrance falls back to when the document
+   * names none — the panel's "Legacy default", named so an editor can see
+   * exactly which entrance it is. See `legacyFallback`.
+   */
+  legacyEntrance: MotionPreset;
 };
 
 /**
@@ -108,12 +124,21 @@ export type VisualStyleSaveResult =
  * The answer to a motion-draft save.
  *
  * Narrow, like the style result and for the same reason: a motion save owns
- * `draft_animation` and the revision and says nothing about content or styles.
- * Returning a whole section document would invite the panel to adopt values
- * and overrides it did not write, over the top of edits nobody has saved.
+ * the two motion draft columns and the revision, and says nothing about content
+ * or styles. Returning a whole section document would invite the panel to adopt
+ * values and overrides it did not write, over the top of edits nobody has saved.
  */
 export type VisualMotionSaveResult =
-  | { ok: true; revision: number; motion: MotionPreset }
+  | {
+      ok: true;
+      revision: number;
+      /** The legacy preset now in `draft_animation` — the document's projection. */
+      motion: MotionPreset;
+      /** The document now in `draft_motion_config`, or `null` for a legacy-only section. */
+      motionDocument: MotionDocument | null;
+      /** The panel's "Legacy default" after this save — see `legacyFallback`. */
+      legacyEntrance: MotionPreset;
+    }
   | { ok: false; reason: "conflict"; message: string; section: VisualSectionData }
   | { ok: false; reason: VisualLoadFailure | "invalid"; message: string };
 
