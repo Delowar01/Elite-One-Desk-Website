@@ -3,19 +3,31 @@
 import { Icon } from "@/components/ui/icon";
 import {
   ALIGNMENTS,
+  ALIGN_ITEMS,
   BACKGROUNDS,
   BORDERS,
+  DIRECTIONS,
   FONT_SIZES,
   FONT_WEIGHTS,
+  GLOWS,
+  GRID_COLUMNS_MAX,
+  GRID_COLUMNS_MIN,
+  HEIGHTS,
+  JUSTIFY,
+  LAYOUTS,
   MAX_WIDTHS,
+  MIN_HEIGHTS,
   OPACITY_MAX,
   OPACITY_MIN,
   OPACITY_SNAP,
+  OVERFLOWS,
   RADII,
   RESPONSIVE_WIDTHS,
   SHADOWS,
   SPACING_STEPS,
   TEXT_COLORS,
+  WIDTHS,
+  WRAPS,
   type Breakpoint,
   type StyleDocument,
   type StyleTokens,
@@ -32,9 +44,12 @@ import {
 import type { EditorNodeMeta } from "@/lib/visual-editor/protocol";
 import type { Locale } from "@/lib/i18n/config";
 import {
+  offeredTokens,
   STYLE_GROUPS,
   STYLE_GROUP_LABELS,
   STYLE_TOKEN_LABELS,
+  STYLE_TOKEN_NOTES,
+  STYLE_VALUE_LABELS,
   styleTargetFor,
   type StyleGroup,
 } from "@/lib/visual-editor/style-targets";
@@ -121,8 +136,17 @@ export function StyleInspector({
   }
 
   const target = styleTargetFor(node.blockType, path);
-  const offered = new Set(target.tokens);
   const stored = styles.nodes[path];
+  /**
+   * Which layout the node is in, resolved the same way the page resolves it:
+   * this breakpoint's own `layout` if it has one, otherwise the branch it
+   * inherits from, otherwise whatever the registry says the component's design
+   * already does. It decides which layout controls are worth showing, and it
+   * is read from the document and the registry — never from the canvas.
+   */
+  const layoutState = tokenState(stored, breakpoint, "layout");
+  const layout = (layoutState.value ?? layoutState.inherited) as StyleTokens["layout"];
+  const offered = new Set(offeredTokens(target, layout));
   const branch: StyleTokens = stored?.[breakpoint] ?? {};
   const overrides = Object.keys(branch).length;
   const described = describeAddress(node.blockType, node.relativePath, node.text);
@@ -154,10 +178,28 @@ export function StyleInspector({
       <fieldset disabled={!canManage} className="min-w-0 border-0 p-0">
         <div className="flex flex-col gap-4">
           {groups.map(({ group, tokens }) => (
-            <div key={group}>
+            <div key={group} data-style-group={group}>
               <p className="mb-1.5 text-[0.66rem] font-semibold uppercase tracking-[0.07em] text-muted">
                 {STYLE_GROUP_LABELS[group]}
               </p>
+              {/*
+                Which layout is in force, in words, and where it came from.
+                Without it an editor cannot tell why a grid's column count is
+                sitting there when they never chose a grid — the component's own
+                design is a grid, and the registry is what says so. Text rather
+                than a colour or an icon, so it is readable by anything.
+              */}
+              {group === "layout" ? (
+                <p className="mb-1.5 text-[0.66rem] leading-relaxed text-muted" data-style-layout={layout ?? target.layout ?? "default"}>
+                  {layoutState.value !== undefined
+                    ? `Set here: ${describeValue("layout", layoutState.value)}.`
+                    : layoutState.inherited !== undefined
+                      ? `Inherited from ${FROM_LABEL[layoutState.from ?? "base"]}: ${describeValue("layout", layoutState.inherited)}.`
+                      : target.layout
+                        ? `This element's own design is a ${target.layout === "grid" ? "grid" : "flexible row"}.`
+                        : "This element uses the component's own layout."}
+                </p>
+              ) : null}
               <div className="flex flex-col gap-2">
                 {tokens.map((token) => (
                   <Control
@@ -290,8 +332,9 @@ export function describeValue(
   if (token === "opacity" && typeof value === "number") return `${Math.round(value * 100)}%`;
   if ((token === "objectX" || token === "objectY") && typeof value === "number") return `${value}%`;
   if (SPACING.has(token)) return `step ${value}`;
+  if (token === "columns") return `${value} column${value === 1 ? "" : "s"}`;
   const text = String(value);
-  return text.charAt(0).toUpperCase() + text.slice(1);
+  return STYLE_VALUE_LABELS[text] ?? text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function Control({
@@ -309,6 +352,8 @@ function Control({
   // A real label bound to a real control: the token name is the one stable
   // thing about a row, so it is what the pair is keyed on.
   const id = `style-${token}`;
+  // The note under the control, when there is one, read as part of the field.
+  const describedBy = STYLE_TOKEN_NOTES[token] ? `${id}-note` : undefined;
   const { value } = state;
   const row = { token, id, label, state, breakpoint, onClear: () => onChange(token, undefined) };
   // What a slider should sit at when this breakpoint says nothing: the value
@@ -320,6 +365,7 @@ function Control({
       <Row {...row}>
         <select
           id={id}
+          aria-describedby={describedBy}
           value={value === true ? "hide" : DEFAULT}
           onChange={(event) => onChange(token, event.target.value === "hide" ? true : undefined)}
           className="admin-select h-[1.8rem] w-full py-0 text-[0.76rem]"
@@ -343,6 +389,7 @@ function Control({
       <Row {...row}>
         <input
           id={id}
+          aria-describedby={describedBy}
           type="range"
           min={OPACITY_MIN}
           max={OPACITY_MAX}
@@ -361,6 +408,7 @@ function Control({
       <Row {...row}>
         <input
           id={id}
+          aria-describedby={describedBy}
           type="range"
           min={0}
           max={100}
@@ -374,11 +422,36 @@ function Control({
     );
   }
 
+  if (token === "columns") {
+    return (
+      <Row {...row}>
+        <select
+          id={id}
+          aria-describedby={describedBy}
+          value={value === undefined ? DEFAULT : String(value)}
+          onChange={(event) => {
+            const raw = event.target.value;
+            onChange(token, raw === DEFAULT ? undefined : (Number(raw) as StyleTokens["columns"]));
+          }}
+          className="admin-select h-[1.8rem] w-full py-0 text-[0.76rem]"
+        >
+          <option value={DEFAULT}>{SCOPE[breakpoint].first}</option>
+          {COLUMN_COUNTS.map((count) => (
+            <option key={count} value={String(count)}>
+              {count === 1 ? "1 column" : `${count} columns`}
+            </option>
+          ))}
+        </select>
+      </Row>
+    );
+  }
+
   if (SPACING.has(token)) {
     return (
       <Row {...row}>
         <input
           id={id}
+          aria-describedby={describedBy}
           type="range"
           min={0}
           max={SPACING_STEPS}
@@ -397,6 +470,7 @@ function Control({
     <Row {...row}>
       <select
         id={id}
+        aria-describedby={describedBy}
         value={value === undefined ? DEFAULT : String(value)}
         onChange={(event) => {
           const raw = event.target.value;
@@ -409,7 +483,7 @@ function Control({
         <option value={DEFAULT}>{SCOPE[breakpoint].first}</option>
         {options.map((option) => (
           <option key={String(option)} value={String(option)}>
-            {String(option)}
+            {describeValue(token, option as StyleTokens[keyof StyleTokens])}
           </option>
         ))}
       </select>
@@ -442,8 +516,24 @@ const OPTIONS: Partial<Record<keyof StyleTokens, readonly (string | number)[]>> 
   radius: RADII,
   border: BORDERS,
   shadow: SHADOWS,
+  glow: GLOWS,
   maxWidth: MAX_WIDTHS,
+  width: WIDTHS,
+  height: HEIGHTS,
+  minHeight: MIN_HEIGHTS,
+  layout: LAYOUTS,
+  direction: DIRECTIONS,
+  wrap: WRAPS,
+  justify: JUSTIFY,
+  alignItems: ALIGN_ITEMS,
+  overflow: OVERFLOWS,
 };
+
+/** 1…6, from the validator's own bounds rather than a second list. */
+const COLUMN_COUNTS = Array.from(
+  { length: GRID_COLUMNS_MAX - GRID_COLUMNS_MIN + 1 },
+  (_, index) => GRID_COLUMNS_MIN + index,
+);
 
 function Row({
   token,
@@ -464,6 +554,7 @@ function Row({
 }) {
   const isSet = state.value !== undefined;
   const inherited = state.inherited !== undefined ? describeValue(token, state.inherited) : "";
+  const note = STYLE_TOKEN_NOTES[token];
 
   return (
     <div data-style-token={token} data-style-state={isSet ? "override" : "inherited"}>
@@ -489,6 +580,17 @@ function Row({
         )}
       </div>
       <div className="flex items-center gap-2">{children}</div>
+      {/*
+        What this control will and will not do, for the few that can crop
+        something or whose effect depends on the reading direction. Bound to the
+        control with `aria-describedby` rather than left as loose text beside
+        it, so a screen reader reads the warning as part of the field.
+      */}
+      {note ? (
+        <p id={`${id}-note`} className="mt-1 text-[0.66rem] leading-relaxed text-muted">
+          {note}
+        </p>
+      ) : null}
       {/*
         What this row would show if nobody overrode it here, and where that
         comes from. "Component default" rather than a colour or a size, because

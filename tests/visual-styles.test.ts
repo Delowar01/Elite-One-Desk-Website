@@ -1264,7 +1264,24 @@ const EXECUTES: Record<string, { value: unknown; on: "box" | "image"; css: (tag:
   radius: { value: "lg", on: "box", css: () => /border-radius:\s*var\(--radius-lg\)/ },
   border: { value: "accent", on: "box", css: () => /border:\s*1px solid var\(--color-orange\)/ },
   shadow: { value: "lift", on: "box", css: () => /box-shadow:\s*var\(--shadow-lift\)/ },
+  // Composed with the shadow above into the one `box-shadow` CSS has, so this
+  // looks for its own layer inside the list rather than for the whole value.
+  glow: { value: "accent", on: "box", css: () => /box-shadow:[^;"]*var\(--glow-accent\)/ },
   maxWidth: { value: "prose", on: "box", css: () => /max-width:\s*65ch/ },
+  width: { value: "half", on: "box", css: () => /(^|;)width:\s*50%/ },
+  height: { value: "screen", on: "box", css: () => /(^|;)height:\s*100svh/ },
+  minHeight: { value: "half-screen", on: "box", css: () => /min-height:\s*50svh/ },
+  layout: { value: "grid", on: "box", css: () => /display:\s*grid/ },
+  direction: { value: "column", on: "box", css: () => /flex-direction:\s*column/ },
+  wrap: { value: "wrap", on: "box", css: () => /flex-wrap:\s*wrap/ },
+  justify: { value: "between", on: "box", css: () => /justify-content:\s*space-between/ },
+  alignItems: { value: "center", on: "box", css: () => /align-items:\s*center/ },
+  columns: {
+    value: 3,
+    on: "box",
+    css: () => /grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/,
+  },
+  overflow: { value: "hidden", on: "box", css: () => /(^|;)overflow:\s*hidden/ },
   objectX: { value: 20, on: "image", css: () => /object-position:\s*20%/ },
   objectY: { value: 80, on: "image", css: () => /object-position:[^;"]*80%/ },
   // Hiding is the element's own display, so it is read from the box like any
@@ -1284,7 +1301,35 @@ describe("every control the panel offers does something on the page", () => {
    * nothing is worse than a missing one — and until this ran, nothing checked
    * the resolver's answer against the renderer. Each node below takes *every*
    * token its own target claims, at once, and every one of them has to appear.
+   *
+   * With one deliberate exception, added in Batch 14. `layout` and `hidden`
+   * both write `display`, and hiding beats laying out on purpose — so applying
+   * them together would make one of the two unobservable and this test would be
+   * proving less than it looks. They are applied in two passes instead: the
+   * whole vocabulary without `hidden`, then `hidden` on its own. Both are
+   * asserted, neither is skipped, and the pass that leaves `hidden` out is the
+   * one that can see a layout at all.
    */
+  const VISIBLE_ONLY: ReadonlySet<string> = new Set(["hidden"]);
+  const styleable = (target: { tokens: readonly string[] }) =>
+    target.tokens.filter((token) => !VISIBLE_ONLY.has(token));
+
+  /**
+   * A second save against a section the first save already moved.
+   *
+   * The revision guard is doing its job: `saveStyles` sends the revision it was
+   * handed, and after one accepted write that number is a revision behind. So
+   * the row is re-read first, and the answer is checked rather than merely
+   * received — a refused save returns a perfectly well-formed conflict, and a
+   * test that accepted one would be asserting against the *previous* document.
+   */
+  const hide = async (section: SectionRow, path: string) => {
+    const current = await row(section.id);
+    const saved = answered(
+      await saveStyles(current, doc({ [path]: { base: { hidden: true } } })),
+    );
+    assert.ok(saved.ok, `hiding ${path} was refused`);
+  };
   const CASES: { name: string; slug: string; page: string; block: string; path: string; image?: boolean }[] = [
     { name: "a section root", slug: "privacy", page: "/privacy", block: "page-hero", path: "root" },
     { name: "a text field", slug: "privacy", page: "/privacy", block: "page-hero", path: "field:title" },
@@ -1295,22 +1340,28 @@ describe("every control the panel offers does something on the page", () => {
     test(item.name, async () => {
       const section = await find(item.slug, item.block);
       const target = styleTargetFor(item.block, item.path);
-      const tokens = Object.fromEntries(
-        target.tokens.map((token) => [token, EXECUTES[token]!.value]),
-      );
+      const shown = styleable(target);
+      const tokens = Object.fromEntries(shown.map((token) => [token, EXECUTES[token]!.value]));
       assert.ok(target.tokens.length >= 4, `${item.path} offers almost nothing`);
 
       answered(await saveStyles(section, doc({ [item.path]: { base: tokens } })));
 
-      const html = (await canvas(item.page)).html;
       const address =
         item.path === "root" ? `section:${section.id}` : `section:${section.id}/${item.path}`;
+      const html = (await canvas(item.page)).html;
       const tag = tagWith(html, `data-eod-address="${address}"`);
       assert.ok(tag, `${item.path} is not addressable`);
       const style = styleOf(tag);
-      for (const token of target.tokens) {
+      for (const token of shown) {
         assert.match(style, EXECUTES[token]!.css(tag), `${item.name}: ${token} did nothing (${style})`);
       }
+
+      // …and hiding, on its own, because it is the one token whose whole job is
+      // to beat the others that write the same declaration.
+      await hide(section, item.path);
+      const hiddenTag = tagWith((await canvas(item.page)).html, `data-eod-address="${address}"`);
+      assert.ok(hiddenTag, `${item.path} disappeared from the canvas when hidden`);
+      assert.match(styleOf(hiddenTag), /display:\s*none/, `${item.name}: hidden did nothing`);
     });
   }
 
@@ -1322,19 +1373,25 @@ describe("every control the panel offers does something on the page", () => {
     const path = `field:capabilities/item:${String(caps[0]![ITEM_ID_KEY])}`;
     const target = styleTargetFor("travel-feature", path);
 
+    const shown = styleable(target);
     answered(
       await saveStyles(
         travel,
-        doc({ [path]: { base: Object.fromEntries(target.tokens.map((t) => [t, EXECUTES[t]!.value])) } }),
+        doc({ [path]: { base: Object.fromEntries(shown.map((t) => [t, EXECUTES[t]!.value])) } }),
       ),
     );
 
     const html = (await canvas("/")).html;
     const tag = tagWith(html, `data-eod-address="section:${travel.id}/${path}"`);
     assert.ok(tag, "the row is not addressable");
-    for (const token of target.tokens) {
+    for (const token of shown) {
       assert.match(styleOf(tag), EXECUTES[token]!.css(tag), `a row's ${token} did nothing`);
     }
+
+    await hide(travel, path);
+    const hiddenRow = tagWith((await canvas("/")).html, `data-eod-address="section:${travel.id}/${path}"`);
+    assert.ok(hiddenRow, "the hidden row left the canvas");
+    assert.match(styleOf(hiddenRow), /display:\s*none/, "a row's hidden did nothing");
   });
 
   test("a media field, whose controls are split across two elements", async () => {
@@ -1345,10 +1402,11 @@ describe("every control the panel offers does something on the page", () => {
     const path = `field:links/item:${String(rows[0]![ITEM_ID_KEY])}/field:image`;
     const target = styleTargetFor("quick-links", path);
 
+    const shown = styleable(target);
     answered(
       await saveStyles(
         links,
-        doc({ [path]: { base: Object.fromEntries(target.tokens.map((t) => [t, EXECUTES[t]!.value])) } }),
+        doc({ [path]: { base: Object.fromEntries(shown.map((t) => [t, EXECUTES[t]!.value])) } }),
       ),
     );
 
@@ -1357,11 +1415,16 @@ describe("every control the panel offers does something on the page", () => {
     assert.ok(frame, "the picture is not addressable");
     const img = tagInside(html, frame, "img");
     assert.ok(img, "the frame holds no picture");
-    for (const token of target.tokens) {
+    for (const token of shown) {
       const rule = EXECUTES[token]!;
       const tag = rule.on === "image" ? img : frame;
       assert.match(styleOf(tag), rule.css(tag), `a picture's ${token} did nothing on the ${rule.on}`);
     }
+
+    await hide(links, path);
+    const hiddenFrame = tagWith((await canvas("/")).html, `data-eod-address="section:${links.id}/${path}"`);
+    assert.ok(hiddenFrame, "the hidden picture left the canvas");
+    assert.match(styleOf(hiddenFrame), /display:\s*none/, "a picture's hidden did nothing");
   });
 
   test("and the vocabulary has no token this could not have checked", () => {
@@ -2190,5 +2253,252 @@ describe("nothing else woke up", () => {
     assert.ok(!/data-eod-/.test(live.html));
     assert.ok(!live.html.includes('"nodes":'), "a raw style document reached the page");
     assert.ok(!live.html.includes("draft_styles"));
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Batch 14 — the layout controls, end to end on the real renderer.
+ *
+ * Everything the tokens themselves do is asserted in `layout-tokens.test.ts`,
+ * which is pure. What can only be asserted here is that they survive the whole
+ * path: a save through the real action, into the real draft column, out through
+ * the real page renderer, onto the element the panel said it was styling, and
+ * no further — not onto a visitor's page until somebody publishes it.
+ */
+describe("a layout override travels the whole path, and no further", () => {
+  test("a real list container is addressable, and takes a layout the panel could offer", async () => {
+    const section = await find("home", "why-us");
+    const path = "field:points";
+    // The registry calls this node a grid, so the panel offers columns, gap and
+    // alignment on it with no override first. If the markup ever stopped being
+    // the grid, this is where the claim and the page would part company.
+    assert.equal(styleTargetFor("why-us", path).layout, "grid");
+
+    answered(
+      await saveStyles(
+        section,
+        doc({ [path]: { base: { columns: 3, gap: 8, justify: "between", alignItems: "center" } } }),
+      ),
+    );
+
+    const tag = tagWith((await canvas("/")).html, `data-eod-address="section:${section.id}/${path}"`);
+    assert.ok(tag, "the list container is not addressable");
+    const style = styleOf(tag);
+    assert.match(style, /grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/);
+    assert.match(style, /gap:\s*3rem/);
+    assert.match(style, /justify-content:\s*space-between/);
+    assert.match(style, /align-items:\s*center/);
+    // The element is the `<ul>` the block renders, not a wrapper invented for
+    // the editor: it is the same tag a visitor gets.
+    assert.match(tag, /^<ul/);
+  });
+
+  test("four columns, two on a tablet, one on a phone — three numbers, one element", async () => {
+    const section = await find("home", "quick-links");
+    const path = "field:links";
+    answered(
+      await saveStyles(
+        section,
+        doc({
+          [path]: {
+            base: { layout: "grid", columns: 4 },
+            tablet: { columns: 2 },
+            mobile: { columns: 1 },
+          },
+        }),
+      ),
+    );
+
+    const tag = tagWith((await canvas("/")).html, `data-eod-address="section:${section.id}/${path}"`);
+    assert.ok(tag, "the card grid is not addressable");
+    assert.match(styleOf(tag), /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/);
+    const vars = varsOf(tag);
+    assert.equal(vars["--rs-t-grid-template-columns"], "repeat(2, minmax(0, 1fr))");
+    assert.equal(vars["--rs-m-grid-template-columns"], "repeat(1, minmax(0, 1fr))");
+    for (const breakpoint of ["t", "m"] as const) {
+      assert.deepEqual(listed(tag, `data-rs-${breakpoint}`), ["grid-template-columns"]);
+    }
+    // Only what each branch declares: the display that made it a grid is base's
+    // and is not repeated, or a later change to base would stop reaching them.
+    assert.ok(!listed(tag, "data-rs-t").includes("display"));
+  });
+
+  test("resetting the phone's column count makes it follow the tablet again", async () => {
+    const section = await find("home", "quick-links");
+    const path = "field:links";
+    const current = await row(section.id);
+    answered(
+      await saveStyles(
+        current,
+        doc({ [path]: { base: { layout: "grid", columns: 4 }, tablet: { columns: 2 } } }),
+      ),
+    );
+
+    const tag = tagWith((await canvas("/")).html, `data-eod-address="section:${section.id}/${path}"`);
+    assert.ok(tag);
+    const vars = varsOf(tag);
+    assert.equal(vars["--rs-t-grid-template-columns"], "repeat(2, minmax(0, 1fr))");
+    assert.ok(
+      !("--rs-m-grid-template-columns" in vars),
+      "the phone froze a copy of the tablet instead of inheriting it",
+    );
+    assert.deepEqual(listed(tag, "data-rs-m"), []);
+  });
+
+  test("a shadow and a glow arrive together, and clearing one leaves the other", async () => {
+    const section = await find("about", "page-hero");
+    answered(await saveStyles(section, doc({ root: { base: { shadow: "lift", glow: "accent" } } })));
+
+    const both = tagWith((await canvas("/about")).html, `data-eod-address="section:${section.id}"`);
+    assert.match(styleOf(both), /box-shadow:\s*var\(--shadow-lift\),\s*var\(--glow-accent\)/);
+
+    // Clearing the shadow is deleting its key, and the glow is untouched.
+    answered(await saveStyles(await row(section.id), doc({ root: { base: { glow: "accent" } } })));
+    const glowOnly = tagWith((await canvas("/about")).html, `data-eod-address="section:${section.id}"`);
+    assert.match(styleOf(glowOnly), /box-shadow:\s*var\(--glow-accent\)/);
+    assert.ok(!styleOf(glowOnly).includes("--shadow-lift"), "the shadow survived being cleared");
+
+    // …and the other way round.
+    answered(await saveStyles(await row(section.id), doc({ root: { base: { shadow: "lift" } } })));
+    const shadowOnly = tagWith((await canvas("/about")).html, `data-eod-address="section:${section.id}"`);
+    assert.match(styleOf(shadowOnly), /box-shadow:\s*var\(--shadow-lift\)/);
+    assert.ok(!styleOf(shadowOnly).includes("--glow-accent"), "the glow survived being cleared");
+  });
+
+  test("the stylesheet the page loads really carries the new rules", async () => {
+    const page = await get(server.origin, "/privacy");
+    const href = /<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/.exec(page.html)?.[1]
+      ?? /<link[^>]+href="([^"]+\.css)"/.exec(page.html)?.[1];
+    assert.ok(href, "the page loads no stylesheet");
+    const sheet = await get(server.origin, href);
+    assert.equal(sheet.status, 200);
+    for (const property of [
+      "width",
+      "height",
+      "min-height",
+      "flex-direction",
+      "flex-wrap",
+      "justify-content",
+      "align-items",
+      "grid-template-columns",
+      "overflow",
+    ]) {
+      assert.match(
+        sheet.html,
+        new RegExp(`\\[data-rs-t~="?${property}"?\\]\\{${property}:var\\(--rs-t-${property}\\)!important`),
+        `no tablet rule for ${property}`,
+      );
+      assert.match(
+        sheet.html,
+        new RegExp(`\\[data-rs-m~="?${property}"?\\]\\{${property}:var\\(--rs-m-${property}\\)!important`),
+        `no mobile rule for ${property}`,
+      );
+    }
+    // And the glow values themselves are in the built stylesheet, or every
+    // `var(--glow-…)` the renderer writes would resolve to nothing.
+    for (const name of ["--glow-soft", "--glow-accent", "--glow-strong"]) {
+      assert.ok(sheet.html.includes(`${name}:`), `${name} is missing from the built stylesheet`);
+    }
+  });
+
+  test("a layout draft is a draft: canvas, preview, visitor, publish", async () => {
+    const section = await find("terms", "page-hero");
+    const clean = await get(server.origin, "/terms");
+    assert.ok(!clean.html.includes("min-height:50svh"), "the page started out styled");
+
+    answered(
+      await saveStyles(
+        section,
+        doc({ root: { base: { layout: "flex", alignItems: "center", minHeight: "half-screen" } } }),
+      ),
+    );
+
+    const canvasTag = tagWith((await canvas("/terms")).html, `data-eod-address="section:${section.id}"`);
+    assert.match(styleOf(canvasTag), /min-height:\s*50svh/);
+    assert.match(styleOf(canvasTag), /display:\s*flex/);
+
+    const preview = await get(server.origin, "/terms?preview=1", { cookie: owner.cookie });
+    assert.ok(preview.html.includes("min-height:50svh"), "the preview lost the draft");
+    assert.ok(!/data-eod-/.test(preview.html), "the ordinary preview carried editor markup");
+
+    const during = await get(server.origin, "/terms");
+    assert.ok(!during.html.includes("min-height:50svh"), "a layout draft reached a visitor");
+
+    await publishDraft(section.id);
+
+    const after = await get(server.origin, "/terms");
+    assert.ok(after.html.includes("min-height:50svh"), "publishing did not make the layout public");
+    assert.ok(after.html.includes("align-items:center"), "publishing lost half the layout");
+    assert.ok(!/data-eod-/.test(after.html), "editor markup reached a visitor");
+  });
+
+  test("a layout save shares the section's revision with content, in that order", async () => {
+    const section = await find("contact", "page-hero");
+
+    const content = answered(await saveContent(section, { title: { en: "Layout first", ar: "" } }));
+    assert.equal(content.ok, true);
+    const revision = content.section!.revision;
+
+    const styled = answered(
+      await saveStyles(
+        { ...section, revision },
+        doc({ root: { base: { layout: "grid", columns: 2, overflow: "hidden" } } }),
+      ),
+    );
+    assert.ok(styled.ok, JSON.stringify(styled));
+    assert.equal(styled.revision, revision + 1);
+
+    const after = await row(section.id);
+    assert.equal((after.draft!.title as { en: string }).en, "Layout first");
+    assert.deepEqual((after.draft_styles as StyleDocument).nodes.root, {
+      base: { layout: "grid", columns: 2, overflow: "hidden" },
+    });
+
+    // …and a layout save against the revision that has already moved is refused
+    // rather than quietly overwriting the content save that moved it.
+    const refused = answered(await saveStyles({ ...section, revision }, doc({ root: { base: { width: "half" } } })));
+    assert.ok(!refused.ok);
+    assert.equal(refused.reason, "conflict");
+    assert.deepEqual(
+      ((await row(section.id)).draft_styles as StyleDocument).nodes.root,
+      { base: { layout: "grid", columns: 2, overflow: "hidden" } },
+      "the refused save wrote anyway",
+    );
+  });
+
+  test("a hostile layout document reaches the page as nothing at all", async () => {
+    const section = await find("disclaimer", "page-hero");
+    answered(
+      await saveStyles(section, {
+        v: STYLE_DOCUMENT_VERSION,
+        nodes: {
+          root: {
+            base: {
+              layout: "grid",
+              columns: 99,
+              width: "calc(100vw - 2rem)",
+              height: "500px",
+              overflow: "scroll",
+              glow: "0 0 40px red",
+              gridTemplateColumns: "repeat(99, 1fr)",
+              style: "position:fixed;inset:0",
+              "--rogue": "red",
+            },
+          },
+        },
+      }),
+    );
+
+    const stored = (await row(section.id)).draft_styles as StyleDocument;
+    assert.deepEqual(stored.nodes.root, { base: { layout: "grid" } });
+
+    const tag = tagWith((await canvas("/disclaimer")).html, `data-eod-address="section:${section.id}"`);
+    const style = styleOf(tag);
+    assert.match(style, /display:\s*grid/);
+    for (const forbidden of ["calc(", "500px", "scroll", "repeat(99", "position:fixed", "rogue", "0 0 40px red"]) {
+      assert.ok(!style.includes(forbidden), `${forbidden} reached the page`);
+    }
   });
 });

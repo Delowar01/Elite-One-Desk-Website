@@ -24,7 +24,10 @@ export function StatsBlock({ values, ctx, editor, styles }: BlockProps) {
   return (
     <section className="section-tight">
       <div className="shell shell-wide">
-        <ul className="grid gap-8 border-y border-line py-10 sm:grid-cols-2 lg:grid-cols-4">
+        <ul
+          className="grid gap-8 border-y border-line py-10 sm:grid-cols-2 lg:grid-cols-4"
+          {...node("field:items")}
+        >
           {figures.map((figure, index) => (
             <Reveal
               as="li"

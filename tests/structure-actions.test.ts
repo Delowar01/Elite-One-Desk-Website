@@ -372,6 +372,48 @@ describe("duplicating copies what the editor sees, into the layout only", () => 
     assert.notEqual(copyFirst, first);
   });
 
+  test("a duplicated section keeps its layout, on the container and on the copy's own rows", async () => {
+    /**
+     * §24. The list container is addressed by field name, which the copy shares,
+     * and a row is addressed by an id the copy does not — so the container's
+     * grid has to survive unchanged and the row's width has to move onto the new
+     * row. Anything left pointing at the original's id would be an override the
+     * copy shows and its owner cannot find.
+     */
+    const page = await reset("home");
+    const source = (await sectionsOf(page.id)).find((row) => row.block_type === "quick-links")!;
+    const links = (source.draft ?? source.published).links as Record<string, unknown>[];
+    const first = String(links[0]![ITEM_ID_KEY]);
+
+    await sql`update page_sections
+                 set draft_styles = ${sql.json({
+                   v: 1,
+                   nodes: {
+                     root: { base: { layout: "flex", alignItems: "center", minHeight: "half-screen" } },
+                     "field:links": { base: { layout: "grid", columns: 4 }, mobile: { columns: 1 } },
+                     [`field:links/item:${first}`]: { base: { width: "half", glow: "soft" } },
+                   },
+                 })}::jsonb
+               where id = ${source.id}`;
+
+    const copied = answered(await structural("duplicatePageSection", page, { sectionId: source.id }));
+    assert.ok(copied.ok);
+    const copy = (await sectionById(copied.sectionId!))!;
+    const copyFirst = String(
+      ((copy.draft as Record<string, unknown>).links as Record<string, unknown>[])[0]![ITEM_ID_KEY],
+    );
+    const nodes = (copy.draft_styles as StyleDocument).nodes;
+
+    assert.deepEqual(nodes.root, {
+      base: { layout: "flex", alignItems: "center", minHeight: "half-screen" },
+    });
+    assert.deepEqual(nodes["field:links"], { base: { layout: "grid", columns: 4 }, mobile: { columns: 1 } });
+    assert.deepEqual(nodes[`field:links/item:${copyFirst}`], { base: { width: "half", glow: "soft" } });
+    for (const key of Object.keys(nodes)) {
+      assert.ok(!key.includes(first), `${key} still names the original's row`);
+    }
+  });
+
   test("a stale duplicate leaves no orphan", async () => {
     const page = await reset("about");
     const source = (await sectionsOf(page.id))[0]!;

@@ -1074,6 +1074,52 @@ describe("restoring puts a published version back as drafts, never as the page",
     assert.equal((row!.snapshot.sections[0]!.published.title as { en: string }).en, "State B");
   });
 
+  test("an advanced layout style restores through the same history as everything else", async () => {
+    /**
+     * §25, end to end. A style document is one column on the section row, so a
+     * layout token has no history of its own and must not acquire one — it is
+     * captured, restored and published by the same snapshot that carries the
+     * text. What this proves is that the *new* tokens are inside that document
+     * rather than beside it: restore a version whose grid was four across, and
+     * four across is what comes back.
+     */
+    const page = await reset("privacy");
+    const section = (await sectionsOf(page.id))[0]!;
+
+    // State A: published, four columns and a glow.
+    await sql`update page_sections
+                 set styles = ${sql.json(styleDoc({ root: { base: { layout: "grid", columns: 4, glow: "accent" } } }))}::jsonb,
+                     draft_styles = null
+               where id = ${section.id}`;
+    // State B: a draft that narrows it and drops the glow.
+    await sql`update page_sections
+                 set draft_styles = ${sql.json(styleDoc({ root: { base: { layout: "grid", columns: 2 } } }))}::jsonb
+               where id = ${section.id}`;
+    assert.equal(answered(await publish(await pageBySlug("privacy"))).ok, true);
+
+    const liveB = await live("privacy");
+    assert.ok(liveB.includes("repeat(2, minmax(0, 1fr))"), "state B is not live");
+    assert.ok(!liveB.includes("--glow-accent"), "state B still carries state A's glow");
+
+    const [version] = await versionsOf(page.id);
+    assert.equal(answered(await restore(await pageBySlug("privacy"), version!.id)).ok, true);
+
+    // The restore is a draft: the preview has state A back, a visitor does not.
+    const previewed = await preview("privacy");
+    assert.ok(previewed.includes("repeat(4, minmax(0, 1fr))"), "the restore did not bring the grid back");
+    assert.ok(previewed.includes("--glow-accent"), "the restore did not bring the glow back");
+    const stillB = await live("privacy");
+    assert.ok(stillB.includes("repeat(2, minmax(0, 1fr))"), "restoring changed the live page");
+    assert.ok(!stillB.includes("--glow-accent"));
+
+    assert.equal(answered(await publish(await pageBySlug("privacy"))).ok, true);
+    const liveA = await live("privacy");
+    assert.ok(liveA.includes("repeat(4, minmax(0, 1fr))"), "publishing the restore did not land");
+    assert.ok(liveA.includes("--glow-accent"), "publishing the restore lost the glow");
+    // No second history: the version count moved by one, as any publication does.
+    assert.equal((await sectionById(section.id))!.draft_styles, null);
+  });
+
   test("a restore can be abandoned, and the page comes back clean", async () => {
     const { page, versionId } = await twoStates("terms");
     assert.equal(answered(await restore(page, versionId)).ok, true);

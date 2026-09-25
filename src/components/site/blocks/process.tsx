@@ -32,7 +32,7 @@ export function ProcessBlock({ values, ctx, editor, styles }: BlockProps) {
           />
         </div>
 
-        <ol className="relative">
+        <ol className="relative" {...node("field:steps")}>
           {/* The spine the numbers sit on. */}
           <span
             aria-hidden

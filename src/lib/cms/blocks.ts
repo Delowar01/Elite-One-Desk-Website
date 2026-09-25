@@ -41,7 +41,35 @@ export type ItemFieldDef = {
   type?: "text" | "textarea" | "media" | "icon";
   localised?: boolean;
   help?: string;
+  /** See `BoxKind`. */
+  box?: BoxKind;
 };
+
+/**
+ * What kind of box the renderer gives a field's element.
+ *
+ * The fourth thing this registry drives, and the narrowest: it exists so the
+ * Visual Editor's Style panel can answer "does a layout control do anything
+ * here?" without looking at the page. The panel has a block type and a node
+ * path and nothing else — it cannot see the markup, and reading a computed
+ * style back out of the canvas would make the controls depend on whatever the
+ * iframe happened to have loaded.
+ *
+ *   · `"grid"` / `"flex"` — the element already lays its children out that way,
+ *     so gap, alignment and (for a grid) column count mean something on it
+ *     immediately, with no override first.
+ *   · `"inline"` — the element is an inline box, so width, height and every
+ *     layout control would be inert on it and none is offered.
+ *   · absent — an ordinary block box: sizeable, and layout controls appear once
+ *     an editor explicitly chooses a layout mode.
+ *
+ * Declared here rather than at the annotation because the panel reads the
+ * registry and never the markup. `tests/layout-tokens.test.ts` reads the block
+ * sources back and fails if a declaration and the element it describes disagree
+ * — a claim of "grid" on a box that lays nothing out would be a column control
+ * an editor could set and never see.
+ */
+export type BoxKind = "inline" | "flex" | "grid";
 
 export type FieldDef = {
   name: string;
@@ -53,6 +81,8 @@ export type FieldDef = {
   placeholder?: string;
   options?: Array<{ value: string; label: string }>;
   itemFields?: ItemFieldDef[];
+  /** See `BoxKind`. On an `items` field this describes the list's container. */
+  box?: BoxKind;
   /** Repeatable lists only. Keeps a section from becoming a page of its own. */
   maxItems?: number;
   rows?: number;
@@ -112,6 +142,9 @@ export const BLOCKS: BlockDef[] = [
         name: "words",
         label: "Rotating words",
         type: "items",
+        // One animated inline span inside the headline, not a list box: sizing
+        // and layout controls would all be inert on it.
+        box: "inline",
         maxItems: 6,
         help: "Animated one after another above the headline. Three or four reads best.",
         itemFields: [{ name: "label", label: "Word", localised: true }],
@@ -135,6 +168,8 @@ export const BLOCKS: BlockDef[] = [
         name: "links",
         label: "Links",
         type: "items",
+        // The card grid under the hero.
+        box: "grid",
         maxItems: 10,
         itemFields: [
           { name: "label", label: "Label", localised: true },
@@ -163,6 +198,7 @@ export const BLOCKS: BlockDef[] = [
         name: "paths",
         label: "Incoming paths",
         type: "items",
+        // No `box`: the labels feed a diagram; no list container is rendered.
         maxItems: 6,
         help: "Each becomes a line converging on the desk. Four to six works best.",
         itemFields: [{ name: "label", label: "Label", localised: true }],
@@ -196,6 +232,8 @@ export const BLOCKS: BlockDef[] = [
         name: "points",
         label: "What is included",
         type: "items",
+        // The two- or three-column list of selling points.
+        box: "grid",
         maxItems: 8,
         itemFields: [{ name: "label", label: "Item", localised: true }],
       },
@@ -216,6 +254,8 @@ export const BLOCKS: BlockDef[] = [
         name: "capabilities",
         label: "Capabilities",
         type: "items",
+        // A wrapping row of pills.
+        box: "flex",
         maxItems: 12,
         itemFields: [{ name: "label", label: "Label", localised: true }],
       },
@@ -236,6 +276,8 @@ export const BLOCKS: BlockDef[] = [
         name: "destinations",
         label: "Destinations",
         type: "items",
+        // The two- or three-column list of destinations.
+        box: "grid",
         maxItems: 12,
         itemFields: [
           { name: "label", label: "Name", localised: true },
@@ -265,6 +307,8 @@ export const BLOCKS: BlockDef[] = [
         name: "destinations",
         label: "Destinations",
         type: "items",
+        // Same renderer as `destination-feature`, same grid.
+        box: "grid",
         maxItems: 12,
         itemFields: [
           { name: "label", label: "Name", localised: true },
@@ -321,6 +365,8 @@ export const BLOCKS: BlockDef[] = [
         name: "steps",
         label: "Steps",
         type: "items",
+        // No `box`: a numbered <ol> in ordinary block flow, with the rail
+        // beside it positioned rather than laid out.
         maxItems: 8,
         itemFields: [
           { name: "label", label: "Step title", localised: true },
@@ -342,6 +388,8 @@ export const BLOCKS: BlockDef[] = [
         name: "points",
         label: "Points",
         type: "items",
+        // The two- or three-column list of reasons.
+        box: "grid",
         maxItems: 8,
         itemFields: [
           { name: "label", label: "Title", localised: true },
@@ -361,6 +409,8 @@ export const BLOCKS: BlockDef[] = [
         name: "items",
         label: "Figures",
         type: "items",
+        // The figures, up to four across.
+        box: "grid",
         maxItems: 4,
         itemFields: [
           { name: "value", label: "Figure" },

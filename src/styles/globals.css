@@ -80,6 +80,15 @@
   --shadow-lift: 0 28px 70px -28px rgb(2 4 9 / 0.78);
   --shadow-ring: 0 0 0 1px rgb(255 255 255 / 0.08);
 
+  /* Glow is light coming off a surface, not weight under it — no offset, a
+     wide blur, and a negative spread so the halo starts inside the edge rather
+     than as a ring around it. Brand colours only: peach for the quiet one,
+     orange for the two that are meant to be noticed. Composed with the shadows
+     above by the visual editor's renderer, never instead of them. */
+  --glow-soft: 0 0 28px -8px color-mix(in oklab, var(--color-peach) 55%, transparent);
+  --glow-accent: 0 0 36px -6px color-mix(in oklab, var(--color-orange) 62%, transparent);
+  --glow-strong: 0 0 56px -4px color-mix(in oklab, var(--color-orange) 78%, transparent);
+
   /* --- Motion ------------------------------------------------------------ */
   --ease-out-soft: cubic-bezier(0.22, 0.61, 0.24, 1);
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
@@ -181,6 +190,13 @@
   /* A warm-white island. Any component inside picks up the inverted tokens
      without knowing which ground it is standing on. */
   [data-tone="light"] {
+    /* The same light, read against warm white. A halo tuned for a dark ground
+       disappears here, so the glows tighten and drop the peach — which is
+       nearly invisible on this surface — for orange at a lower strength. */
+    --glow-soft: 0 0 20px -6px color-mix(in oklab, var(--color-orange) 34%, transparent);
+    --glow-accent: 0 0 28px -4px color-mix(in oklab, var(--color-orange) 46%, transparent);
+    --glow-strong: 0 0 40px -2px color-mix(in oklab, var(--color-orange) 62%, transparent);
+
     --surface: color-mix(in oklab, var(--color-navy) 4%, white);
     --surface-raised: #ffffff;
     --surface-veil: #ffffff;
@@ -1287,6 +1303,15 @@
   [data-rs-t~="box-shadow"] { box-shadow: var(--rs-t-box-shadow) !important; }
   [data-rs-t~="opacity"] { opacity: var(--rs-t-opacity) !important; }
   [data-rs-t~="max-width"] { max-width: var(--rs-t-max-width) !important; }
+  [data-rs-t~="width"] { width: var(--rs-t-width) !important; }
+  [data-rs-t~="height"] { height: var(--rs-t-height) !important; }
+  [data-rs-t~="min-height"] { min-height: var(--rs-t-min-height) !important; }
+  [data-rs-t~="flex-direction"] { flex-direction: var(--rs-t-flex-direction) !important; }
+  [data-rs-t~="flex-wrap"] { flex-wrap: var(--rs-t-flex-wrap) !important; }
+  [data-rs-t~="justify-content"] { justify-content: var(--rs-t-justify-content) !important; }
+  [data-rs-t~="align-items"] { align-items: var(--rs-t-align-items) !important; }
+  [data-rs-t~="grid-template-columns"] { grid-template-columns: var(--rs-t-grid-template-columns) !important; }
+  [data-rs-t~="overflow"] { overflow: var(--rs-t-overflow) !important; }
   [data-rs-t~="object-position"] { object-position: var(--rs-t-object-position) !important; }
   [data-rs-t~="display"] { display: var(--rs-t-display) !important; }
   /* A revealed element's opacity is its finished state, so it travels as the
@@ -1312,6 +1337,15 @@
   [data-rs-m~="box-shadow"] { box-shadow: var(--rs-m-box-shadow) !important; }
   [data-rs-m~="opacity"] { opacity: var(--rs-m-opacity) !important; }
   [data-rs-m~="max-width"] { max-width: var(--rs-m-max-width) !important; }
+  [data-rs-m~="width"] { width: var(--rs-m-width) !important; }
+  [data-rs-m~="height"] { height: var(--rs-m-height) !important; }
+  [data-rs-m~="min-height"] { min-height: var(--rs-m-min-height) !important; }
+  [data-rs-m~="flex-direction"] { flex-direction: var(--rs-m-flex-direction) !important; }
+  [data-rs-m~="flex-wrap"] { flex-wrap: var(--rs-m-flex-wrap) !important; }
+  [data-rs-m~="justify-content"] { justify-content: var(--rs-m-justify-content) !important; }
+  [data-rs-m~="align-items"] { align-items: var(--rs-m-align-items) !important; }
+  [data-rs-m~="grid-template-columns"] { grid-template-columns: var(--rs-m-grid-template-columns) !important; }
+  [data-rs-m~="overflow"] { overflow: var(--rs-m-overflow) !important; }
   [data-rs-m~="object-position"] { object-position: var(--rs-m-object-position) !important; }
   [data-rs-m~="display"] { display: var(--rs-m-display) !important; }
   /* A revealed element's opacity is its finished state, so it travels as the

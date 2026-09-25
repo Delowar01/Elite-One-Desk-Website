@@ -57,7 +57,10 @@ export function DestinationFeatureBlock({ values, ctx, editor, styles }: BlockPr
           </p>
 
           {destinations.length ? (
-            <ul className={`mt-9 grid gap-x-8 gap-y-4 sm:grid-cols-2 ${image ? "" : "lg:grid-cols-3"}`}>
+            <ul
+              className={`mt-9 grid gap-x-8 gap-y-4 sm:grid-cols-2 ${image ? "" : "lg:grid-cols-3"}`}
+              {...node("field:destinations")}
+            >
               {destinations.map((destination, index) => (
                 <Reveal
                   as="li"

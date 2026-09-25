@@ -71,7 +71,7 @@ export function TravelFeatureBlock({ values, ctx, editor, styles }: BlockProps) 
           />
 
           {capabilities.length ? (
-            <ul className="mt-9 flex flex-wrap gap-2">
+            <ul className="mt-9 flex flex-wrap gap-2" {...node("field:capabilities")}>
               {capabilities.map((cap, index) => (
                 <Reveal
                   as="li"

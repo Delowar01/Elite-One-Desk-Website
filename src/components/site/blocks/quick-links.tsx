@@ -50,7 +50,10 @@ export function QuickLinksBlock({ values, ctx, editor, styles }: BlockProps) {
         />
 
         <Reveal className="mt-9">
-          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4">
+          <ul
+            className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4"
+            {...node("field:links")}
+          >
             {links.map((link, index) => {
               const chosen = itemMediaId(link, "image") ?? imageForHref(link.href, catalogue);
               const image = chosen ? media.get(chosen) ?? null : null;

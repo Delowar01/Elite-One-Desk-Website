@@ -55,7 +55,11 @@ import {
   withoutBranch,
 } from "@/lib/visual-editor/style-edit";
 import { describeStoredPath } from "@/lib/visual-editor/labels";
-import { styleTargetFor } from "@/lib/visual-editor/style-targets";
+import {
+  offeredTokens,
+  styleCapabilities,
+  styleTargetFor,
+} from "@/lib/visual-editor/style-targets";
 
 const doc = (nodes: StyleDocument["nodes"]): StyleDocument => ({
   v: STYLE_DOCUMENT_VERSION,
@@ -202,22 +206,79 @@ describe("a node is only offered the controls that mean something on it", () => 
   });
 
   test("a gap is only offered where a gap can do something", () => {
-    // Every annotated row and list in this codebase is a box whose children are
-    // laid out by something inside it, so a gap on the row itself is inert. A
-    // control that quietly does nothing is worse than a missing one.
+    /**
+     * The same rule as before Batch 14, moved to where the answer now lives.
+     *
+     * `gap` does nothing except on a flex or grid box, so it is shown exactly
+     * when the node's **effective** layout is one of those — the layout the
+     * registry declares for the node, or the one an editor explicitly chose.
+     * `target.tokens` is now the list of what the node *could* control;
+     * `offeredTokens` is what the panel actually draws, and that is what this
+     * rule is about.
+     */
+    const offers = (block: string, path: string | undefined, layout?: "block" | "flex" | "grid") =>
+      offeredTokens(styleTargetFor(block, path), layout).includes("gap");
+
+    // Nothing that is not a layout box offers it, exactly as before.
     for (const path of [
       undefined,
       "field:title",
-      "field:links",
       "field:links/item:i_aaaaaaaaaa",
       "field:links/item:i_aaaaaaaaaa/field:label",
       "field:backgroundImage",
     ]) {
-      assert.ok(!styleTargetFor("quick-links", path).tokens.includes("gap"), `gap offered on ${path ?? "root"}`);
+      assert.ok(!offers("quick-links", path), `gap offered on ${path ?? "root"}`);
     }
+
     // A slot is a control the block laid out on purpose — the one that exists
-    // is a button with a label and an arrow in a flex row.
-    assert.ok(styleTargetFor("one-desk", "slot:cta").tokens.includes("gap"));
+    // is a button with a label and an arrow in a flex row — and the registry
+    // says so, so it needs no override first.
+    assert.ok(offers("one-desk", "slot:cta"));
+
+    // And the card grid the hero sits above: a real grid, declared as one.
+    assert.ok(offers("quick-links", "field:links"), "gap not offered on a declared grid");
+
+    // An editor who makes something a layout box gets the gap that comes with
+    // it; one who flattens a grid loses it again.
+    assert.ok(offers("page-hero", undefined, "flex"), "gap withheld from an explicit flex");
+    assert.ok(!offers("quick-links", "field:links", "block"), "gap kept on a flattened grid");
+  });
+
+  test("the hero's rotating words are an inline span, so nothing spatial is offered", () => {
+    // The one node in the codebase the registry calls inline. Width, height,
+    // overflow and the whole layout family are inert on an inline box, and the
+    // text and surface controls still work.
+    const target = styleTargetFor("hero", "field:words");
+    for (const token of ["width", "height", "minHeight", "overflow", "layout", "gap"] as const) {
+      assert.ok(!target.tokens.includes(token), `${token} offered on an inline span`);
+    }
+    assert.equal(target.layout, null);
+    assert.ok(target.tokens.includes("hidden"));
+    assert.ok(target.tokens.includes("opacity"));
+  });
+
+  test("the capability questions are answered from the token list, not from a second table", () => {
+    const grid = styleTargetFor("why-us", "field:points");
+    assert.deepEqual(styleCapabilities(grid), {
+      width: true,
+      height: true,
+      layout: true,
+      flex: true,
+      grid: true,
+      overflow: true,
+      glow: true,
+    });
+
+    const heading = styleTargetFor("page-hero", "field:title");
+    assert.deepEqual(styleCapabilities(heading), {
+      width: true,
+      height: false,
+      layout: false,
+      flex: false,
+      grid: false,
+      overflow: false,
+      glow: false,
+    });
   });
 
   test("`hidden` is offered on every kind of node, because anything can be hidden", () => {
@@ -716,8 +777,19 @@ describe("a responsive override reaches the page as a value and a name, never as
       radius: "lg",
       border: "accent",
       shadow: "lift",
+      glow: "accent",
       opacity: 0.5,
       maxWidth: "prose",
+      width: "half",
+      height: "screen",
+      minHeight: "half-screen",
+      layout: "grid",
+      direction: "column",
+      wrap: "wrap",
+      justify: "between",
+      alignItems: "center",
+      columns: 3,
+      overflow: "hidden",
       objectX: 20,
       objectY: 80,
       hidden: true,

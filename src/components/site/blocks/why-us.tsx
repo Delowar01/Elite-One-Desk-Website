@@ -29,7 +29,10 @@ export function WhyUsBlock({ values, ctx, editor, styles }: BlockProps) {
           intro={text(values, "intro", locale)}
         />
 
-        <ul className="mt-11 grid gap-x-10 gap-y-9 sm:grid-cols-2 lg:grid-cols-3">
+        <ul
+          className="mt-11 grid gap-x-10 gap-y-9 sm:grid-cols-2 lg:grid-cols-3"
+          {...node("field:points")}
+        >
           {points.map((point, index) => (
             <Reveal
               as="li"

@@ -65,7 +65,10 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles }: BlockProps
                 </p>
 
                 {points.length ? (
-                  <ul className={`mt-8 grid gap-x-8 gap-y-3 sm:grid-cols-2 ${image ? "" : "lg:grid-cols-3"}`}>
+                  <ul
+                    className={`mt-8 grid gap-x-8 gap-y-3 sm:grid-cols-2 ${image ? "" : "lg:grid-cols-3"}`}
+                    {...node("field:points")}
+                  >
                     {points.map((point) => (
                       <li
                         key={point.label}

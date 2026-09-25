@@ -27,6 +27,29 @@
  */
 import { normalizeNodePath } from "./address";
 
+/**
+ * Still 1, and Batch 14 kept it there on purpose.
+ *
+ * The number is a *compatibility* claim, not a changelog: `validateStyleDocument`
+ * refuses anything it reads with a higher version and hands back the empty
+ * document. So a build that started writing `v: 2` would not merely be newer —
+ * every older build, including the release recorded in `deploy/previous-release`
+ * and still serving during a rollback, would read those pages as having **no
+ * overrides at all**. A rollback is the worst possible moment to lose every
+ * style on the site.
+ *
+ * Batch 14's tokens are additive optional keys, which needs no bump to be safe
+ * in both directions. A v1 document written before this batch validates to
+ * itself, key for key. A document written after it, read by the older build,
+ * loses exactly the keys that build has no renderer for — the new layout
+ * tokens — and keeps everything else, because `validateTokens` rebuilds a
+ * branch key by key and simply skips what it does not know. Degrading to the
+ * previous design is the right answer for a value nobody can render; throwing
+ * the document away is not.
+ *
+ * Bump it only for a change that would make an old build render a stored value
+ * *wrongly* rather than not at all.
+ */
 export const STYLE_DOCUMENT_VERSION = 1;
 
 /** Desktop is the base; the other two are sparse overrides on top of it. */
@@ -83,6 +106,100 @@ export const BORDERS = ["none", "line", "line-strong", "accent"] as const;
 export const SHADOWS = ["none", "soft", "lift", "ring"] as const;
 export const MAX_WIDTHS = ["none", "prose", "site", "wide"] as const;
 
+/**
+ * Batch 14 — the layout half of the vocabulary.
+ *
+ * Same rule as everything above it: a named value or a bounded number, never a
+ * length, a unit, a `calc()` or a template string. The renderer owns the units.
+ *
+ * `WIDTHS` is the element's own inline size. It is not `MAX_WIDTHS`, which caps
+ * a box that would otherwise be wider — the two are separate controls because
+ * they answer separate questions, and a page that reads "Width: half, Maximum
+ * width: prose" means both.
+ */
+export const WIDTHS = [
+  "auto",
+  "fit",
+  "quarter",
+  "third",
+  "half",
+  "two-thirds",
+  "three-quarters",
+  "full",
+] as const;
+
+/**
+ * Block size. `full` is `height: 100%`, which is CSS's own rule: it resolves
+ * against a parent with a definite height and against nothing otherwise. The
+ * panel says so rather than pretending it always bites.
+ */
+export const HEIGHTS = ["auto", "fit", "full", "screen"] as const;
+
+/**
+ * A floor rather than a ceiling, so it cannot crop anything: the box grows past
+ * it whenever its content needs to. The viewport fractions are the reason this
+ * exists — "make this band most of a screen tall" is the request, and a stored
+ * pixel height would be wrong on every device but the one it was chosen on.
+ */
+export const MIN_HEIGHTS = [
+  "none",
+  "third-screen",
+  "half-screen",
+  "two-thirds-screen",
+  "screen",
+] as const;
+
+/**
+ * The explicit layout override. Absence means the component's own design, and
+ * that is not the same as `block`: choosing `block` is a decision to flatten a
+ * flex row, and deleting the token is a decision to stop overriding at all.
+ */
+export const LAYOUTS = ["block", "flex", "grid"] as const;
+
+/**
+ * No `row-reverse` and no `column-reverse`.
+ *
+ * A reverse row is the one flex value whose meaning is genuinely different in
+ * Arabic, and §8 asks for either proof or absence. Absence is the honest
+ * answer for this batch: everything else here is direction-neutral by
+ * construction, and reordering rows is what the content panel is for.
+ */
+export const DIRECTIONS = ["row", "column"] as const;
+export const WRAPS = ["nowrap", "wrap"] as const;
+
+/**
+ * Logical alignment, and only logical alignment. `start` is the start of the
+ * inline direction — the left in English and the right in Arabic — so one
+ * stored document lays out correctly in both editions without anybody
+ * mirroring anything.
+ */
+export const JUSTIFY = ["start", "center", "end", "between", "around", "evenly"] as const;
+export const ALIGN_ITEMS = ["stretch", "start", "center", "end"] as const;
+
+/** Grid columns are a count, never a template string. */
+export const GRID_COLUMNS_MIN = 1;
+export const GRID_COLUMNS_MAX = 6;
+
+/**
+ * No `auto`, and no separate X and Y.
+ *
+ * `auto` puts a scrollbar inside a page section, which is a thing an editor
+ * almost never wants and can produce by accident on every node if it is
+ * offered everywhere. Separate axes would double the control count for a
+ * requirement nothing in this design has yet.
+ */
+export const OVERFLOWS = ["visible", "hidden", "clip"] as const;
+
+/**
+ * Glow is its own token, beside Shadow rather than inside it.
+ *
+ * Shadow is the object's weight; glow is light coming off it. An editor may
+ * want either, both, or neither, so one cannot be a value of the other — the
+ * renderer composes the two into the single `box-shadow` CSS has, in a fixed
+ * order, and neither can silently delete the other.
+ */
+export const GLOWS = ["none", "soft", "accent", "strong"] as const;
+
 /** Spacing is a step on this scale, never a length. Steps run 0…SPACING_STEPS. */
 export const SPACING_STEPS = 12;
 
@@ -107,6 +224,18 @@ export type StyleTokens = {
   shadow?: "none" | "soft" | "lift" | "ring";
   opacity?: number;
   maxWidth?: "none" | "prose" | "site" | "wide";
+  width?: "auto" | "fit" | "quarter" | "third" | "half" | "two-thirds" | "three-quarters" | "full";
+  height?: "auto" | "fit" | "full" | "screen";
+  minHeight?: "none" | "third-screen" | "half-screen" | "two-thirds-screen" | "screen";
+  layout?: "block" | "flex" | "grid";
+  direction?: "row" | "column";
+  wrap?: "nowrap" | "wrap";
+  justify?: "start" | "center" | "end" | "between" | "around" | "evenly";
+  alignItems?: "stretch" | "start" | "center" | "end";
+  /** A count of grid tracks, 1…6. The renderer writes the template. */
+  columns?: number;
+  overflow?: "visible" | "hidden" | "clip";
+  glow?: "none" | "soft" | "accent" | "strong";
   objectX?: number;
   objectY?: number;
   /** True or absent. There is no stored `false` — see `onlyTrue`. */
@@ -181,6 +310,20 @@ const percent = (): Check => (raw) => {
 };
 
 /**
+ * A whole number of things, between two bounds.
+ *
+ * Deliberately stricter than `step`: `2.5` columns is not a grid an editor
+ * meant, and rounding it would store a number nobody chose. Out of range,
+ * fractional, `NaN`, `Infinity` and anything that is not a number are all the
+ * same answer — the key is not written, and the node keeps the design it had.
+ */
+const count = (min: number, max: number): Check => (raw) => {
+  const value = typeof raw === "number" ? raw : Number.NaN;
+  if (!Number.isInteger(value) || value < min || value > max) return undefined;
+  return value;
+};
+
+/**
  * Hiding is true or it is not stored at all.
  *
  * `hidden: false` is not how this document says "shown" — the absence of the
@@ -219,6 +362,17 @@ const TOKENS: Record<keyof StyleTokens, Check> = {
   shadow: oneOf(SHADOWS),
   opacity: ratio(OPACITY_MIN, OPACITY_MAX, OPACITY_SNAP),
   maxWidth: oneOf(MAX_WIDTHS),
+  width: oneOf(WIDTHS),
+  height: oneOf(HEIGHTS),
+  minHeight: oneOf(MIN_HEIGHTS),
+  layout: oneOf(LAYOUTS),
+  direction: oneOf(DIRECTIONS),
+  wrap: oneOf(WRAPS),
+  justify: oneOf(JUSTIFY),
+  alignItems: oneOf(ALIGN_ITEMS),
+  columns: count(GRID_COLUMNS_MIN, GRID_COLUMNS_MAX),
+  overflow: oneOf(OVERFLOWS),
+  glow: oneOf(GLOWS),
   objectX: percent(),
   objectY: percent(),
   hidden: onlyTrue(),

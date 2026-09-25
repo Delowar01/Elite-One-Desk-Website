@@ -153,6 +153,121 @@ const MAX_WIDTH: Record<NonNullable<StyleTokens["maxWidth"]>, string> = {
 };
 
 /**
+ * Batch 14 — layout. Still literals, still logical, still no unit from the
+ * database.
+ *
+ * The fractions are written out rather than computed, so `two-thirds` has one
+ * spelling in one place and a rounding choice cannot drift between the base
+ * style and a breakpoint override.
+ */
+const WIDTH: Record<NonNullable<StyleTokens["width"]>, string> = {
+  auto: "auto",
+  fit: "fit-content",
+  quarter: "25%",
+  third: "33.3333%",
+  half: "50%",
+  "two-thirds": "66.6667%",
+  "three-quarters": "75%",
+  full: "100%",
+};
+
+/**
+ * `svh` rather than `vh` for everything measured against the screen.
+ *
+ * On a phone `100vh` is the viewport with the browser chrome *retracted*, so a
+ * band sized that way is taller than the screen until the address bar hides
+ * and the page jumps when it does. `svh` is the small viewport — the height
+ * that is actually visible on arrival — which is what "a screen tall" means to
+ * the person who asked for it.
+ */
+const HEIGHT: Record<NonNullable<StyleTokens["height"]>, string> = {
+  auto: "auto",
+  fit: "fit-content",
+  full: "100%",
+  screen: "100svh",
+};
+
+const MIN_HEIGHT: Record<NonNullable<StyleTokens["minHeight"]>, string> = {
+  none: "0px",
+  "third-screen": "33svh",
+  "half-screen": "50svh",
+  "two-thirds-screen": "67svh",
+  screen: "100svh",
+};
+
+const LAYOUT: Record<NonNullable<StyleTokens["layout"]>, string> = {
+  block: "block",
+  flex: "flex",
+  grid: "grid",
+};
+
+const DIRECTION: Record<NonNullable<StyleTokens["direction"]>, "row" | "column"> = {
+  row: "row",
+  column: "column",
+};
+
+const WRAP: Record<NonNullable<StyleTokens["wrap"]>, "nowrap" | "wrap"> = {
+  nowrap: "nowrap",
+  wrap: "wrap",
+};
+
+/**
+ * `start` and `end`, never `flex-start` and never `left`.
+ *
+ * These are the Box Alignment keywords, which resolve against the writing
+ * direction: in English `start` is the left of a row, in Arabic it is the
+ * right, and the same stored value is correct in both. They are also the
+ * spelling grid containers accept, so one map serves both layout modes.
+ */
+const JUSTIFY_CONTENT: Record<NonNullable<StyleTokens["justify"]>, string> = {
+  start: "start",
+  center: "center",
+  end: "end",
+  between: "space-between",
+  around: "space-around",
+  evenly: "space-evenly",
+};
+
+const ALIGN: Record<NonNullable<StyleTokens["alignItems"]>, string> = {
+  stretch: "stretch",
+  start: "start",
+  center: "center",
+  end: "end",
+};
+
+/**
+ * `minmax(0, 1fr)` rather than `1fr`.
+ *
+ * A bare `1fr` track has an automatic minimum, so one long unbroken word — a
+ * URL, an Arabic compound — makes its column wider than its share and pushes
+ * the grid past its container. The zero minimum is what keeps four equal
+ * columns equal whatever is inside them.
+ */
+const gridColumns = (count: number): string => `repeat(${count}, minmax(0, 1fr))`;
+
+const OVERFLOW: Record<NonNullable<StyleTokens["overflow"]>, string> = {
+  visible: "visible",
+  hidden: "hidden",
+  clip: "clip",
+};
+
+/**
+ * Glow, as the site's own light. Defined in `globals.css` beside the shadows
+ * and retinted for the warm-white islands, so a glow on a light card is not
+ * the invisible smudge a dark-ground value would be there.
+ *
+ * `none` is the empty string rather than the CSS keyword: it contributes
+ * nothing to the composed `box-shadow` list, and a list of nothing becomes
+ * `none` in one place below.
+ */
+const GLOW: Record<NonNullable<StyleTokens["glow"]>, string> = {
+  none: "",
+  soft: "var(--glow-soft)",
+  accent: "var(--glow-accent)",
+  strong: "var(--glow-strong)",
+};
+
+/**
  * Validated tokens to React's style object, or nothing.
  *
  * Nothing, rather than an empty object, is the point: a section with no
@@ -181,9 +296,45 @@ export function tokensToStyle(tokens: StyleTokens): CSSProperties | undefined {
 
   if (tokens.radius) out.borderRadius = RADIUS[tokens.radius];
   if (tokens.border) out.border = BORDER[tokens.border];
-  if (tokens.shadow) out.boxShadow = SHADOW[tokens.shadow];
+
+  /**
+   * Shadow and glow are two tokens and one CSS property.
+   *
+   * `box-shadow` takes a list, so the honest rendering of "lift, and a soft
+   * glow" is both layers in a fixed order — the shadow first, because it is the
+   * object's weight and belongs under the light coming off it. Writing them
+   * with two `if`s would mean whichever ran second erased the other, and the
+   * panel would show two set controls while the page obeyed one.
+   *
+   * `none` is a real choice on both and contributes no layer; a pair of them
+   * composes to `none`, which is what clears an inherited shadow. Neither token
+   * being present leaves the property alone entirely.
+   */
+  if (tokens.shadow !== undefined || tokens.glow !== undefined) {
+    const layers: string[] = [];
+    if (tokens.shadow && tokens.shadow !== "none") layers.push(SHADOW[tokens.shadow]);
+    if (tokens.glow && tokens.glow !== "none") layers.push(GLOW[tokens.glow]);
+    out.boxShadow = layers.length ? layers.join(", ") : "none";
+  }
+
   if (tokens.opacity !== undefined) out.opacity = tokens.opacity;
   if (tokens.maxWidth) out.maxWidth = MAX_WIDTH[tokens.maxWidth];
+
+  if (tokens.width) out.width = WIDTH[tokens.width];
+  if (tokens.height) out.height = HEIGHT[tokens.height];
+  if (tokens.minHeight) out.minHeight = MIN_HEIGHT[tokens.minHeight];
+
+  /**
+   * Layout is `display`, and it is written before hiding for a reason — see the
+   * note on `hidden` below.
+   */
+  if (tokens.layout) out.display = LAYOUT[tokens.layout];
+  if (tokens.direction) out.flexDirection = DIRECTION[tokens.direction];
+  if (tokens.wrap) out.flexWrap = WRAP[tokens.wrap];
+  if (tokens.justify) out.justifyContent = JUSTIFY_CONTENT[tokens.justify];
+  if (tokens.alignItems) out.alignItems = ALIGN[tokens.alignItems];
+  if (tokens.columns !== undefined) out.gridTemplateColumns = gridColumns(tokens.columns);
+  if (tokens.overflow) out.overflow = OVERFLOW[tokens.overflow];
 
   // One property from two tokens, so setting only the horizontal focal point
   // leaves the vertical one centred rather than at the top.
@@ -199,6 +350,12 @@ export function tokensToStyle(tokens: StyleTokens): CSSProperties | undefined {
    * the page by its own height — a hole rather than a removal. Only `true`
    * counts: the document never stores `hidden: false` to mean "shown", because
    * inherited-and-not-overridden is what means shown.
+   *
+   * **Last, so it wins over `layout`.** Both write `display`, and hiding has to
+   * beat laying out: an element hidden at Base and given a flex layout at
+   * Tablet must stay hidden, or a layout choice would be a way to un-hide
+   * something at a narrower width, which the responsive contract does not have.
+   * `branchDeclarations` carries the pair together for the same reason.
    */
   if (tokens.hidden === true) out.display = "none";
 
@@ -363,6 +520,15 @@ export const RESPONSIVE_PROPERTIES = [
   "box-shadow",
   "opacity",
   "max-width",
+  "width",
+  "height",
+  "min-height",
+  "flex-direction",
+  "flex-wrap",
+  "justify-content",
+  "align-items",
+  "grid-template-columns",
+  "overflow",
   "object-position",
   "display",
 ] as const;
@@ -390,17 +556,38 @@ export type ResponsiveStyle = {
 };
 
 /**
+ * Tokens that share one CSS declaration, and therefore travel together.
+ *
+ * A responsive branch writes out only what it declares. That is right for a
+ * token which owns its property outright, and wrong for one that does not: if
+ * a branch sets half of a shared declaration, the renderer would compose the
+ * new half with *nothing* and silently drop the inherited other half. So
+ * naming either member of a pair pulls the whole pair into the branch, where
+ * `resolveTokens` supplies the inherited value.
+ *
+ *   · `objectX` / `objectY` → `object-position`. Moving the vertical point
+ *     alone must not recentre the horizontal one.
+ *   · `shadow` / `glow` → `box-shadow`. Adding a glow at mobile must not
+ *     delete the lift that base gave the card.
+ *   · `layout` / `hidden` → `display`. Hiding has to keep beating laying out
+ *     at every width, and a branch that sets only one of them still has to
+ *     render both.
+ */
+const SHARED_DECLARATIONS: readonly (readonly (keyof StyleTokens)[])[] = [
+  ["objectX", "objectY"],
+  ["shadow", "glow"],
+  ["layout", "hidden"],
+];
+
+/**
  * One branch's declarations: what this breakpoint changes, and nothing else.
  *
  * Driven by the keys the branch itself declares — an inherited value is not an
  * override and must not be written out, or a later edit to base would stop
- * reaching the breakpoints that had silently frozen a copy of it. Two
- * exceptions, both of them cases where one declaration is owned by more than
- * one token:
+ * reaching the breakpoints that had silently frozen a copy of it. Two kinds of
+ * exception:
  *
- *   **A focal point is one property from two tokens.** A branch that moves only
- *   the vertical point must carry the horizontal one it inherited with it, or
- *   `object-position` would recentre the axis nobody touched.
+ *   **Some declarations are owned by two tokens** — see `SHARED_DECLARATIONS`.
  *
  *   **A type step is one step, not three properties.** A branch that sets a
  *   size the ramp gives no tracking to has to clear the tracking it is
@@ -415,9 +602,8 @@ function branchDeclarations(
   if (!own) return undefined;
 
   const keys = new Set(Object.keys(own) as (keyof StyleTokens)[]);
-  if (keys.has("objectX") || keys.has("objectY")) {
-    keys.add("objectX");
-    keys.add("objectY");
+  for (const pair of SHARED_DECLARATIONS) {
+    if (pair.some((key) => keys.has(key))) for (const key of pair) keys.add(key);
   }
 
   const resolved = resolveTokens(node, breakpoint);
