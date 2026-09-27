@@ -10,19 +10,21 @@ export function RichTextBlock({ values, ctx, editor, styles, motion }: BlockProp
   const eyebrow = text(values, "eyebrow", locale);
   if (!body && !title) return null;
   const node = blockNode({ editor, styles, motion });
+  const eyebrowPart = node.text("field:eyebrow", eyebrow);
+  const titlePart = node.text("field:title", title);
 
   return (
     <section className="section-tight">
       <div className="shell">
         <Reveal className="mx-auto max-w-3xl">
           {eyebrow ? (
-            <p className="eyebrow mb-4" {...node("field:eyebrow")}>
-              {eyebrow}
+            <p className="eyebrow mb-4" {...eyebrowPart.attrs}>
+              {eyebrowPart.content}
             </p>
           ) : null}
           {title ? (
-            <h2 className="mb-6 text-[length:var(--text-h2)]" {...node("field:title")}>
-              {title}
+            <h2 className="mb-6 text-[length:var(--text-h2)]" {...titlePart.attrs}>
+              {titlePart.content}
             </h2>
           ) : null}
           {/* Sanitised on save by lib/cms/sanitize.ts — the stored string can

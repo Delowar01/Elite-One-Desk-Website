@@ -12,7 +12,7 @@ import { getMediaMap } from "@/lib/queries/site";
 import type { RenderedSection } from "@/lib/queries/content";
 import { getSettings, whatsappLink } from "@/lib/settings";
 import { motionOf } from "@/lib/cms/motion";
-import { animatesAnywhere, motionStyle } from "@/lib/cms/motion-css";
+import { animatesAnywhere, motionStyle, parallaxAnywhere } from "@/lib/cms/motion-css";
 import {
   effectiveSectionTarget,
   legacySectionPreset,
@@ -160,12 +160,16 @@ export async function SectionRenderer({
   );
 
   /**
-   * Whether anything below a section wrapper moves on its own. Only then does
-   * the page get a `MotionRuntime` — a page with no node motion ships exactly
-   * the client code it shipped before Batch 15.
+   * Whether anything below a section wrapper moves on its own — arrives, arrives
+   * word by word, or drifts on scroll. Only then does the page get a
+   * `MotionRuntime`: a page with no node motion ships exactly the client code it
+   * shipped before Batch 15. A hover needs no runtime at all; it is CSS.
    */
   const nodeMotion = motions.map((motion, index) =>
-    motion && Object.values(motion.nodes).some((target: MotionTarget) => animatesAnywhere(target))
+    motion &&
+    Object.values(motion.nodes).some(
+      (target: MotionTarget) => animatesAnywhere(target) || parallaxAnywhere(target),
+    )
       ? [sections[index]!.id, motion.nodes]
       : null,
   );
@@ -266,7 +270,14 @@ export async function SectionRenderer({
           </SectionMotion>
         );
       })}
-      {runtime ? <MotionRuntime signature={fingerprint(nodeMotion)} /> : null}
+      {runtime ? (
+        <MotionRuntime
+          signature={fingerprint(nodeMotion)}
+          // The server's decision, not the browser's: live parallax is paused in
+          // the Visual Editor's canvas and nowhere else (see `MotionRuntime`).
+          parallax={editorMode ? "paused" : "live"}
+        />
+      ) : null}
     </>
   );
 }

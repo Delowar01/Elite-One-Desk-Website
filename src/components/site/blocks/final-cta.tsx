@@ -15,6 +15,8 @@ export function FinalCtaBlock({ values, ctx, editor, styles, motion }: BlockProp
   const ctaLabel = text(values, "primaryCtaLabel", locale) || dict.nav.primaryCta;
   const showWhatsapp = bool(values, "showWhatsapp", true) && Boolean(whatsappHref);
   const node = blockNode({ editor, styles, motion });
+  const heading = node.text("field:title", title);
+  const cta = node.text("field:primaryCtaLabel", ctaLabel);
 
   return (
     <section className="section-tight">
@@ -35,8 +37,8 @@ export function FinalCtaBlock({ values, ctx, editor, styles, motion }: BlockProp
             />
 
             <div className="relative mx-auto max-w-2xl">
-              <h2 className="text-[length:var(--text-h1)]" {...node("field:title")}>
-                {title}
+              <h2 className="text-[length:var(--text-h1)]" {...heading.attrs}>
+                {heading.content}
               </h2>
               {body ? (
                 <p className="lede mx-auto mt-5 max-w-xl" {...node("field:body")}>
@@ -45,12 +47,8 @@ export function FinalCtaBlock({ values, ctx, editor, styles, motion }: BlockProp
               ) : null}
 
               <div className="mt-9 flex flex-wrap items-center justify-center gap-3">
-                <Link
-                  href={localeHref(locale, ctaHref)}
-                  className="btn btn-primary"
-                  {...node("field:primaryCtaLabel")}
-                >
-                  {ctaLabel}
+                <Link href={localeHref(locale, ctaHref)} className="btn btn-primary" {...cta.attrs}>
+                  {cta.content}
                   <Icon name="arrowRight" size={17} className="flip-rtl" />
                 </Link>
                 {showWhatsapp && whatsappHref ? (

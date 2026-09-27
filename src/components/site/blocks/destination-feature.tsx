@@ -30,7 +30,10 @@ export function DestinationFeatureBlock({ values, ctx, editor, styles, motion }:
   const secondaryLabel = text(values, "secondaryCtaLabel", locale);
   const node = blockNode({ editor, styles, motion });
   const imageNode = mediaNode({ editor, styles, motion })("field:image");
-  const eyebrowNode = node("field:eyebrow");
+  const eyebrow = node.text("field:eyebrow", text(values, "eyebrow", locale));
+  const title = node.text("field:title", text(values, "title", locale));
+  const primary = node.text("field:primaryCtaLabel", primaryLabel);
+  const secondary = node.text("field:secondaryCtaLabel", secondaryLabel);
 
   return (
     <section data-tone="light" className="section relative overflow-clip">
@@ -44,13 +47,13 @@ export function DestinationFeatureBlock({ values, ctx, editor, styles, motion }:
               an override must win over it without erasing it when there is none. */}
           <p
             className="eyebrow"
-            {...eyebrowNode}
-            style={withNodeStyle({ color: "var(--color-orange)" }, eyebrowNode)}
+            {...eyebrow.attrs}
+            style={withNodeStyle({ color: "var(--color-orange)" }, eyebrow.attrs)}
           >
-            {text(values, "eyebrow", locale)}
+            {eyebrow.content}
           </p>
-          <h2 className="mt-4 text-[length:var(--text-h2)]" {...node("field:title")}>
-            {text(values, "title", locale)}
+          <h2 className="mt-4 text-[length:var(--text-h2)]" {...title.attrs}>
+            {title.content}
           </h2>
           <p className="lede mt-5 max-w-xl" {...node("field:body")}>
             {text(values, "body", locale)}
@@ -61,60 +64,52 @@ export function DestinationFeatureBlock({ values, ctx, editor, styles, motion }:
               className={`mt-9 grid gap-x-8 gap-y-4 sm:grid-cols-2 ${image ? "" : "lg:grid-cols-3"}`}
               {...node("field:destinations")}
             >
-              {destinations.map((destination, index) => (
-                <Reveal
-                  as="li"
-                  key={destination.label}
-                  delay={index * 40}
-                  nodeAttrs={node(itemPath("destinations", destination), "item")}
-                >
-                  <div className="flex items-start gap-3 border-t pt-3" style={{ borderColor: "var(--border-color)" }}>
-                    <span
-                      className="mt-1 font-display text-[0.7rem] font-semibold tabular-nums"
-                      style={{ color: "var(--color-orange)" }}
-                    >
-                      {String(index + 1).padStart(2, "0")}
-                    </span>
-                    <div className="min-w-0">
-                      <p
-                        className="font-display text-[0.95rem] font-semibold text-strong"
-                        {...node(itemFieldPath("destinations", destination, "label"))}
+              {destinations.map((destination, index) => {
+                const label = node.text(itemFieldPath("destinations", destination, "label"), destination.label);
+                const note = destination.note
+                  ? node.text(itemFieldPath("destinations", destination, "note"), destination.note)
+                  : null;
+                return (
+                  <Reveal
+                    as="li"
+                    key={destination.label}
+                    delay={index * 40}
+                    nodeAttrs={node(itemPath("destinations", destination), "item")}
+                  >
+                    <div className="flex items-start gap-3 border-t pt-3" style={{ borderColor: "var(--border-color)" }}>
+                      <span
+                        className="mt-1 font-display text-[0.7rem] font-semibold tabular-nums"
+                        style={{ color: "var(--color-orange)" }}
                       >
-                        {destination.label}
-                      </p>
-                      {destination.note ? (
-                        <p
-                          className="mt-0.5 text-small text-muted"
-                          {...node(itemFieldPath("destinations", destination, "note"))}
-                        >
-                          {destination.note}
+                        {String(index + 1).padStart(2, "0")}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="font-display text-[0.95rem] font-semibold text-strong" {...label.attrs}>
+                          {label.content}
                         </p>
-                      ) : null}
+                        {note ? (
+                          <p className="mt-0.5 text-small text-muted" {...note.attrs}>
+                            {note.content}
+                          </p>
+                        ) : null}
+                      </div>
                     </div>
-                  </div>
-                </Reveal>
-              ))}
+                  </Reveal>
+                );
+              })}
             </ul>
           ) : null}
 
           <div className="mt-10 flex flex-wrap gap-3">
             {primaryLabel ? (
-              <Link
-                href={localeHref(locale, primaryHref)}
-                className="btn btn-primary"
-                {...node("field:primaryCtaLabel")}
-              >
-                {primaryLabel}
+              <Link href={localeHref(locale, primaryHref)} className="btn btn-primary" {...primary.attrs}>
+                {primary.content}
                 <Icon name="arrowRight" size={16} className="flip-rtl" />
               </Link>
             ) : null}
             {secondaryLabel ? (
-              <Link
-                href={localeHref(locale, secondaryHref)}
-                className="btn btn-ghost"
-                {...node("field:secondaryCtaLabel")}
-              >
-                {secondaryLabel}
+              <Link href={localeHref(locale, secondaryHref)} className="btn btn-ghost" {...secondary.attrs}>
+                {secondary.content}
               </Link>
             ) : null}
           </div>

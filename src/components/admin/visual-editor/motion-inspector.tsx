@@ -10,27 +10,46 @@ import {
   DURATIONS,
   EASINGS,
   emptyMotionDocument,
+  resolveBranch,
   STAGGERS,
   validateMotionDocument,
   type MotionBranch,
   type MotionDocument,
   type MotionTarget,
 } from "@/lib/cms/motion-doc";
+import { parallaxAnywhere, wordsAnywhere } from "@/lib/cms/motion-css";
 import { RESPONSIVE_WIDTHS, type Breakpoint } from "@/lib/cms/styles";
 import type { Locale } from "@/lib/i18n/config";
 import { describeAddress } from "@/lib/visual-editor/labels";
 import {
   entrancesFor,
+  hoversFor,
   MOTION_DEFAULT_LABELS,
   MOTION_FIELD_LABELS,
   MOTION_REFUSAL_LABELS,
-  MOTION_VALUE_LABELS,
   motionTargetFor,
+  motionValueLabel,
   offeredMotionFields,
   ownedByParentList,
+  PARALLAX_PAUSED_NOTE,
+  parallaxFor,
+  textRevealsFor,
+  type MotionCapability,
 } from "@/lib/visual-editor/motion-targets";
-import type { EditorNodeMeta } from "@/lib/visual-editor/protocol";
+import type { EditorNodeMeta, ReplayMode, ReplayOutcome } from "@/lib/visual-editor/protocol";
+import { REPLAY_STATUS } from "@/lib/visual-editor/replay";
 import { relativePath } from "@/lib/visual-editor/style-edit";
+
+/**
+ * What the Motion tab needs to offer Replay (Batch 15b): whether the canvas can
+ * play anything, the last outcome for the selected node, and the way to ask.
+ * Nothing in it saves — it goes to the canvas and back.
+ */
+export type ReplayControl = {
+  ready: boolean;
+  status: { address: string; outcome: ReplayOutcome } | null;
+  onReplay: (mode: ReplayMode) => void;
+};
 
 /**
  * The Motion tab: how the selected thing arrives, at the width being edited.
@@ -56,6 +75,12 @@ import { relativePath } from "@/lib/visual-editor/style-edit";
  * **A setting appears when it can change something.** Direction only for an
  * entrance that travels, timing only for something that moves at this width,
  * stagger only on a list — decided by `offeredMotionFields`, not here.
+ *
+ * **Replay shows what the canvas cannot** (Batch 15b). Live parallax is paused
+ * while editing and text is kept whole so it can be typed into, so the panel
+ * says so beside those controls and offers Replay: the canvas plays the
+ * selected node's motion once and puts it back. Replay saves nothing and makes
+ * nothing dirty — it is not wired to anything that could.
  */
 
 const SCOPE: Record<Breakpoint, { title: string; note: string; first: string }> = {
@@ -79,17 +104,57 @@ const SCOPE: Record<Breakpoint, { title: string; note: string; first: string }> 
 const FROM_LABEL: Record<Breakpoint, string> = { base: "Base", tablet: "Tablet", mobile: "Mobile" };
 
 const GROUPS: { title: string; fields: (keyof MotionBranch)[] }[] = [
-  { title: "Entrance", fields: ["entrance", "direction"] },
+  { title: "Entrance", fields: ["entrance", "direction", "textReveal"] },
   { title: "Timing", fields: ["duration", "delay", "easing"] },
   { title: "Sequence", fields: ["stagger"] },
+  { title: "Scroll", fields: ["parallax"] },
+  { title: "Hover", fields: ["hover"] },
 ];
 
 const DEFAULT = "__default__";
 
-const valueLabel = (field: keyof MotionBranch, value: unknown): string => {
-  if (value === undefined) return "";
-  if (field === "delay" && typeof value === "number") return `${value}ms`;
-  return MOTION_VALUE_LABELS[String(value)] ?? String(value);
+const valueLabel = motionValueLabel;
+
+/** The choices one field offers this node, from the one capability resolver. */
+function optionsFor(field: keyof MotionBranch, capability: MotionCapability): readonly (string | number)[] {
+  switch (field) {
+    case "entrance":
+      return entrancesFor(capability);
+    case "direction":
+      return DIRECTIONS;
+    case "duration":
+      return DURATIONS;
+    case "easing":
+      return EASINGS;
+    case "stagger":
+      return STAGGERS;
+    case "parallax":
+      return parallaxFor(capability);
+    case "hover":
+      return hoversFor(capability);
+    case "textReveal":
+      return textRevealsFor(capability);
+    default:
+      return [];
+  }
+}
+
+/** The motion a node has at this width, as Replay modes — what there is to play. */
+function playable(target: MotionTarget | undefined, breakpoint: Breakpoint, isSection: boolean): ReplayMode[] {
+  const branch = resolveBranch(target, breakpoint);
+  const modes: ReplayMode[] = [];
+  const enters = isSection || (branch.entrance !== undefined && branch.entrance !== "none");
+  if (enters || branch.textReveal === "words") modes.push("entrance");
+  if (branch.parallax !== undefined && branch.parallax !== "none") modes.push("parallax");
+  if (branch.hover !== undefined && branch.hover !== "none") modes.push("hover");
+  return modes;
+}
+
+const MODE_LABEL: Record<ReplayMode, string> = {
+  all: "Replay",
+  entrance: "Entrance",
+  parallax: "Parallax",
+  hover: "Hover",
 };
 
 /** Rebuilds one breakpoint's branch with one field set or cleared. Sparse in, sparse out. */
@@ -132,6 +197,8 @@ export function MotionInspector({
   breakpoint,
   locale,
   canManage,
+  pending,
+  replay,
   onChange,
 }: {
   node: EditorNodeMeta | null;
@@ -141,6 +208,12 @@ export function MotionInspector({
   breakpoint: Breakpoint;
   locale: Locale;
   canManage: boolean;
+  /**
+   * The section's motion has changes the canvas does not show yet — unsaved or
+   * saving. Replay plays what the canvas shows, so it waits for them.
+   */
+  pending: boolean;
+  replay: ReplayControl;
   onChange: (next: MotionDocument) => void;
 }) {
   const path = node ? relativePath(node.relativePath) : null;
@@ -208,10 +281,63 @@ export function MotionInspector({
   const overrides = Object.keys(branch).length;
   const set = (field: keyof MotionBranch, value: MotionBranch[keyof MotionBranch] | undefined) =>
     onChange(withField(doc, path, breakpoint, field, value));
+  const modes = playable(target, breakpoint, isSection);
+  const status = replay.status && replay.status.address === node.address ? replay.status.outcome : null;
+
+  /** Said beside a control whose effect the canvas does not show on its own. */
+  const notes: Partial<Record<keyof MotionBranch, string>> = {};
+  if (parallaxAnywhere(target)) notes.parallax = PARALLAX_PAUSED_NOTE;
+  if (wordsAnywhere(target)) {
+    notes.textReveal =
+      "While editing, the text stays whole so it can be typed into. Preview and the published page show the words arriving; so does Replay.";
+  }
+  if (capability.hovers.includes("nudge")) {
+    notes.hover =
+      "A button already rises a pixel under the pointer. Lift replaces that rise with its own; Nudge moves the button along the line as well.";
+  }
 
   return (
     <div className="flex flex-col gap-3.5">
       {header}
+
+      <div className="flex flex-col gap-1.5" data-motion-replay>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => replay.onReplay("all")}
+            disabled={!replay.ready || pending || !modes.length}
+            className="admin-btn admin-btn-sm"
+            data-replay-mode="all"
+          >
+            <Icon name="play" size={11} />
+            Replay
+          </button>
+          {modes.length > 1
+            ? modes.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => replay.onReplay(mode)}
+                  disabled={!replay.ready || pending}
+                  className="text-[0.68rem] font-semibold uppercase tracking-wide disabled:opacity-50"
+                  style={{ color: "var(--color-peach)" }}
+                  data-replay-mode={mode}
+                >
+                  {MODE_LABEL[mode]}
+                </button>
+              ))
+            : null}
+        </div>
+        <p className="text-[0.68rem] leading-relaxed text-muted" role="status" data-replay-status={status ?? ""}>
+          {pending
+            ? "Replay plays what the canvas shows — this change is still being saved."
+            : !modes.length
+              ? "Nothing moves here at this width."
+              : status
+                ? REPLAY_STATUS[status]
+                : "Plays this element’s motion once on the canvas. Nothing is saved."}
+        </p>
+      </div>
 
       <div>
         <p className="text-[0.8rem] font-semibold text-strong">{scope.title}</p>
@@ -243,8 +369,9 @@ export function MotionInspector({
                       field={field}
                       state={motionFieldState(target, breakpoint, field)}
                       breakpoint={breakpoint}
-                      entrances={entrancesFor(capability)}
+                      options={optionsFor(field, capability)}
                       sectionLegacy={isSection ? legacy : undefined}
+                      note={notes[field]}
                       onChange={set}
                     />
                   ))}
@@ -291,16 +418,20 @@ function MotionControl({
   field,
   state,
   breakpoint,
-  entrances,
+  options,
   sectionLegacy,
+  note,
   onChange,
 }: {
   field: keyof MotionBranch;
   state: MotionFieldState;
   breakpoint: Breakpoint;
-  entrances: readonly string[];
+  /** The values this node offers for this field — from the capability resolver, never from here. */
+  options: readonly (string | number)[];
   /** Present for the section wrapper only: the preset its Base entrance falls back to. */
   sectionLegacy?: MotionPreset;
+  /** A sentence the editor needs beside this control, if any. */
+  note?: string;
   onChange: (field: keyof MotionBranch, value: MotionBranch[keyof MotionBranch] | undefined) => void;
 }) {
   const id = `motion-${field}`;
@@ -324,19 +455,6 @@ function MotionControl({
       : field === "entrance" && sectionLegacy
         ? `Legacy default — ${MOTION_LABEL[sectionLegacy]}`
         : `Default — ${defaultText}`;
-
-  const options: readonly (string | number)[] =
-    field === "entrance"
-      ? entrances
-      : field === "direction"
-        ? DIRECTIONS
-        : field === "duration"
-          ? DURATIONS
-          : field === "easing"
-            ? EASINGS
-            : field === "stagger"
-              ? STAGGERS
-              : [];
 
   const control =
     field === "delay" ? (
@@ -408,6 +526,11 @@ function MotionControl({
           {state.from
             ? `Inherited from ${FROM_LABEL[state.from]}: ${valueLabel(field, state.inherited)}`
             : `Inherited: the default — ${defaultText}`}
+        </p>
+      ) : null}
+      {note ? (
+        <p className="mt-1 text-[0.66rem] leading-relaxed text-muted" data-motion-note={field}>
+          {note}
         </p>
       ) : null}
     </div>

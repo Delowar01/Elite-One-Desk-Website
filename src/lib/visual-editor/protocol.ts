@@ -22,11 +22,11 @@ import type { EditorNodeKind } from "./render";
  *   · **A place for secrets.** No cookie, CSRF token, password or key ever
  *     travels in a payload or an iframe URL. A `postMessage` is readable by any
  *     script in the receiving document.
- *   · **Finished.** Version 2 adds selection: what the page is made of, what
- *     the pointer is over, what is selected and where it sits. That is the
- *     whole vocabulary of V1 — content, style and motion are edited through
- *     Server Actions and never travel over this channel, so nothing in the
- *     finished editor raised it again.
+ *   · **A write path.** Content, style and motion are edited through Server
+ *     Actions and never travel over this channel. What does travel is what
+ *     the canvas is pointed at, what a person typed (for the editor to decide
+ *     where it belongs), and — since version 5 — a request to *play* the
+ *     motion of one node, which changes nothing that is stored.
  *
  * Both ends check origin and source as well as the fields below; neither alone
  * is enough. See `bridgeOrigin` for why the origin is the window's own.
@@ -54,12 +54,19 @@ export const EDITOR_CHANNEL = "eod.visual-editor";
  *     an Arabic node with no translation began editing with the English
  *     fallback, and the child nodes' text with it.
  *
+ * 5 — Replay (Batch 15b). `editor.motionReplay` asks the canvas to play one
+ *     node's motion once — its entrance and words, a parallax sweep, its hover
+ *     — and `canvas.motionReplayResult` says how that went;
+ *     `editor.motionReplayCancel` stops one. Every field is an address, an
+ *     integer token or a name from a closed list: no selector, no script, no
+ *     markup and no style travels. Nothing is saved on either side.
+ *
  * Bumped rather than extended in place: a canvas document served by an older
  * build must not answer a newer editor with a message the editor will read
  * half of. The two simply do not recognise each other, which is the outcome
  * that cannot go subtly wrong.
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /* -------------------------------------------------------------------------- */
 /* Bridge ids                                                                 */
@@ -317,6 +324,48 @@ export type EditorEditBegin = {
  */
 export type EditorEditCancel = { type: "editor.editCancel"; token: number };
 
+/* -------------------------------------------------------------------------- */
+/* Replay (version 5)                                                         */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What a Replay plays. `all` is the Motion panel's Replay button: the entrance
+ * (with its words), then a parallax sweep, then the hover — whichever of them
+ * the node has at the canvas's width. The other three play one of them alone.
+ */
+export const REPLAY_MODES = ["all", "entrance", "parallax", "hover"] as const;
+export type ReplayMode = (typeof REPLAY_MODES)[number];
+
+/**
+ * How a Replay went, as the canvas saw it.
+ *
+ *   · `started` / `finished` — it played, and it is over; the node is back in
+ *     its resting state.
+ *   · `cancelled` — it was stopped: superseded by another Replay, the selection
+ *     moved, a direct edit began, or the editor asked.
+ *   · `missing` — nothing on this canvas answers to the address.
+ *   · `nothing` — the node has none of the requested motion at this width.
+ *   · `reduced` — the device asks for reduced motion, so there is nothing to
+ *     play: the canvas shows every element already in place.
+ *   · `busy` — the node is being typed into; Replay would disturb the text.
+ */
+export const REPLAY_OUTCOMES = ["started", "finished", "cancelled", "missing", "nothing", "reduced", "busy"] as const;
+export type ReplayOutcome = (typeof REPLAY_OUTCOMES)[number];
+
+/** Play one node's motion once. `token` names this request; a newer one supersedes it. */
+export type EditorMotionReplay = { type: "editor.motionReplay"; address: string; token: number; mode: ReplayMode };
+
+/** Stop the Replay this token names, if it is still the one playing. */
+export type EditorMotionReplayCancel = { type: "editor.motionReplayCancel"; token: number };
+
+/** What became of one Replay. */
+export type CanvasMotionReplayResult = {
+  type: "canvas.motionReplayResult";
+  address: string;
+  token: number;
+  outcome: ReplayOutcome;
+};
+
 export type EditorPing = { type: "editor.ping"; at: number };
 
 /** Select by stable address — what a click on a Layers row sends. */
@@ -333,7 +382,8 @@ export type CanvasMessage =
   | CanvasSelection
   | CanvasBounds
   | CanvasEdit
-  | CanvasEditRequest;
+  | CanvasEditRequest
+  | CanvasMotionReplayResult;
 
 export type EditorMessage =
   | EditorPing
@@ -341,7 +391,9 @@ export type EditorMessage =
   | EditorClearSelection
   | EditorLocks
   | EditorEditBegin
-  | EditorEditCancel;
+  | EditorEditCancel
+  | EditorMotionReplay
+  | EditorMotionReplayCancel;
 
 export type Envelope<T> = {
   channel: typeof EDITOR_CHANNEL;
@@ -603,6 +655,21 @@ export function readCanvasMessage(
       if (!parsed || !parsed.path.length) return null;
       return { type: "canvas.editRequest", address: formatAddress(parsed.sectionId, parsed.path) };
     }
+    case "canvas.motionReplayResult": {
+      if (typeof message.address !== "string") return null;
+      const parsed = parseAddress(message.address);
+      if (!parsed) return null;
+      if (!isInt(message.token)) return null;
+      if (typeof message.outcome !== "string" || !(REPLAY_OUTCOMES as readonly string[]).includes(message.outcome)) {
+        return null;
+      }
+      return {
+        type: "canvas.motionReplayResult",
+        address: formatAddress(parsed.sectionId, parsed.path),
+        token: message.token,
+        outcome: message.outcome as ReplayOutcome,
+      };
+    }
     case "canvas.bounds": {
       if (typeof message.address !== "string" || !parseAddress(message.address)) return null;
       const address = message.address;
@@ -674,6 +741,23 @@ export function readEditorMessage(
     }
     case "editor.editCancel":
       return isInt(message.token) ? { type: "editor.editCancel", token: message.token } : null;
+    case "editor.motionReplay": {
+      // A section root is a legitimate target here — its entrance is the
+      // section's — so, unlike an edit, an empty path is allowed.
+      if (typeof message.address !== "string") return null;
+      const parsed = parseAddress(message.address);
+      if (!parsed) return null;
+      if (!isInt(message.token)) return null;
+      if (typeof message.mode !== "string" || !(REPLAY_MODES as readonly string[]).includes(message.mode)) return null;
+      return {
+        type: "editor.motionReplay",
+        address: formatAddress(parsed.sectionId, parsed.path),
+        token: message.token,
+        mode: message.mode as ReplayMode,
+      };
+    }
+    case "editor.motionReplayCancel":
+      return isInt(message.token) ? { type: "editor.motionReplayCancel", token: message.token } : null;
     default:
       return null;
   }

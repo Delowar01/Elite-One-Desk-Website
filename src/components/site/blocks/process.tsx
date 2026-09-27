@@ -40,37 +40,41 @@ export function ProcessBlock({ values, ctx, editor, styles, motion }: BlockProps
             className="absolute inset-y-0 w-px"
             style={{ insetInlineStart: "1.375rem", background: "var(--border-color)" }}
           />
-          {steps.map((step, index) => (
-            <Reveal
-              as="li"
-              key={step.label}
-              delay={index * 70}
-              className="relative ps-14 pb-9 last:pb-0"
-              nodeAttrs={node(itemPath("steps", step), "item")}
-            >
-              <span
-                className="absolute top-0 flex size-11 items-center justify-center rounded-full border font-display text-[0.78rem] font-bold tabular-nums"
-                style={{
-                  insetInlineStart: 0,
-                  borderColor: "color-mix(in oklab, var(--color-orange) 45%, transparent)",
-                  background: "var(--color-ink-800)",
-                  color: "var(--color-peach)",
-                }}
+          {steps.map((step, index) => {
+            const label = node.text(itemFieldPath("steps", step, "label"), step.label);
+            return (
+              <Reveal
+                as="li"
+                key={step.label}
+                delay={index * 70}
+                className="relative ps-14 pb-9 last:pb-0"
+                nodeAttrs={node(itemPath("steps", step), "item")}
               >
-                {String(index + 1).padStart(2, "0")}
-              </span>
-              <h3 className="pt-2.5 text-[length:var(--text-h3)]" {...node(itemFieldPath("steps", step, "label"))}>
-                {step.label}
-              </h3>
-              {step.text ? (
-                <p className="mt-2 max-w-xl text-body" {...node(itemFieldPath("steps", step, "text"))}>
-                  {step.text}
-                </p>
-              ) : null}
-            </Reveal>
-          ))}
+                <span
+                  className="absolute top-0 flex size-11 items-center justify-center rounded-full border font-display text-[0.78rem] font-bold tabular-nums"
+                  style={{
+                    insetInlineStart: 0,
+                    borderColor: "color-mix(in oklab, var(--color-orange) 45%, transparent)",
+                    background: "var(--color-ink-800)",
+                    color: "var(--color-peach)",
+                  }}
+                >
+                  {String(index + 1).padStart(2, "0")}
+                </span>
+                <h3 className="pt-2.5 text-[length:var(--text-h3)]" {...label.attrs}>
+                  {label.content}
+                </h3>
+                {step.text ? (
+                  <p className="mt-2 max-w-xl text-body" {...node(itemFieldPath("steps", step, "text"))}>
+                    {step.text}
+                  </p>
+                ) : null}
+              </Reveal>
+            );
+          })}
         </ol>
       </div>
     </section>
   );
 }
+

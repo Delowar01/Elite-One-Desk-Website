@@ -13,9 +13,14 @@ import {
   type EditorNodeMeta,
   type EditorSectionMeta,
   type EditorTreeNode,
+  type ReplayMode,
+  type ReplayOutcome as CanvasReplayOutcome,
 } from "@/lib/visual-editor/protocol";
 import { isUsableRect, type Rect } from "@/lib/visual-editor/overlay";
 import type { EditorNodeKind } from "@/lib/visual-editor/render";
+
+import { prefersReducedMotion } from "./motion-observer";
+import { startReplay, type ReplayRun } from "./motion-replay";
 
 /**
  * The canvas half of the Visual Editor.
@@ -40,7 +45,9 @@ import type { EditorNodeKind } from "@/lib/visual-editor/render";
  *
  *   **It reports; it never changes.** Nothing here writes to the DOM, and the
  *   only thing it prevents is a click on a selectable node turning into a
- *   navigation the editor did not ask for.
+ *   navigation the editor did not ask for. Two exceptions, both temporary and
+ *   both undone: the text of a node being typed into, and a Replay (Batch 15b),
+ *   which plays one node's motion and then puts the node back as it was.
  */
 
 const SELECTABLE = "[data-eod-node]";
@@ -447,6 +454,20 @@ export function EditorBridge({
     }
 
     /**
+     * The same loop, held open for a known, bounded time — a Replay's. A
+     * parallax sweep moves the selected node continuously for well over
+     * `SETTLE_MS`, and an outline that stopped following half-way through
+     * would be left beside the node until something else moved it. The loop
+     * still stops on its own once the node holds still, and the Replay's own
+     * end calls `stabilise` again.
+     */
+    function followFor(ms: number) {
+      settleUntil = Date.now() + Math.min(ms, 10_000);
+      stableFrames = 0;
+      schedule();
+    }
+
+    /**
      * A transform moves an element without firing scroll, resize or a mutation,
      * and without changing its size — so none of the signals above see it. The
      * browser does announce the transition itself, though, and these events
@@ -534,6 +555,64 @@ export function EditorBridge({
         if (inside && inside !== direct && direct.contains(inside)) return inside;
       }
       return direct;
+    };
+
+    /* ---------------------------------------------------------------- */
+    /* Replay (Batch 15b)                                                */
+    /* ---------------------------------------------------------------- */
+
+    /**
+     * The one Replay playing on this canvas, if any.
+     *
+     * One at a time: a newer request supersedes it, and so does anything that
+     * means the editor has moved on — a different selection, a cleared one, a
+     * direct edit beginning, this document going away. Each of those stops it
+     * and restores the node before anything else happens, and the editor is
+     * told it was cancelled; the editor in turn ignores any result that no
+     * longer matches the page, language, canvas and selection it is showing.
+     */
+    type Replaying = { token: number; address: string; element: Element; run: ReplayRun };
+    let replaying: Replaying | null = null;
+
+    const answerReplay = (address: string, token: number, outcome: CanvasReplayOutcome) =>
+      post({ type: "canvas.motionReplayResult", address, token, outcome });
+
+    const stopReplay = () => {
+      if (!replaying) return;
+      const { address, token, run } = replaying;
+      replaying = null;
+      run.cancel();
+      answerReplay(address, token, "cancelled");
+      stabilise();
+    };
+
+    const beginReplay = (address: string, token: number, mode: ReplayMode) => {
+      stopReplay();
+      const element = document.querySelector(`[data-eod-address="${address}"]`);
+      if (!(element instanceof HTMLElement)) return answerReplay(address, token, "missing");
+      // Typing is never interrupted: the words would be spans inside the very
+      // element somebody is typing into.
+      if (editing && (element.contains(editing.element) || editing.element.contains(element))) {
+        return answerReplay(address, token, "busy");
+      }
+      // The stylesheet already shows everything in place for this visitor, and
+      // playing motion they asked not to see would be the one thing Replay
+      // must not do.
+      if (prefersReducedMotion()) return answerReplay(address, token, "reduced");
+
+      const run = startReplay(element, mode, {
+        onPhase: () => stabilise(),
+        onFinished: () => {
+          if (replaying?.run !== run) return;
+          replaying = null;
+          answerReplay(address, token, "finished");
+          stabilise();
+        },
+      });
+      if (!run) return answerReplay(address, token, "nothing");
+      replaying = { token, address, element, run };
+      answerReplay(address, token, "started");
+      followFor(run.budgetMs);
     };
 
     /* ---------------------------------------------------------------- */
@@ -634,6 +713,9 @@ export function EditorBridge({
       const mode = element.getAttribute("data-eod-edit");
       if (mode !== "text" && mode !== "multiline") return;
       if (isLocked(address)) return;
+      // A Replay puts the node's own text nodes back before anything is typed:
+      // editing must never begin inside generated word spans.
+      stopReplay();
       stopEditing(true);
 
       element.textContent = text;
@@ -721,6 +803,7 @@ export function EditorBridge({
       // choosing something else.
       if (editing && (element === editing.element || editing.element.contains(event.target as Node))) return;
       if (editing) stopEditing(true);
+      if (replaying && replaying.element !== element) stopReplay();
       // Inside the canvas a click on something editable means "select this".
       // Following the link as well would take the editor off the page they are
       // editing, mid-edit, because they aimed at a heading.
@@ -749,6 +832,8 @@ export function EditorBridge({
           return;
         }
         case "editor.select": {
+          // A different selection is a different Replay target.
+          if (replaying && replaying.address !== message.address) stopReplay();
           const element = document.querySelector(`[data-eod-address="${message.address}"]`);
           if (!element) {
             // The address is well formed but nothing on this page answers to
@@ -767,6 +852,7 @@ export function EditorBridge({
           return;
         }
         case "editor.clearSelection":
+          stopReplay();
           stopEditing(true);
           setHover(null);
           setSelection(null);
@@ -786,6 +872,13 @@ export function EditorBridge({
           // Only the session it names: a cancel for a request that was already
           // superseded must not stop the one that replaced it.
           if (editing && editing.token === message.token) stopEditing(false);
+          return;
+        case "editor.motionReplay":
+          beginReplay(message.address, message.token, message.mode);
+          return;
+        case "editor.motionReplayCancel":
+          // The same rule as an edit cancel: only the Replay it names.
+          if (replaying && replaying.token === message.token) stopReplay();
           return;
       }
     };
@@ -831,6 +924,8 @@ export function EditorBridge({
     announce();
 
     return () => {
+      // Whatever a Replay changed goes back before the document is left.
+      stopReplay();
       window.removeEventListener("message", onMessage);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("scroll", schedule, { capture: true });

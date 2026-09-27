@@ -59,6 +59,7 @@ export function QuickLinksBlock({ values, ctx, editor, styles, motion }: BlockPr
               const chosen = itemMediaId(link, "image") ?? imageForHref(link.href, catalogue);
               const image = chosen ? media.get(chosen) ?? null : null;
               const shot = picture(itemFieldPath("links", link, "image"));
+              const label = node.text(itemFieldPath("links", link, "label"), link.label);
               return (
                 <li
                   key={`${link.href}-${index}`}
@@ -94,8 +95,8 @@ export function QuickLinksBlock({ values, ctx, editor, styles, motion }: BlockPr
                         <Icon name={link.icon || "sparkle"} size={16} />
                       </span>
                       <span className="ql-foot">
-                        <span className="ql-title" {...node(itemFieldPath("links", link, "label"))}>
-                          {link.label}
+                        <span className="ql-title" {...label.attrs}>
+                          {label.content}
                         </span>
                         <Icon name="arrowRight" size={15} className="ql-arrow" />
                       </span>

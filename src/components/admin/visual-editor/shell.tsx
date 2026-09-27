@@ -41,10 +41,16 @@ import {
   type PageSummaryView,
 } from "@/lib/visual-editor/publish";
 import type { GlobalsState } from "@/lib/visual-editor/globals";
-import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
+import type { EditorNodeMeta, EditorSectionMeta, ReplayMode, ReplayOutcome } from "@/lib/visual-editor/protocol";
 import { DEVICE_BREAKPOINT, EDITOR_DEVICES, type DeviceKey } from "@/lib/visual-editor/viewport";
 
-import { VisualCanvas, type CanvasState, type EditRequest, type SelectRequest } from "./canvas";
+import {
+  VisualCanvas,
+  type CanvasState,
+  type EditRequest,
+  type ReplayRequest,
+  type SelectRequest,
+} from "./canvas";
 import {
   dirtyOf,
   EDIT_DOMAINS,
@@ -56,6 +62,7 @@ import {
 import { formatNodePath, parseAddress } from "@/lib/cms/address";
 import { applyTextAt, directEditAt, textAt } from "@/lib/visual-editor/tree";
 import { acceptEdit, type DirectEditSession } from "@/lib/visual-editor/direct-edit";
+import { acceptReplayResult, type ReplaySession } from "@/lib/visual-editor/replay";
 import { LayersPanel, type StructuralOps } from "./layers";
 import { PagePanel } from "./page-panel";
 
@@ -182,6 +189,18 @@ export function VisualEditorShell({
   const [selected, setSelected] = useState<EditorNodeMeta | null>(null);
   const [selectRequest, setSelectRequest] = useState<SelectRequest>(null);
   const [editRequest, setEditRequest] = useState<EditRequest>(null);
+  /**
+   * Replay (Batch 15b): what the canvas is asked to play, the session that
+   * asked, and what the canvas said about it.
+   *
+   * Editor-session state and nothing more, like the locks below: none of it is
+   * sent to a Server Action, written into a buffer, marked dirty or saved. A
+   * Replay changes what the canvas shows for a few seconds and is gone.
+   */
+  const [replayRequest, setReplayRequest] = useState<ReplayRequest>(null);
+  const [replayStatus, setReplayStatus] = useState<{ address: string; outcome: ReplayOutcome } | null>(null);
+  const replayToken = useRef(0);
+  const replaySession = useRef<ReplaySession | null>(null);
   /**
    * Which addresses the canvas pointer must ignore.
    *
@@ -406,6 +425,7 @@ export function VisualEditorShell({
     setCanvas(EMPTY_CANVAS);
     setSections([]);
     setEditRequest(null);
+    setReplayRequest(null);
     selectedRef.current = null;
     setSelected(null);
     setSelectRequest(null);
@@ -584,6 +604,78 @@ export function VisualEditorShell({
     editSession.current = null;
     if (session) setEditRequest({ kind: "cancel", token: session.token });
   }, [page, locale, canvasKey]);
+
+  /**
+   * A Replay belongs to one page, one language, one canvas document and one
+   * selected node, like a direct-edit session — and it ends with any of them.
+   * The canvas stops a Replay itself when its selection moves or its document
+   * goes; this is the editor's half, so a result still in the air is not taken
+   * for the node that is selected now.
+   */
+  useEffect(() => {
+    replayToken.current += 1;
+    const session = replaySession.current;
+    replaySession.current = null;
+    setReplayStatus(null);
+    if (session) setReplayRequest({ kind: "cancel", token: session.token });
+  }, [page, locale, canvasKey]);
+
+  const selectedAddress = selected?.address ?? null;
+  useEffect(() => {
+    const session = replaySession.current;
+    if (session && session.address !== selectedAddress) {
+      replaySession.current = null;
+      setReplayRequest({ kind: "cancel", token: session.token });
+    }
+    setReplayStatus((current) => (current && current.address !== selectedAddress ? null : current));
+  }, [selectedAddress]);
+
+  /**
+   * Plays the selected node's motion once on the canvas.
+   *
+   * The whole of Replay on the editor's side, and what it does not do is the
+   * point: it reads the selection and the context, and posts one message. It
+   * never touches a buffer, never schedules an autosave, never calls a Server
+   * Action — so it cannot make anything dirty, move a revision, write a row,
+   * log an activity or leave a draft to publish.
+   */
+  const requestReplay = useCallback((mode: ReplayMode) => {
+    const node = selectedRef.current;
+    const pageId = pageRef.current;
+    if (!node || pageId === null) return;
+    const token = replayToken.current + 1;
+    replayToken.current = token;
+    replaySession.current = {
+      token,
+      address: node.address,
+      mode,
+      pageId,
+      locale: localeRef.current,
+      canvasKey: canvasKeyRef.current,
+    };
+    setReplayStatus(null);
+    setReplayRequest({ kind: "play", address: node.address, token, mode });
+  }, []);
+
+  /** What the canvas said. Anything that no longer belongs to this editor changes nothing. */
+  const onReplayResult = useCallback(
+    (result: { address: string; token: number; outcome: ReplayOutcome }) => {
+      const verdict = acceptReplayResult(
+        replaySession.current,
+        {
+          pageId: pageRef.current,
+          locale: localeRef.current,
+          canvasKey: canvasKeyRef.current,
+          selected: selectedRef.current?.address ?? null,
+        },
+        result,
+      );
+      if (!verdict.ok) return;
+      if (verdict.ends) replaySession.current = null;
+      setReplayStatus({ address: result.address, outcome: verdict.outcome });
+    },
+    [],
+  );
 
   /**
    * The one way direct editing ever begins — from the canvas or from Layers.
@@ -1925,12 +2017,14 @@ export function VisualEditorShell({
               title={page.title}
               selectRequest={selectRequest}
               editRequest={editRequest}
+              replayRequest={replayRequest}
               locks={locks}
               onState={onCanvasState}
               onStructure={onStructure}
               onSelection={onSelection}
               onEdit={onCanvasEdit}
               onEditRequest={requestDirectEdit}
+              onReplayResult={onReplayResult}
             />
           </div>
 
@@ -1997,6 +2091,7 @@ export function VisualEditorShell({
           onTakeLatest={takeLatest}
           onClear={() => ask(null)}
           onSelect={ask}
+          replay={{ ready: canvas.status === "ready", status: replayStatus, onReplay: requestReplay }}
         />
       </div>
     </div>

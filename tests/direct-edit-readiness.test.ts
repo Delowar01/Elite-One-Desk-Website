@@ -83,8 +83,10 @@ function bodyOf(source: string, declaration: string): string {
 /* -------------------------------------------------------------------------- */
 
 describe("the vocabulary makes asking and beginning two different things", () => {
-  test("this build speaks version 4", () => {
-    assert.equal(PROTOCOL_VERSION, 4);
+  test("this build speaks version 5", () => {
+    // Version 4 made asking and beginning two messages; version 5 (Batch 15b)
+    // kept both unchanged and added Replay beside them.
+    assert.equal(PROTOCOL_VERSION, 5);
   });
 
   test("a canvas may ask to edit, and asking carries nothing but the address", () => {

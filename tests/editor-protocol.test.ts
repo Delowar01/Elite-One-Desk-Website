@@ -126,13 +126,18 @@ describe("the editor reads only what the canvas is allowed to say", () => {
     }
   });
 
-  test("this build speaks version 4, and an older canvas is not half-understood", () => {
-    assert.equal(PROTOCOL_VERSION, 4);
+  test("this build speaks version 5, and an older canvas is not half-understood", () => {
+    // Version 5 is Batch 15b's Replay. A canvas served before it answers in v4
+    // and would not know the Replay messages, so the two do not recognise each
+    // other at all rather than half-understanding one another.
+    assert.equal(PROTOCOL_VERSION, 5);
     // A document served by the previous release answers in v1. Selection did
     // not exist there, so the two simply do not recognise each other — which is
     // the outcome that cannot go subtly wrong.
     assert.equal(readCanvasMessage(wrap(READY, { v: 1 }), { bridgeId: BRIDGE }), null);
     assert.equal(readEditorMessage(wrap({ type: "editor.ping", at: 1 }, { v: 1 }), { bridgeId: BRIDGE }), null);
+    assert.equal(readCanvasMessage(wrap(READY, { v: 4 }), { bridgeId: BRIDGE }), null);
+    assert.equal(readEditorMessage(wrap({ type: "editor.ping", at: 1 }, { v: 4 }), { bridgeId: BRIDGE }), null);
   });
 
   test("a message carrying another bridge id is rejected — that is what makes a stale frame harmless", () => {

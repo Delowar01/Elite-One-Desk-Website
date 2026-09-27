@@ -45,7 +45,33 @@ export type ItemFieldDef = {
   box?: BoxKind;
   /** See `OwnMotion`. */
   motion?: OwnMotion;
+  /** See `Surface`. */
+  surface?: Surface;
 };
+
+/**
+ * What the element a field is annotated on *is*, where that decides which
+ * scroll and hover movement it can take (Batch 15b).
+ *
+ * Descriptive rather than prescriptive: the registry says what the markup is,
+ * and `motion-targets.ts` decides what follows from it — the same division
+ * `BoxKind` keeps with the Style panel. Absent means an ordinary element.
+ *
+ *   · `"button"` — a link drawn as a button (`.btn`). It is focusable, so its
+ *     hover has a keyboard twin of its own; and `.btn:hover` already lifts it,
+ *     so a second lift is not offered on top of that one.
+ *   · `"backdrop"` — a full-bleed picture laid behind the section's content,
+ *     `pointer-events: none` and pinned to the section's edges. It can never be
+ *     hovered, and moving it on scroll would open a gap at the section's edge.
+ *   · `"card"` — on an `items` field, each row is a card link that already owns
+ *     its hover (a lift, a zoom of its picture and a nudge of its arrow); on a
+ *     field inside such a row, the element is part of that card. Neither is
+ *     offered a hover of its own, because the card's would double it.
+ *
+ * `tests/advanced-motion-15b.test.ts` reads the block sources back and fails if
+ * a declaration and the element it describes disagree.
+ */
+export type Surface = "button" | "backdrop" | "card";
 
 /**
  * Whether a field's element already runs a source-owned entrance of its own.
@@ -100,6 +126,8 @@ export type FieldDef = {
   box?: BoxKind;
   /** See `OwnMotion`. */
   motion?: OwnMotion;
+  /** See `Surface`. On an `items` field, `"card"` describes its rows. */
+  surface?: Surface;
   /** Repeatable lists only. Keeps a section from becoming a page of its own. */
   maxItems?: number;
   rows?: number;
@@ -142,10 +170,26 @@ const localisedArea = (
   ...extra,
 });
 
+/**
+ * A call to action's two field names: `primaryCtaLabel` with a prefix, and
+ * `ctaLabel` without one — the names the renderers read and the stored rows
+ * carry.
+ *
+ * Until Batch 15b the unprefixed pair was declared as `CtaLabel` / `CtaHref`.
+ * The validator rebuilds values from these declarations and drops anything
+ * undeclared, so every save of a Featured service, Image and text, Travel
+ * feature or One Desk section threw away the stored `ctaLabel` and `ctaHref`
+ * and its button disappeared from the draft. `tests/advanced-motion-15b.test.ts`
+ * now holds every block's declared names against what its renderer reads.
+ */
+const ctaName = (prefix: string, part: "Label" | "Href") => (prefix ? `${prefix}Cta${part}` : `cta${part}`);
+
 const ctaFields = (prefix = "", label = "Call to action"): FieldDef[] => [
-  localisedText(`${prefix}CtaLabel`, `${label} — button text`),
+  // Every block draws its call to action as a `.btn` link annotated with this
+  // field; see `Surface`.
+  localisedText(ctaName(prefix, "Label"), `${label} — button text`, { surface: "button" }),
   {
-    name: `${prefix}CtaHref`,
+    name: ctaName(prefix, "Href"),
     label: `${label} — link`,
     type: "link",
     placeholder: "/contact",
@@ -177,7 +221,14 @@ export const BLOCKS: BlockDef[] = [
       localisedArea("lead", "Supporting sentence", 3, { motion: "own" }),
       ...ctaFields("primary", "Primary"),
       ...ctaFields("secondary", "Secondary"),
-      { name: "backgroundImage", label: "Background image", type: "media", help: "Optional. The animated composition shows through it." },
+      {
+        name: "backgroundImage",
+        label: "Background image",
+        type: "media",
+        help: "Optional. The animated composition shows through it.",
+        // Laid behind the hero, `pointer-events: none`; see `Surface`.
+        surface: "backdrop",
+      },
     ],
   },
   {
@@ -194,6 +245,9 @@ export const BLOCKS: BlockDef[] = [
         type: "items",
         // The card grid under the hero.
         box: "grid",
+        // Each row is a `.ql-card` link that lifts, zooms its picture and
+        // nudges its arrow on its own; see `Surface`.
+        surface: "card",
         maxItems: 10,
         itemFields: [
           { name: "label", label: "Label", localised: true },
@@ -204,6 +258,7 @@ export const BLOCKS: BlockDef[] = [
             label: "Image",
             type: "media",
             help: "Optional. With none, the card uses the picture belonging to the page it links to.",
+            surface: "card",
           },
         ],
       },
@@ -496,7 +551,8 @@ export const BLOCKS: BlockDef[] = [
       localisedText("eyebrow", "Eyebrow", { motion: "own" }),
       localisedText("title", "Title", { motion: "own" }),
       localisedArea("lead", "Lead paragraph", 3, { motion: "own" }),
-      { name: "backgroundImage", label: "Background image", type: "media" },
+      // Laid behind the page hero, `pointer-events: none`; see `Surface`.
+      { name: "backgroundImage", label: "Background image", type: "media", surface: "backdrop" },
     ],
   },
   {

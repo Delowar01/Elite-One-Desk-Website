@@ -54,28 +54,38 @@ export function SectionHeading({
   if (!eyebrow && !title && !intro && !children) return null;
   const Tag = level === 1 ? "h1" : "h2";
   const node = blockNode({ editor, styles, motion });
-  const at = (name: string | undefined) => (name ? node(`field:${name}`) : {});
+  /**
+   * A heading part's attributes and its text, decided together — so a part
+   * set to arrive word by word gets its words and its marker in one step
+   * (Batch 15b). With no field name there is nothing to annotate, and the
+   * text is simply the text.
+   */
+  const part = (name: string | undefined, value: string) =>
+    name ? node.text(`field:${name}`, value) : { attrs: {}, content: value };
+  const eyebrowPart = eyebrow ? part(fields?.eyebrow, eyebrow) : null;
+  const titlePart = title ? part(fields?.title, title) : null;
+  const introPart = intro ? part(fields?.intro, intro) : null;
 
   return (
     <Reveal
       className={`flex flex-col gap-4 ${align === "center" ? "items-center text-center" : ""} ${className}`}
     >
-      {eyebrow ? (
-        <p className="eyebrow" {...at(fields?.eyebrow)}>
-          {eyebrow}
+      {eyebrowPart ? (
+        <p className="eyebrow" {...eyebrowPart.attrs}>
+          {eyebrowPart.content}
         </p>
       ) : null}
-      {title ? (
+      {titlePart ? (
         <Tag
           className={level === 1 ? "text-[length:var(--text-h1)]" : "text-[length:var(--text-h2)]"}
-          {...at(fields?.title)}
+          {...titlePart.attrs}
         >
-          {title}
+          {titlePart.content}
         </Tag>
       ) : null}
-      {intro ? (
-        <p className={`lede ${align === "center" ? "max-w-2xl" : "max-w-xl"}`} {...at(fields?.intro)}>
-          {intro}
+      {introPart ? (
+        <p className={`lede ${align === "center" ? "max-w-2xl" : "max-w-xl"}`} {...introPart.attrs}>
+          {introPart.content}
         </p>
       ) : null}
       {children}

@@ -5,13 +5,15 @@ import {
   MOTION_INHERITS_FROM,
   resolveBranch,
   type Entrance,
+  type HoverEffect,
   type MotionBranch,
   type MotionDirection,
   type MotionDocument,
   type MotionTarget,
+  type Parallax,
   type Stagger,
 } from "./motion-doc";
-import { RESPONSIVE_BREAKPOINTS, type Breakpoint, type ResponsiveBreakpoint } from "./styles";
+import { BREAKPOINTS, RESPONSIVE_BREAKPOINTS, type Breakpoint, type ResponsiveBreakpoint } from "./styles";
 
 /**
  * The one place a stored motion value becomes CSS.
@@ -218,6 +220,72 @@ const STAGGER: Record<Stagger, string> = {
 export const STAGGER_CAP = 8;
 
 /* -------------------------------------------------------------------------- */
+/* Batch 15b: parallax, hover and words                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * How far an element may drift on scroll, in pixels, at each intensity — the
+ * offset it reaches as it enters at the bottom of the viewport or leaves at the
+ * top. Half-way through the viewport it is where the layout put it.
+ *
+ * Restrained on purpose. Strong is still a third of a line of body text either
+ * side of rest: enough to read as depth, never enough to look like the page is
+ * sliding, and never enough to push a card into the one below it.
+ */
+export const PARALLAX_DISTANCE: Record<Parallax, number> = {
+  none: 0,
+  subtle: 12,
+  medium: 24,
+  strong: 36,
+};
+
+/** Lift: the element rises by this much under the pointer or keyboard focus. */
+export const HOVER_LIFT_PX = 4;
+/** Nudge: the element moves this far toward the end of the line — right in English, left in Arabic. */
+export const HOVER_NUDGE_PX = 4;
+/** Scale: the whole element grows to this. */
+export const HOVER_SCALE = 1.03;
+/** Zoom: the picture grows to this *inside* its frame, which clips it. */
+export const HOVER_ZOOM = 1.06;
+
+/**
+ * Word reveal timing, in source.
+ *
+ * Each word begins `WORD_STEP_MS` after the one before it, and the thirteenth
+ * word onward arrives with the twelfth (`WORD_CAP`), so no heading waits more
+ * than 660ms before its last word starts. A text of more than `WORD_LIMIT`
+ * words is not split at all — it arrives whole, on the node's own entrance —
+ * so a long value typed into a short field never becomes a paragraph of
+ * animated spans. The stylesheet repeats the step and the cap; a test holds
+ * the two together.
+ */
+export const WORD_STEP_MS = 60;
+export const WORD_CAP = 12;
+export const WORD_LIMIT = 24;
+/** How blurred a word is before it arrives. Light: heavy blur on type reads as a fault. */
+export const WORD_BLUR_PX = 4;
+
+/**
+ * Every variable a hover choice writes, and what each movement puts in them.
+ *
+ * `hvb` is how much of a button's *own* hover lift survives: `.btn:hover`
+ * rises by `1px × --m-hvb`. A button given Lift sets it to 0, so the editor's
+ * lift replaces the button's rather than adding to it; every other choice
+ * leaves it at 1 and the button lifts as it always has. It is the one place a
+ * component's existing hover consumes the editor's (see `globals.css`).
+ */
+type HoverVars = { hvx: string; hvy: string; hvs: string; hvz: string; hvb: string };
+const HOVER: Record<HoverEffect, HoverVars> = {
+  none: { hvx: "0px", hvy: "0px", hvs: "1", hvz: "1", hvb: "1" },
+  lift: { hvx: "0px", hvy: `-${HOVER_LIFT_PX}px`, hvs: "1", hvz: "1", hvb: "0" },
+  scale: { hvx: "0px", hvy: "0px", hvs: String(HOVER_SCALE), hvz: "1", hvb: "1" },
+  zoom: { hvx: "0px", hvy: "0px", hvs: "1", hvz: String(HOVER_ZOOM), hvb: "1" },
+  // Toward the end edge: multiplied by `--m-sign` in the stylesheet, so the
+  // same stored Nudge moves right in English and left in Arabic.
+  nudge: { hvx: `${HOVER_NUDGE_PX}px`, hvy: "0px", hvs: "1", hvz: "1", hvb: "1" },
+};
+
+/* -------------------------------------------------------------------------- */
 /* Names                                                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -245,6 +313,17 @@ export const MOTION_VARIABLES = [
   "ease",
   "delay",
   "stagger",
+  // Batch 15b. `pd` is how far the element may drift on scroll at this width,
+  // read by the parallax runtime; `hvx`/`hvy`/`hvs`/`hvz` are what the hover
+  // state moves to, and `hvb` how much of a button's own lift remains; `wr` is
+  // 1 where the words arrive in turn and 0 where the text arrives whole.
+  "pd",
+  "hvx",
+  "hvy",
+  "hvs",
+  "hvz",
+  "hvb",
+  "wr",
 ] as const;
 export type MotionVariable = (typeof MOTION_VARIABLES)[number];
 
@@ -300,6 +379,13 @@ export function branchVars(branch: MotionBranch): Partial<Record<MotionVariable,
   if (branch.delay !== undefined) out.delay = `${branch.delay}ms`;
   if (branch.stagger !== undefined) out.stagger = STAGGER[branch.stagger];
 
+  if (branch.parallax !== undefined) out.pd = `${PARALLAX_DISTANCE[branch.parallax]}px`;
+  // A hover choice writes all four of its variables, for the reason entrance
+  // and direction do: a tablet that turns Lift into Scale must not keep Base's
+  // rise underneath the new scale.
+  if (branch.hover !== undefined) Object.assign(out, HOVER[branch.hover]);
+  if (branch.textReveal !== undefined) out.wr = branch.textReveal === "words" ? "1" : "0";
+
   return out;
 }
 
@@ -322,19 +408,33 @@ export type MotionStyle = {
  * entrance with direction: a branch that names either is expanded with the
  * other resolved through inheritance, so the geometry it writes is whole.
  */
-export function motionStyle(target: MotionTarget | undefined): MotionStyle | null {
+export function motionStyle(
+  target: MotionTarget | undefined,
+  only?: readonly (keyof MotionBranch)[],
+): MotionStyle | null {
   if (!target || !Object.keys(target).length) return null;
+  // A row of a staggering list keeps its hover but not its entrance, so it asks
+  // for its hover variables alone; everything else asks for all of them.
+  const scope = only ? new Set<keyof MotionBranch>(only) : null;
+  const pick = (branch: MotionBranch): MotionBranch => {
+    if (!scope) return branch;
+    const kept: MotionBranch = {};
+    for (const key of Object.keys(branch) as (keyof MotionBranch)[]) {
+      if (scope.has(key)) (kept as Record<string, unknown>)[key] = branch[key];
+    }
+    return kept;
+  };
 
   const vars: Record<string, string> = {};
   const attrs: MotionAttrs = {};
 
-  const base = resolveBranch(target, "base");
+  const base = pick(resolveBranch(target, "base"));
   for (const [name, value] of Object.entries(branchVars(base))) {
     vars[`${MOTION_PREFIX}${name}`] = value;
   }
 
   for (const breakpoint of RESPONSIVE_BREAKPOINTS) {
-    const own = target[breakpoint];
+    const own = target[breakpoint] ? pick(target[breakpoint]!) : undefined;
     if (!own || !Object.keys(own).length) continue;
     const resolved = resolveBranch(target, breakpoint);
     const scoped: MotionBranch = {};
@@ -366,15 +466,37 @@ export function motionStyle(target: MotionTarget | undefined): MotionStyle | nul
  */
 export function animatesAnywhere(target: MotionTarget | undefined): boolean {
   if (!target) return false;
-  return (["base", "tablet", "mobile"] as const).some((breakpoint) => {
-    const entrance = resolveBranch(target, breakpoint).entrance;
-    return entrance !== undefined && entrance !== "none";
+  return BREAKPOINTS.some((breakpoint) => {
+    const branch = resolveBranch(target, breakpoint);
+    // Words arriving in turn are an entrance too: the element needs the same
+    // one lifecycle to know when to start them, whatever its own entrance is.
+    return (branch.entrance !== undefined && branch.entrance !== "none") || branch.textReveal === "words";
   });
 }
 
+/** Whether a target drifts on scroll at any width — the question that registers it with the parallax runtime. */
+export const parallaxAnywhere = (target: MotionTarget | undefined): boolean =>
+  !!target &&
+  BREAKPOINTS.some((breakpoint) => {
+    const parallax = resolveBranch(target, breakpoint).parallax;
+    return parallax !== undefined && parallax !== "none";
+  });
+
+/** Whether a target moves on hover at any width — the question that gives it the hover rules. */
+export const hoversAnywhere = (target: MotionTarget | undefined): boolean =>
+  !!target &&
+  BREAKPOINTS.some((breakpoint) => {
+    const hover = resolveBranch(target, breakpoint).hover;
+    return hover !== undefined && hover !== "none";
+  });
+
+/** Whether a target's words arrive in turn at any width — the question that splits its text. */
+export const wordsAnywhere = (target: MotionTarget | undefined): boolean =>
+  !!target && BREAKPOINTS.some((breakpoint) => resolveBranch(target, breakpoint).textReveal === "words");
+
 /** Whether a target names a stagger at any width — `none` included. */
 export const staggersAnywhere = (target: MotionTarget | undefined): boolean =>
-  !!target && (["base", "tablet", "mobile"] as const).some((b) => target[b]?.stagger !== undefined);
+  !!target && BREAKPOINTS.some((b) => target[b]?.stagger !== undefined);
 
 /**
  * Whether a list sends its rows in turn: it names a stagger and it has an

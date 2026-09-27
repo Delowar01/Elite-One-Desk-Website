@@ -377,15 +377,22 @@
     line-height: 1;
     cursor: pointer;
     isolation: isolate;
+    /* The last entry is the Visual Editor's hover (Batch 15b). This list is
+       the button's one `transition`, and a second declaration anywhere would
+       replace it whole — so the button consumes the hover's variables here
+       instead of the hover writing a transition over the button's. */
     transition:
       transform var(--duration-fast) var(--ease-out-soft),
       background-color var(--duration-fast) var(--ease-out-soft),
       border-color var(--duration-fast) var(--ease-out-soft),
       color var(--duration-fast) var(--ease-out-soft),
-      box-shadow var(--duration-base) var(--ease-out-soft);
+      box-shadow var(--duration-base) var(--ease-out-soft),
+      var(--m-hover-transition);
   }
   [dir="rtl"] .btn { font-family: var(--font-arabic); }
-  .btn:hover { transform: translateY(-1px); }
+  /* The button's own lift, scaled by `--m-hvb` (1 unless a Visual Editor hover
+     of Lift takes the lift over; Batch 15b — see `--m-hvb` below). */
+  .btn:hover { transform: translateY(calc(-1px * var(--m-hvb, 1))); }
   .btn:active { transform: translateY(0); }
   .btn[disabled], .btn[aria-disabled="true"] { opacity: 0.55; pointer-events: none; }
 
@@ -930,13 +937,18 @@
   }
 
   @media (scripting: enabled) {
+    /* A row with a Visual Editor hover (Batch 15b) is often a `.reveal` row, so
+       this list carries the hover's variables too — the reason is the one on
+       `.btn`. The reveal's delay belongs to the reveal alone: a hover waiting
+       for a row's place in the cascade would feel broken. */
     .reveal {
       opacity: 0;
       transform: translate3d(0, 18px, 0);
       transition:
         opacity var(--duration-slow) var(--ease-out-expo),
-        transform var(--duration-slow) var(--ease-out-expo);
-      transition-delay: var(--reveal-delay, 0ms);
+        transform var(--duration-slow) var(--ease-out-expo),
+        var(--m-hover-transition);
+      transition-delay: var(--reveal-delay, 0ms), var(--reveal-delay, 0ms), 0ms, 0ms, 0ms;
     }
     .reveal[data-shown="true"] { opacity: var(--eod-node-opacity, 1); transform: none; }
     /* Fade only, and only fade. `.reveal` carries the 18px rise as well as the
@@ -1436,6 +1448,11 @@
   --m-ease: var(--ease-out-expo);
   --m-delay: 0ms;
   --m-stagger: 0ms;
+  /* Words (Batch 15b): `--m-wr` is 1 where the text arrives word by word, and
+     `--m-wo` is how much of the element's own fade the words take — nothing,
+     unless the element really was split (`[data-m-words]` below). */
+  --m-wr: 0;
+  --m-wo: 0;
   /* Logical to physical, once. The inline pair swaps with the writing
      direction, which is what makes a stored `start` the left edge in English
      and the right edge in Arabic. */
@@ -1489,15 +1506,19 @@
    animation. */
 @keyframes eod-m-enter {
   from {
-    opacity: calc(var(--m-op) * var(--eod-node-opacity, 1));
-    translate: calc(var(--m-x) * var(--m-sign)) var(--m-y);
-    scale: var(--m-scale);
+    opacity: calc(max(var(--m-op), var(--m-wo, 0)) * var(--eod-node-opacity, 1));
+    translate: calc((var(--m-x) + var(--m-hx, 0px)) * var(--m-sign)) calc(var(--m-y) + var(--m-py, 0px) + var(--m-hy, 0px));
+    scale: calc(var(--m-scale) * var(--m-hs, 1));
     filter: blur(var(--m-blur));
   }
+  /* The resting composition (Batch 15b; see below), not `none`: an element
+     that also drifts or is being hovered lands where it is going to stay, so
+     nothing jumps when the entrance lets go of `translate`. For an element
+     with neither, every term here is zero and this is `none` in effect. */
   to {
     opacity: var(--eod-node-opacity, 1);
-    translate: none;
-    scale: none;
+    translate: calc(var(--m-hx, 0px) * var(--m-sign)) calc(var(--m-py, 0px) + var(--m-hy, 0px));
+    scale: var(--m-hs, 1);
     filter: none;
   }
 }
@@ -1522,9 +1543,9 @@
      clip — see the mask note above. */
   [data-m-reveal]:not([data-shown="true"]),
   [data-m-group]:not([data-shown="true"]) > * {
-    opacity: calc(var(--m-hold) * var(--eod-node-opacity, 1));
-    translate: calc(var(--m-x) * var(--m-sign)) var(--m-y);
-    scale: var(--m-scale);
+    opacity: calc(max(var(--m-hold), var(--m-wo, 0)) * var(--eod-node-opacity, 1));
+    translate: calc((var(--m-x) + var(--m-hx, 0px)) * var(--m-sign)) calc(var(--m-y) + var(--m-py, 0px) + var(--m-hy, 0px));
+    scale: calc(var(--m-scale) * var(--m-hs, 1));
     filter: blur(var(--m-blur));
   }
 
@@ -1571,6 +1592,13 @@
   [data-m-t~="ease"] { --m-ease: var(--m-t-ease) !important; }
   [data-m-t~="delay"] { --m-delay: var(--m-t-delay) !important; }
   [data-m-t~="stagger"] { --m-stagger: var(--m-t-stagger) !important; }
+  [data-m-t~="pd"] { --m-pd: var(--m-t-pd) !important; }
+  [data-m-t~="hvx"] { --m-hvx: var(--m-t-hvx) !important; }
+  [data-m-t~="hvy"] { --m-hvy: var(--m-t-hvy) !important; }
+  [data-m-t~="hvs"] { --m-hvs: var(--m-t-hvs) !important; }
+  [data-m-t~="hvz"] { --m-hvz: var(--m-t-hvz) !important; }
+  [data-m-t~="hvb"] { --m-hvb: var(--m-t-hvb) !important; }
+  [data-m-t~="wr"] { --m-wr: var(--m-t-wr) !important; }
 }
 
 @media screen and (max-width: 640px) {
@@ -1589,6 +1617,221 @@
   [data-m-m~="ease"] { --m-ease: var(--m-m-ease) !important; }
   [data-m-m~="delay"] { --m-delay: var(--m-m-delay) !important; }
   [data-m-m~="stagger"] { --m-stagger: var(--m-m-stagger) !important; }
+  [data-m-m~="pd"] { --m-pd: var(--m-m-pd) !important; }
+  [data-m-m~="hvx"] { --m-hvx: var(--m-m-hvx) !important; }
+  [data-m-m~="hvy"] { --m-hvy: var(--m-m-hvy) !important; }
+  [data-m-m~="hvs"] { --m-hvs: var(--m-m-hvs) !important; }
+  [data-m-m~="hvz"] { --m-hvz: var(--m-m-hvz) !important; }
+  [data-m-m~="hvb"] { --m-hvb: var(--m-m-hvb) !important; }
+  [data-m-m~="wr"] { --m-wr: var(--m-m-wr) !important; }
+}
+
+/* ==========================================================================
+   Visual Editor — parallax, hover and words (Batch 15b)
+   ==========================================================================
+
+   Three more movements, written the way the entrances are: every selector,
+   property, distance and curve in source, the document contributing values
+   from `src/lib/cms/motion-css.ts` and the names of the variables a breakpoint
+   overrides, and nothing else.
+
+   **One authority composes an element's movement.** An element that drifts or
+   moves on hover has one static rule for `translate` and `scale`, and each is
+   a sum of contributions that each have exactly one owner:
+
+       translate: (hover nudge × sign)   (parallax + hover lift)
+       scale:     hover scale
+
+   `--m-py` is written by the parallax runtime and by nothing else;
+   `--m-hx` / `--m-hy` / `--m-hs` are set by the hover state and transitioned;
+   and the entrance keyframes above run from their own offset *plus* this
+   composition to exactly this composition. So an entrance, a drift and a hover
+   can never overwrite one another, and an entrance hands over to a drifting
+   element without a jump — it lands where the drift already is.
+
+   The four contributions are registered, non-inheriting properties: a card in
+   a drifting list must not drift twice, and a registered length is what lets
+   a hover interpolate a custom property rather than flip it half-way.
+   ========================================================================== */
+
+@property --m-py {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --m-hx {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --m-hy {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --m-hs {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+/* How much of a button's own one-pixel hover lift remains: 1, unless the
+   editor gave the button Lift, which replaces the button's lift rather than
+   adding to it. Non-inheriting, so a button inside a lifting card keeps its
+   own. */
+@property --m-hvb {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 1;
+}
+
+/* The hover's transition, stated once. `.btn` and `.reveal` append it to their
+   own lists, because a second `transition` would replace theirs whole; every
+   other element takes it from the base-layer rule below, which any
+   component's own list outranks. Always defined on the root: a `transition`
+   that names an undefined variable is invalid as a whole, and would take a
+   button's colour transitions down with it. */
+:root {
+  --m-hover-transition:
+    --m-hx var(--duration-base) var(--ease-out-expo),
+    --m-hy var(--duration-base) var(--ease-out-expo),
+    --m-hs var(--duration-base) var(--ease-out-expo);
+}
+@layer base {
+  [data-m-hv] {
+    transition: var(--m-hover-transition);
+  }
+  /* Zoom grows the picture inside its frame, and the frame clips it. */
+  [data-m-hv] > img {
+    transition: scale var(--duration-slow) var(--ease-out-expo);
+  }
+}
+
+/* Resting values, on the element that uses them, so a hover set only at tablet
+   does nothing at desktop and a nested element never reads its parent's. */
+[data-m-px],
+[data-m-hv] {
+  --m-pd: 0px;
+  --m-hvx: 0px;
+  --m-hvy: 0px;
+  --m-hvs: 1;
+  --m-hvz: 1;
+  --m-sign: 1;
+}
+[dir="rtl"] [data-m-px],
+[dir="rtl"] [data-m-hv] {
+  --m-sign: -1;
+}
+
+/* The composition itself. An element waiting for its entrance, or running it,
+   is held by the more specific rules above; this is where it rests. */
+[data-m-px],
+[data-m-hv] {
+  translate: calc(var(--m-hx) * var(--m-sign)) calc(var(--m-py) + var(--m-hy));
+  scale: var(--m-hs);
+}
+
+/* Hover. A pointer that can hover, or focus shown by the keyboard — on the
+   element itself (a button) or inside it (a card whose link has focus). No
+   element is made focusable to show off a hover it could not otherwise have. */
+@media (hover: hover) {
+  [data-m-hv]:hover {
+    --m-hx: var(--m-hvx);
+    --m-hy: var(--m-hvy);
+    --m-hs: var(--m-hvs);
+  }
+  [data-m-hv]:hover > img {
+    scale: var(--m-hvz);
+  }
+}
+[data-m-hv]:is(:focus-visible, :has(:focus-visible)) {
+  --m-hx: var(--m-hvx);
+  --m-hy: var(--m-hvy);
+  --m-hs: var(--m-hvs);
+}
+[data-m-hv]:is(:focus-visible, :has(:focus-visible)) > img {
+  scale: var(--m-hvz);
+}
+
+/* Replay, in the Visual Editor only: the canvas sets this attribute on the
+   selected element for a moment, and the very same variables move. Nothing
+   fakes the pointer, and no second set of distances exists. The attribute is
+   written by the editor bridge at runtime and never rendered into a page. */
+[data-m-hv][data-eod-replay-hover] {
+  --m-hx: var(--m-hvx);
+  --m-hy: var(--m-hvy);
+  --m-hs: var(--m-hvs);
+}
+[data-m-hv][data-eod-replay-hover] > img {
+  scale: var(--m-hvz);
+}
+
+/* Words.
+
+   A split text carries the sentence twice: once whole, for assistive
+   technology (`data-m-wa`, below — read once, never seen, never selected), and
+   once as words for the eye (`data-m-wv`, `aria-hidden`, inline spans with
+   the original spaces between them). Inline, so line breaking, Arabic shaping
+   and the order of a mixed-direction sentence are exactly the unsplit text's;
+   which is also why a word fades and softens rather than travels — a transform
+   does not apply to an inline box, and an inline-block word would be reordered
+   by the bidirectional algorithm.
+
+   The element's own lifecycle drives them: one observer for the element, a
+   step per word from its place among its siblings, capped so the thirteenth
+   word onward arrives with the twelfth (`WORD_CAP`, `WORD_STEP_MS`). While the
+   element is split its own fade is handed to the words (`--m-wo`), so the text
+   does not fade twice; where `--m-wr` is 0 — a narrower width set to arrive
+   whole — the words are simply there and the element fades as it always would. */
+[data-m-wa] {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+  user-select: none;
+}
+[data-m-words] {
+  --m-wo: var(--m-wr);
+}
+[data-m-wv] > [data-m-w] { --m-wi: 0; }
+[data-m-wv] > [data-m-w]:nth-child(2) { --m-wi: 1; }
+[data-m-wv] > [data-m-w]:nth-child(3) { --m-wi: 2; }
+[data-m-wv] > [data-m-w]:nth-child(4) { --m-wi: 3; }
+[data-m-wv] > [data-m-w]:nth-child(5) { --m-wi: 4; }
+[data-m-wv] > [data-m-w]:nth-child(6) { --m-wi: 5; }
+[data-m-wv] > [data-m-w]:nth-child(7) { --m-wi: 6; }
+[data-m-wv] > [data-m-w]:nth-child(8) { --m-wi: 7; }
+[data-m-wv] > [data-m-w]:nth-child(9) { --m-wi: 8; }
+[data-m-wv] > [data-m-w]:nth-child(10) { --m-wi: 9; }
+[data-m-wv] > [data-m-w]:nth-child(11) { --m-wi: 10; }
+[data-m-wv] > [data-m-w]:nth-child(n + 12) { --m-wi: 11; }
+
+@keyframes eod-m-word {
+  from {
+    opacity: calc(1 - var(--m-wr));
+    filter: blur(calc(var(--m-wr) * 4px));
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+
+@media (scripting: enabled) {
+  [data-m-words]:not([data-shown="true"]) [data-m-w] {
+    opacity: calc(1 - var(--m-wr));
+  }
+  [data-m-words][data-shown="true"] [data-m-w] {
+    animation-name: eod-m-word;
+    animation-duration: var(--m-dur);
+    animation-timing-function: var(--m-ease);
+    animation-delay: calc(var(--m-delay) + var(--m-wi) * 60ms);
+    animation-fill-mode: backwards;
+  }
 }
 
 /* Reduced motion wins over every device choice, and print shows the finished
@@ -1604,6 +1847,21 @@
     clip-path: none !important;
     animation: none !important;
   }
+  /* Batch 15b: no drift, no hover movement, no words arriving. A hover's
+     colour or border change, where a component has one, is untouched. */
+  [data-m-px],
+  [data-m-hv] {
+    translate: none !important;
+    scale: none !important;
+  }
+  [data-m-hv] > img {
+    scale: none !important;
+  }
+  [data-m-w] {
+    opacity: 1 !important;
+    filter: none !important;
+    animation: none !important;
+  }
 }
 @media print {
   [data-m-reveal],
@@ -1613,6 +1871,19 @@
     scale: none !important;
     filter: none !important;
     clip-path: none !important;
+    animation: none !important;
+  }
+  [data-m-px],
+  [data-m-hv] {
+    translate: none !important;
+    scale: none !important;
+  }
+  [data-m-hv] > img {
+    scale: none !important;
+  }
+  [data-m-w] {
+    opacity: 1 !important;
+    filter: none !important;
     animation: none !important;
   }
 }

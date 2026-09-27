@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { createElement, type CSSProperties, type ReactNode } from "react";
 
 import {
   editorNodeAttrs,
@@ -9,13 +9,18 @@ import {
 import { formatNodePath, parseNodePath } from "./address";
 import {
   animatesAnywhere,
+  hoversAnywhere,
   isStaggerGroup,
   motionStyle,
+  parallaxAnywhere,
   staggersAnywhere,
+  WORD_LIMIT,
+  wordsAnywhere,
   type MotionAttrs,
   type MotionStyle,
 } from "./motion-css";
 import type { MotionDocument } from "./motion-doc";
+import { splitWords } from "./words";
 import {
   FINAL_OPACITY,
   mediaNodeStyle,
@@ -70,11 +75,24 @@ export type ResponsiveAttrs = { "data-rs-t"?: string; "data-rs-m"?: string };
  *     to the list, so anything that would have animated it on its own — a
  *     `Reveal`'s legacy class, its own stored motion — stands down.
  *   · `data-m-t` / `data-m-m` — which motion variables a breakpoint overrides.
+ *
+ * Batch 15b adds three, on the same terms:
+ *
+ *   · `data-m-px` — this element drifts on scroll at some width; the parallax
+ *     runtime registers it and writes its offset.
+ *   · `data-m-hv` — this element moves on hover or keyboard focus at some width;
+ *     the stylesheet does the rest, with no listener at all.
+ *   · `data-m-words` — this element's text was split into words, so the words
+ *     take its fade. Written by `node.text()` and only when the split really
+ *     happened, which is what keeps the attribute and the markup in step.
  */
 export type MotionNodeAttrs = MotionAttrs & {
   "data-m-reveal"?: "";
   "data-m-group"?: "";
   "data-m-member"?: "";
+  "data-m-px"?: "";
+  "data-m-hv"?: "";
+  "data-m-words"?: "";
 };
 
 export type NodeAttrs = EditorAttrs & ResponsiveAttrs & MotionNodeAttrs & { style?: CSSProperties };
@@ -106,10 +124,22 @@ export type NodeSource = {
 /* Motion roles                                                               */
 /* -------------------------------------------------------------------------- */
 
-type MotionRole =
-  | { role: "reveal"; motion: MotionStyle | null }
-  | { role: "group"; motion: MotionStyle | null }
-  | { role: "member" };
+type MotionRole = "reveal" | "group" | "member";
+
+/**
+ * Everything one node's motion puts on its element: its lifecycle role, if it
+ * has one, its variables, and whether it drifts or moves on hover.
+ *
+ * The role and the two flags are independent. A heading can drift without an
+ * entrance, a card can lift under the pointer while its list sends it in; only
+ * the role decides who owns an element's *arrival*.
+ */
+type MotionPlan = {
+  role: MotionRole | null;
+  motion: MotionStyle | null;
+  parallax: boolean;
+  hover: boolean;
+};
 
 /** `field:links/item:i_…` → `field:links`; a top-level field has no parent node. */
 const parentOf = (path: string): string | null => {
@@ -131,19 +161,72 @@ const parentOf = (path: string): string | null => {
  * spelling and is rendered by `SectionRenderer`, which is the one place that
  * knows the legacy preset.
  */
-function motionRoleOf(document: MotionDocument | null | undefined, path: string | undefined): MotionRole | null {
+function motionPlanOf(document: MotionDocument | null | undefined, path: string | undefined): MotionPlan | null {
   if (!document || path === undefined) return null;
   const parsed = parseNodePath(path);
   if (!parsed || parsed.length === 0) return null;
   const normalized = formatNodePath(parsed);
+  const own = document.nodes[normalized];
 
   const parent = parentOf(normalized);
-  if (parent && isStaggerGroup(document.nodes[parent])) return { role: "member" };
+  if (parent && isStaggerGroup(document.nodes[parent])) {
+    // The list owns the row's arrival. Its hover is still the row's own — a
+    // card that lifts under the pointer has nothing to do with when it came in
+    // — so the row keeps its hover variables and nothing else.
+    const hover = hoversAnywhere(own);
+    return { role: "member", motion: hover ? motionStyle(own, ["hover"]) : null, parallax: false, hover };
+  }
 
-  const own = document.nodes[normalized];
-  if (!animatesAnywhere(own)) return null;
-  if (staggersAnywhere(own)) return { role: "group", motion: motionStyle(own) };
-  return { role: "reveal", motion: motionStyle(own) };
+  const enters = animatesAnywhere(own);
+  const parallax = parallaxAnywhere(own);
+  const hover = hoversAnywhere(own);
+  if (!enters && !parallax && !hover) return null;
+  const role: MotionRole | null = !enters ? null : staggersAnywhere(own) ? "group" : "reveal";
+  return { role, motion: motionStyle(own), parallax, hover };
+}
+
+/** Whether a node's text should arrive word by word, decided once for its attributes and its children. */
+function wordsFor(source: NodeSource, path: string | undefined, text: string): boolean {
+  // The Visual Editor's canvas renders every text whole: the element is a
+  // direct-edit target, and typing into generated word spans would be typing
+  // into markup nobody stores. Replay shows the words there instead.
+  if (source.editor || !source.motion || path === undefined || !text.trim()) return false;
+  const parsed = parseNodePath(path);
+  if (!parsed?.length) return false;
+  const normalized = formatNodePath(parsed);
+  const parent = parentOf(normalized);
+  if (parent && isStaggerGroup(source.motion.nodes[parent])) return false;
+  if (!wordsAnywhere(source.motion.nodes[normalized])) return false;
+  const words = splitWords(text).filter((part) => "word" in part).length;
+  return words > 0 && words <= WORD_LIMIT;
+}
+
+/**
+ * A text as words: the sentence once for assistive technology, and the words
+ * once for the eye.
+ *
+ *   · `data-m-wa` holds the whole text, visually hidden and not selectable. It
+ *     is what a screen reader reads — once, as a sentence.
+ *   · `data-m-wv` holds the words, `aria-hidden`, each an *inline* span with
+ *     the original whitespace between them as text. Inline rather than
+ *     inline-block on purpose: an inline span leaves line breaking, Arabic
+ *     shaping and the bidirectional order of a mixed sentence exactly as they
+ *     are for the unsplit text. It is also what a visitor selects and copies.
+ *
+ * Both hold the stored string unchanged; nothing here is ever saved.
+ */
+function wordContent(text: string): ReactNode {
+  const parts = splitWords(text);
+  return [
+    createElement("span", { key: "a", "data-m-wa": "" }, text),
+    createElement(
+      "span",
+      { key: "v", "data-m-wv": "", "aria-hidden": "true" },
+      parts.map((part, index) =>
+        "word" in part ? createElement("span", { key: index, "data-m-w": "" }, part.word) : part.space,
+      ),
+    ),
+  ];
 }
 
 /**
@@ -181,20 +264,24 @@ const withFinishedMarks = <T extends ResponsiveAttrs>(attrs: T): T => {
 export function withMotion(
   attrs: NodeAttrs,
   style: CSSProperties | undefined,
-  role: "reveal" | "group" | "member",
+  role: MotionRole | null,
   motion: MotionStyle | null,
+  flags: { parallax?: boolean; hover?: boolean } = {},
 ): { attrs: NodeAttrs; style: CSSProperties | undefined } {
   let nextAttrs: NodeAttrs = { ...attrs };
   let nextStyle = style;
-  if (role !== "group") {
+  if (role === "reveal" || role === "member") {
     // Only something that animates its own opacity needs it as a finished
-    // state. A list that staggers its rows stays still itself.
+    // state. A list that staggers its rows stays still itself, and so does an
+    // element that only drifts or only answers a hover.
     nextStyle = asFinishedOpacity(nextStyle);
     nextAttrs = withFinishedMarks(nextAttrs);
   }
   if (role === "reveal") nextAttrs["data-m-reveal"] = "";
   if (role === "group") nextAttrs["data-m-group"] = "";
   if (role === "member") nextAttrs["data-m-member"] = "";
+  if (flags.parallax) nextAttrs["data-m-px"] = "";
+  if (flags.hover) nextAttrs["data-m-hv"] = "";
   if (motion) {
     nextAttrs = { ...nextAttrs, ...motion.attrs };
     if (Object.keys(motion.vars).length) {
@@ -204,8 +291,11 @@ export function withMotion(
   return { attrs: nextAttrs, style: nextStyle };
 }
 
+/** A text node's attributes and its children, decided together. */
+export type NodeText = { attrs: NodeAttrs; content: ReactNode };
+
 export function blockNode(source: NodeSource) {
-  return (path: string | undefined, kind: EditorNodeKind = "field"): NodeAttrs => {
+  const node = (path: string | undefined, kind: EditorNodeKind = "field"): NodeAttrs => {
     const responsive = responsiveStyle(source.styles, path);
     let attrs: NodeAttrs = {
       ...editorNodeAttrs(source.editor ?? null, { path, kind }),
@@ -213,14 +303,30 @@ export function blockNode(source: NodeSource) {
     };
     let style = withVars(nodeStyle(source.styles, path), responsive);
 
-    const role = kind === "section" ? null : motionRoleOf(source.motion, path);
-    if (role) {
-      ({ attrs, style } = withMotion(attrs, style, role.role, role.role === "member" ? null : role.motion));
-    }
+    const plan = kind === "section" ? null : motionPlanOf(source.motion, path);
+    if (plan) ({ attrs, style } = withMotion(attrs, style, plan.role, plan.motion, plan));
 
     if (style) attrs.style = style;
     return attrs;
   };
+
+  /**
+   * A short text node: its attributes, and the text to put inside it (Batch 15b).
+   *
+   * The one way a block renders copy that may arrive word by word, so the
+   * decision is made once for both halves: the element is marked
+   * `data-m-words` exactly when its children really are words. With words off
+   * at every width, in the Visual Editor's canvas, or for a text longer than
+   * `WORD_LIMIT` words, this is `node(path)` and the plain string — the same
+   * markup as before Batch 15b.
+   */
+  const text = (path: string | undefined, value: string, kind: EditorNodeKind = "field"): NodeText => {
+    const attrs = node(path, kind);
+    if (!wordsFor(source, path, value)) return { attrs, content: value };
+    return { attrs: { ...attrs, "data-m-words": "" }, content: wordContent(value) };
+  };
+
+  return Object.assign(node, { text });
 }
 
 /**
@@ -252,17 +358,11 @@ export function mediaNode(source: NodeSource) {
       ...responsive.box?.attrs,
     };
     let boxStyle = withVars(box, responsive.box);
-    // A picture moves as one thing: the frame carries the entrance, and the
-    // image inside it goes with it.
-    const role = motionRoleOf(source.motion, path);
-    if (role) {
-      ({ attrs, style: boxStyle } = withMotion(
-        attrs,
-        boxStyle,
-        role.role,
-        role.role === "member" ? null : role.motion,
-      ));
-    }
+    // A picture moves as one thing: the frame carries the entrance, the drift
+    // and the hover, and the image inside it goes with it — except for Zoom,
+    // which the stylesheet applies to the image inside the frame that clips it.
+    const plan = motionPlanOf(source.motion, path);
+    if (plan) ({ attrs, style: boxStyle } = withMotion(attrs, boxStyle, plan.role, plan.motion, plan));
     if (boxStyle) attrs.style = boxStyle;
 
     const picture: MediaImagePart = { ...responsive.image?.attrs };

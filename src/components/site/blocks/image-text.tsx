@@ -17,6 +17,9 @@ export function ImageTextBlock({ values, ctx, editor, styles, motion }: BlockPro
   const body = text(values, "body", locale);
   const node = blockNode({ editor, styles, motion });
   const imageNode = mediaNode({ editor, styles, motion })("field:image");
+  const eyebrow = node.text("field:eyebrow", text(values, "eyebrow", locale));
+  const title = node.text("field:title", text(values, "title", locale));
+  const cta = node.text("field:ctaLabel", ctaLabel);
 
   return (
     <section className="section-tight">
@@ -48,13 +51,13 @@ export function ImageTextBlock({ values, ctx, editor, styles, motion }: BlockPro
 
         <Reveal>
           {text(values, "eyebrow", locale) ? (
-            <p className="eyebrow mb-4" {...node("field:eyebrow")}>
-              {text(values, "eyebrow", locale)}
+            <p className="eyebrow mb-4" {...eyebrow.attrs}>
+              {eyebrow.content}
             </p>
           ) : null}
           {text(values, "title", locale) ? (
-            <h2 className="mb-5 text-[length:var(--text-h2)]" {...node("field:title")}>
-              {text(values, "title", locale)}
+            <h2 className="mb-5 text-[length:var(--text-h2)]" {...title.attrs}>
+              {title.content}
             </h2>
           ) : null}
           {body ? (
@@ -66,12 +69,8 @@ export function ImageTextBlock({ values, ctx, editor, styles, motion }: BlockPro
           ) : null}
           {ctaLabel && ctaHref ? (
             <div className="mt-7">
-              <Link
-                href={localeHref(locale, ctaHref)}
-                className="btn btn-ghost"
-                {...node("field:ctaLabel")}
-              >
-                {ctaLabel}
+              <Link href={localeHref(locale, ctaHref)} className="btn btn-ghost" {...cta.attrs}>
+                {cta.content}
                 <Icon name="arrowRight" size={16} className="flip-rtl" />
               </Link>
             </div>

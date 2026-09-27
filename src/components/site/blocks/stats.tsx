@@ -20,6 +20,8 @@ export function StatsBlock({ values, ctx, editor, styles, motion }: BlockProps) 
   const figures = items(values, "items", locale, fields).filter((f) => f.value?.trim());
   if (!figures.length) return null;
   const node = blockNode({ editor, styles, motion });
+  const titleText = text(values, "title", locale);
+  const title = titleText ? node.text("field:title", titleText) : null;
 
   return (
     <section className="section-tight">
@@ -28,29 +30,29 @@ export function StatsBlock({ values, ctx, editor, styles, motion }: BlockProps) 
           className="grid gap-8 border-y border-line py-10 sm:grid-cols-2 lg:grid-cols-4"
           {...node("field:items")}
         >
-          {figures.map((figure, index) => (
-            <Reveal
-              as="li"
-              key={figure.label || index}
-              delay={index * 70}
-              nodeAttrs={node(itemPath("items", figure), "item")}
-            >
-              <Counter
-                value={figure.value}
-                className="block font-display text-[clamp(1.9rem,1.3rem+1.8vw,2.9rem)] font-bold leading-none text-strong"
-              />
-              <span
-                className="mt-2.5 block text-small text-muted"
-                {...node(itemFieldPath("items", figure, "label"))}
+          {figures.map((figure, index) => {
+            const label = node.text(itemFieldPath("items", figure, "label"), figure.label);
+            return (
+              <Reveal
+                as="li"
+                key={figure.label || index}
+                delay={index * 70}
+                nodeAttrs={node(itemPath("items", figure), "item")}
               >
-                {figure.label}
-              </span>
-            </Reveal>
-          ))}
+                <Counter
+                  value={figure.value}
+                  className="block font-display text-[clamp(1.9rem,1.3rem+1.8vw,2.9rem)] font-bold leading-none text-strong"
+                />
+                <span className="mt-2.5 block text-small text-muted" {...label.attrs}>
+                  {label.content}
+                </span>
+              </Reveal>
+            );
+          })}
         </ul>
-        {text(values, "title", locale) ? (
-          <p className="mt-4 text-[0.78rem] text-muted" {...node("field:title")}>
-            {text(values, "title", locale)}
+        {title ? (
+          <p className="mt-4 text-[0.78rem] text-muted" {...title.attrs}>
+            {title.content}
           </p>
         ) : null}
       </div>

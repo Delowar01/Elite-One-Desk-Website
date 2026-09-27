@@ -39,11 +39,15 @@
  * ## Scope
  *
  * Batch 15a: entrances (including Blur and Mask), direction, duration, delay,
- * easing and stagger — every key this build can render, and no other. A key
- * this build does not know is dropped on read, exactly as an unknown style
- * token is, so any later addition to this same v1 document is additive and
- * never misread; nothing is stored here that this build cannot render, because
- * a field with no renderer is the storage twin of a control that does nothing.
+ * easing and stagger. Batch 15b adds three more keys to the same branch —
+ * `parallax`, `hover` and `textReveal` — each a closed enumeration, each
+ * inheriting base → tablet → mobile exactly as the others do. Every key is one
+ * this build can render, and no other. A key this build does not know is
+ * dropped on read, exactly as an unknown style token is, which is what made
+ * 15b additive: a 15a build reading a 15b document simply does not see the
+ * three new keys, and the document is still version 1. Nothing is stored here
+ * that this build cannot render, because a field with no renderer is the
+ * storage twin of a control that does nothing.
  */
 import { normalizeNodePath } from "./address";
 import { BREAKPOINTS, type Breakpoint } from "./styles";
@@ -120,6 +124,40 @@ export const DELAY_STEP = 50;
 export const STAGGERS = ["none", "tight", "normal", "relaxed"] as const;
 export type Stagger = (typeof STAGGERS)[number];
 
+/**
+ * Parallax, as an intensity — never a distance (Batch 15b).
+ *
+ * How far an element drifts is written in `motion-css.ts` and nowhere else;
+ * the document can only say how much of that restrained travel it wants.
+ * Vertical only: the site is read by scrolling down, nothing in its design
+ * asks for sideways drift, and an axis nobody needs is a setting that can only
+ * be set wrong. `none` exists so a narrower width can switch an inherited
+ * parallax off.
+ */
+export const PARALLAX = ["none", "subtle", "medium", "strong"] as const;
+export type Parallax = (typeof PARALLAX)[number];
+
+/**
+ * What an element does under the pointer or keyboard focus (Batch 15b).
+ *
+ * Four movements and no glow — a glow is the Style tab's, and a second way to
+ * put light on an element would be a second authority over `box-shadow`. Which
+ * of the four a node may take is decided by the capability resolver, not here:
+ * Zoom needs a picture inside a clipping frame, Nudge belongs to something a
+ * visitor can follow, and a card that already lifts on its own is not offered
+ * a second lift.
+ */
+export const HOVERS = ["none", "lift", "scale", "zoom", "nudge"] as const;
+export type HoverEffect = (typeof HOVERS)[number];
+
+/**
+ * Whether a short text arrives word by word (Batch 15b). Words only: there is
+ * no line or character mode, because a line exists only after layout and a
+ * character is not a unit anybody reads.
+ */
+export const TEXT_REVEALS = ["none", "words"] as const;
+export type TextReveal = (typeof TEXT_REVEALS)[number];
+
 /** One breakpoint's motion for one target. Sparse: every key is optional. */
 export type MotionBranch = {
   entrance?: Entrance;
@@ -129,6 +167,9 @@ export type MotionBranch = {
   delay?: number;
   easing?: MotionEasing;
   stagger?: Stagger;
+  parallax?: Parallax;
+  hover?: HoverEffect;
+  textReveal?: TextReveal;
 };
 
 export type MotionTarget = Partial<Record<Breakpoint, MotionBranch>>;
@@ -180,6 +221,9 @@ const FIELDS: Record<keyof MotionBranch, Check> = {
   delay: snapped(DELAY_MAX, DELAY_STEP),
   easing: oneOf(EASINGS),
   stagger: oneOf(STAGGERS),
+  parallax: oneOf(PARALLAX),
+  hover: oneOf(HOVERS),
+  textReveal: oneOf(TEXT_REVEALS),
 };
 
 export const MOTION_FIELD_KEYS = Object.keys(FIELDS) as (keyof MotionBranch)[];
@@ -189,12 +233,22 @@ const asRecord = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {};
 
+/**
+ * A key the object itself carries — never one it inherits.
+ *
+ * Nothing that reaches the validator from JSON can carry an inherited key, but
+ * an object built in code can (`{ __proto__: { entrance: "fade" } }`), and a
+ * value that is only on the prototype is not a value anybody submitted.
+ */
+const own = (source: Record<string, unknown>, key: string): unknown =>
+  Object.hasOwn(source, key) ? source[key] : undefined;
+
 /** One breakpoint's branch, rebuilt key by key. Unknown keys never survive. */
 export function validateMotionBranch(input: unknown): MotionBranch {
   const source = asRecord(input);
   const out: Record<string, unknown> = {};
   for (const key of MOTION_FIELD_KEYS) {
-    if (!(key in source)) continue;
+    if (!Object.hasOwn(source, key)) continue;
     const value = FIELDS[key](source[key]);
     if (value !== undefined) out[key] = value;
   }
@@ -206,7 +260,7 @@ function validateTarget(input: unknown): MotionTarget {
   const source = asRecord(input);
   const out: MotionTarget = {};
   for (const breakpoint of BREAKPOINTS) {
-    if (!(breakpoint in source)) continue;
+    if (!Object.hasOwn(source, breakpoint)) continue;
     const branch = validateMotionBranch(source[breakpoint]);
     if (Object.keys(branch).length) out[breakpoint] = branch;
   }
@@ -223,7 +277,7 @@ function validateTarget(input: unknown): MotionTarget {
  */
 export function validateMotionDocument(input: unknown): MotionDocument {
   const source = asRecord(input);
-  const version = source.v;
+  const version = own(source, "v");
   if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
     return emptyMotionDocument();
   }
@@ -232,7 +286,7 @@ export function validateMotionDocument(input: unknown): MotionDocument {
   if (version > MOTION_DOCUMENT_VERSION) return emptyMotionDocument();
 
   const collected = new Map<string, MotionTarget>();
-  for (const [rawPath, rawTarget] of Object.entries(asRecord(source.nodes))) {
+  for (const [rawPath, rawTarget] of Object.entries(asRecord(own(source, "nodes")))) {
     const path = normalizeNodePath(rawPath);
     // A key that is not a relative node path — a selector, a `section:42/…`
     // address, a locale suffix — is not something this document can mean. The
@@ -253,7 +307,7 @@ export function validateMotionDocument(input: unknown): MotionDocument {
   const nodes: Record<string, MotionTarget> = {};
   for (const path of [...collected.keys()].sort()) nodes[path] = collected.get(path)!;
 
-  return { v: MOTION_DOCUMENT_VERSION, section: validateTarget(source.section), nodes };
+  return { v: MOTION_DOCUMENT_VERSION, section: validateTarget(own(source, "section")), nodes };
 }
 
 /** A stored column, validated, or `null` when the column itself is `null`. */
@@ -272,7 +326,7 @@ export const readMotionDocument = (stored: unknown): MotionDocument | null =>
  */
 export function isReadableMotionDocument(stored: unknown): boolean {
   if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return false;
-  const version = (stored as Record<string, unknown>).v;
+  const version = own(stored as Record<string, unknown>, "v");
   return (
     typeof version === "number" &&
     Number.isInteger(version) &&

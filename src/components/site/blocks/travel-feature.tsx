@@ -26,6 +26,7 @@ export function TravelFeatureBlock({ values, ctx, editor, styles, motion }: Bloc
   const ctaLabel = text(values, "ctaLabel", locale);
   const node = blockNode({ editor, styles, motion });
   const imageNode = mediaNode({ editor, styles, motion })("field:image");
+  const cta = node.text("field:ctaLabel", ctaLabel);
 
   return (
     <section className="section relative">
@@ -91,12 +92,8 @@ export function TravelFeatureBlock({ values, ctx, editor, styles, motion }: Bloc
 
           {ctaLabel ? (
             <div className="mt-9">
-              <Link
-                href={localeHref(locale, ctaHref)}
-                className="btn btn-ghost"
-                {...node("field:ctaLabel")}
-              >
-                {ctaLabel}
+              <Link href={localeHref(locale, ctaHref)} className="btn btn-ghost" {...cta.attrs}>
+                {cta.content}
                 <Icon name="arrowRight" size={16} className="flip-rtl" />
               </Link>
             </div>

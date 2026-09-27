@@ -34,29 +34,32 @@ export function WhyUsBlock({ values, ctx, editor, styles, motion }: BlockProps) 
           className="mt-11 grid gap-x-10 gap-y-9 sm:grid-cols-2 lg:grid-cols-3"
           {...node("field:points")}
         >
-          {points.map((point, index) => (
-            <Reveal
-              as="li"
-              key={point.label}
-              delay={index * 55}
-              nodeAttrs={node(itemPath("points", point), "item")}
-            >
-              <span
-                className="mb-4 flex size-11 items-center justify-center rounded-[var(--radius-sm)] border border-line"
-                style={{ color: "var(--color-peach)" }}
+          {points.map((point, index) => {
+            const label = node.text(itemFieldPath("points", point, "label"), point.label);
+            return (
+              <Reveal
+                as="li"
+                key={point.label}
+                delay={index * 55}
+                nodeAttrs={node(itemPath("points", point), "item")}
               >
-                <Icon name={ICONS[index % ICONS.length]!} size={19} />
-              </span>
-              <h3 className="text-[1.02rem]" {...node(itemFieldPath("points", point, "label"))}>
-                {point.label}
-              </h3>
-              {point.text ? (
-                <p className="mt-2 text-small text-muted" {...node(itemFieldPath("points", point, "text"))}>
-                  {point.text}
-                </p>
-              ) : null}
-            </Reveal>
-          ))}
+                <span
+                  className="mb-4 flex size-11 items-center justify-center rounded-[var(--radius-sm)] border border-line"
+                  style={{ color: "var(--color-peach)" }}
+                >
+                  <Icon name={ICONS[index % ICONS.length]!} size={19} />
+                </span>
+                <h3 className="text-[1.02rem]" {...label.attrs}>
+                  {label.content}
+                </h3>
+                {point.text ? (
+                  <p className="mt-2 text-small text-muted" {...node(itemFieldPath("points", point, "text"))}>
+                    {point.text}
+                  </p>
+                ) : null}
+              </Reveal>
+            );
+          })}
         </ul>
       </div>
     </section>

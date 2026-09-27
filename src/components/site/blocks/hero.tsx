@@ -32,6 +32,8 @@ export function HeroBlock({ values, ctx, editor, styles, motion }: BlockProps) {
   const secondaryLabel = text(values, "secondaryCtaLabel", locale) || dict.nav.secondaryCta;
   const node = blockNode({ editor, styles, motion });
   const backgroundNode = mediaNode({ editor, styles, motion })("field:backgroundImage");
+  const primary = node.text("field:primaryCtaLabel", primaryLabel);
+  const secondary = node.text("field:secondaryCtaLabel", secondaryLabel);
 
   return (
     <section
@@ -106,20 +108,12 @@ export function HeroBlock({ values, ctx, editor, styles, motion }: BlockProps) {
           ) : null}
 
           <div className="mt-9 flex flex-wrap items-center gap-3 motion-safe:animate-[eod-fade-up_.8s_var(--ease-out-expo)_.24s_both]">
-            <Link
-              href={localeHref(locale, primaryHref)}
-              className="btn btn-primary"
-              {...node("field:primaryCtaLabel")}
-            >
-              {primaryLabel}
+            <Link href={localeHref(locale, primaryHref)} className="btn btn-primary" {...primary.attrs}>
+              {primary.content}
               <Icon name="arrowRight" size={17} className="flip-rtl" />
             </Link>
-            <Link
-              href={localeHref(locale, secondaryHref)}
-              className="btn btn-ghost"
-              {...node("field:secondaryCtaLabel")}
-            >
-              {secondaryLabel}
+            <Link href={localeHref(locale, secondaryHref)} className="btn btn-ghost" {...secondary.attrs}>
+              {secondary.content}
             </Link>
           </div>
         </div>

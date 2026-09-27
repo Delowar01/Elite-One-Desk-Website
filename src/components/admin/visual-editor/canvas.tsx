@@ -13,6 +13,8 @@ import {
   readCanvasMessage,
   type EditorNodeMeta,
   type EditorSectionMeta,
+  type ReplayMode,
+  type ReplayOutcome,
 } from "@/lib/visual-editor/protocol";
 import { deviceWidth, type DeviceKey } from "@/lib/visual-editor/viewport";
 
@@ -42,6 +44,15 @@ export type SelectRequest = { address: string | null; scrollIntoView: boolean; t
  */
 export type EditRequest =
   | { kind: "begin"; address: string; token: number; text: string }
+  | { kind: "cancel"; token: number }
+  | null;
+
+/**
+ * Asking the canvas to play, or stop playing, one node's motion (Batch 15b).
+ * Nothing about it is saved: it travels to the canvas and back, and that is all.
+ */
+export type ReplayRequest =
+  | { kind: "play"; address: string; token: number; mode: ReplayMode }
   | { kind: "cancel"; token: number }
   | null;
 
@@ -83,12 +94,14 @@ export function VisualCanvas({
   title,
   selectRequest,
   editRequest,
+  replayRequest,
   locks,
   onState,
   onStructure,
   onSelection,
   onEdit,
   onEditRequest,
+  onReplayResult,
 }: {
   slug: string;
   locale: Locale;
@@ -98,6 +111,8 @@ export function VisualCanvas({
   title: string;
   selectRequest: SelectRequest;
   editRequest: EditRequest;
+  /** Play or stop a Replay. Editor-side state, never saved. */
+  replayRequest: ReplayRequest;
   /** Addresses the canvas pointer must ignore. Editor-side state, never saved. */
   locks: string[];
   onState: (state: CanvasState) => void;
@@ -111,6 +126,8 @@ export function VisualCanvas({
   }) => void;
   /** A double-click asked to edit; the editor decides whether it may begin. */
   onEditRequest: (address: string) => void;
+  /** What became of a Replay. The editor decides whether it still belongs here. */
+  onReplayResult: (result: { address: string; token: number; outcome: ReplayOutcome }) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -218,6 +235,9 @@ export function VisualCanvas({
         case "canvas.editRequest":
           onEditRequest(message.address);
           return;
+        case "canvas.motionReplayResult":
+          onReplayResult({ address: message.address, token: message.token, outcome: message.outcome });
+          return;
         case "canvas.error":
           onState({ status: "error", innerWidth: null, message: message.message });
           return;
@@ -307,6 +327,20 @@ export function VisualCanvas({
         : { type: "editor.editCancel" as const, token: editRequest.token };
     frameRef.current?.contentWindow?.postMessage(envelope(bridgeId, message), bridgeOrigin());
   }, [bridgeId, editRequest]);
+
+  useEffect(() => {
+    if (!bridgeId || !replayRequest) return;
+    const message =
+      replayRequest.kind === "play"
+        ? {
+            type: "editor.motionReplay" as const,
+            address: replayRequest.address,
+            token: replayRequest.token,
+            mode: replayRequest.mode,
+          }
+        : { type: "editor.motionReplayCancel" as const, token: replayRequest.token };
+    frameRef.current?.contentWindow?.postMessage(envelope(bridgeId, message), bridgeOrigin());
+  }, [bridgeId, replayRequest]);
 
   const logical = deviceWidth(device);
   // Never scaled up: a 390px page blown up to fill a 1200px stage would be a

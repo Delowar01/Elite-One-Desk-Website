@@ -25,6 +25,9 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles, motion }: Bl
   const ctaLabel = text(values, "ctaLabel", locale);
   const node = blockNode({ editor, styles, motion });
   const imageNode = mediaNode({ editor, styles, motion })("field:image");
+  const eyebrow = node.text("field:eyebrow", text(values, "eyebrow", locale));
+  const title = node.text("field:title", text(values, "title", locale));
+  const cta = node.text("field:ctaLabel", ctaLabel);
 
   return (
     <section className="section-tight">
@@ -54,11 +57,11 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles, motion }: Bl
               }`}
             >
               <div>
-                <p className="eyebrow" {...node("field:eyebrow")}>
-                  {text(values, "eyebrow", locale)}
+                <p className="eyebrow" {...eyebrow.attrs}>
+                  {eyebrow.content}
                 </p>
-                <h2 className="mt-4 text-[length:var(--text-h2)]" {...node("field:title")}>
-                  {text(values, "title", locale)}
+                <h2 className="mt-4 text-[length:var(--text-h2)]" {...title.attrs}>
+                  {title.content}
                 </h2>
                 <p className="lede mt-5 max-w-xl" {...node("field:body")}>
                   {text(values, "body", locale)}
@@ -89,12 +92,8 @@ export function FeaturedServiceBlock({ values, ctx, editor, styles, motion }: Bl
 
                 {ctaLabel ? (
                   <div className="mt-9">
-                    <Link
-                      href={localeHref(locale, ctaHref)}
-                      className="btn btn-primary"
-                      {...node("field:ctaLabel")}
-                    >
-                      {ctaLabel}
+                    <Link href={localeHref(locale, ctaHref)} className="btn btn-primary" {...cta.attrs}>
+                      {cta.content}
                       <Icon name="arrowRight" size={17} className="flip-rtl" />
                     </Link>
                   </div>

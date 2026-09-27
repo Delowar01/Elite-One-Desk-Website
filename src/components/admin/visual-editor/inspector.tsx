@@ -12,7 +12,7 @@ import { describeAddress } from "@/lib/visual-editor/labels";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
 
 import { ContentBody } from "./content-inspector";
-import { MotionInspector } from "./motion-inspector";
+import { MotionInspector, type ReplayControl } from "./motion-inspector";
 import { StyleInspector } from "./style-inspector";
 
 export type EditDomain = "content" | "style" | "motion";
@@ -116,6 +116,7 @@ export function InspectorPanel({
   onTakeLatest,
   onClear,
   onSelect,
+  replay,
 }: {
   node: EditorNodeMeta | null;
   sections: EditorSectionMeta[];
@@ -138,6 +139,8 @@ export function InspectorPanel({
   onClear: () => void;
   /** Select something else on the canvas — used to step back out of a field. */
   onSelect: (address: string) => void;
+  /** Replay, for the Motion tab (Batch 15b). Plays on the canvas and saves nothing. */
+  replay: ReplayControl;
 }) {
   const section = node ? sections.find((row) => row.sectionId === node.sectionId) : undefined;
   const described = node ? describeAddress(node.blockType, node.relativePath, node.text) : null;
@@ -263,6 +266,8 @@ export function InspectorPanel({
                     breakpoint={breakpoint}
                     locale={locale}
                     canManage={canManage}
+                    pending={buffer.motionDirty || buffer.saving === "motion"}
+                    replay={replay}
                     onChange={onMotion}
                   />
                 )}

@@ -445,9 +445,20 @@ describe("every entrance is a fixed set of values written in source", () => {
     const emitted = new Set<string>();
     for (const entrance of ENTRANCES) {
       for (const direction of DIRECTIONS) {
-        for (const name of Object.keys(branchVars({ entrance, direction, duration: "fast", delay: 50, easing: "soft-out", stagger: "tight" }))) {
-          emitted.add(name);
-        }
+        const branch = {
+          entrance,
+          direction,
+          duration: "fast",
+          delay: 50,
+          easing: "soft-out",
+          stagger: "tight",
+          // Batch 15b's keys emit variables too, and they are promoted by the
+          // same rules — a parallax set at Base must still switch off at Mobile.
+          parallax: "medium",
+          hover: "lift",
+          textReveal: "words",
+        } as const;
+        for (const name of Object.keys(branchVars(branch))) emitted.add(name);
       }
     }
     assert.deepEqual([...emitted].sort(), [...MOTION_VARIABLES].sort());
@@ -503,18 +514,26 @@ describe("the stylesheet: no script, reduced motion, print, RTL and transform ow
     assert.match(scripting, /\[data-m-reveal\]:not\(\[data-shown="true"\]\),\s*\[data-m-group\]:not\(\[data-shown="true"\]\) > \* \{/);
     // Outside it, nothing sets a hidden value: no waiting opacity, no clip, no
     // blur, no offset.
-    const rules = outside.replace(/@keyframes[\s\S]*?\n\}\n/g, "");
-    assert.ok(!/opacity: calc\(var\(--m-(hold|op)\)/.test(rules), "a hidden opacity outside the scripting query");
+    // The accessible copy of a split text (Batch 15b) is visually hidden for
+    // good, not waiting for anything: it is the one clip allowed out here.
+    const rules = outside
+      .replace(/@keyframes[\s\S]*?\n\}\n/g, "")
+      .replace(/\[data-m-wa\] \{[\s\S]*?\}/, "")
+      .replace(/@media \(scripting: enabled\) \{\s*\[data-m-words\][\s\S]*?\n\}\n/, "");
+    assert.ok(!/opacity: calc\((max\()?var\(--m-(hold|op)\)/.test(rules), "a hidden opacity outside the scripting query");
     assert.ok(!/clip-path: inset/.test(rules), "a clip outside the scripting query");
     assert.ok(!/filter: blur/.test(rules), "a blur outside the scripting query");
   });
 
   test("a waiting element is never clipped, so the observer can always reach it", () => {
     const waiting = scripting.slice(scripting.indexOf("[data-m-reveal]:not("), scripting.indexOf("}", scripting.indexOf("[data-m-reveal]:not(")));
-    assert.match(waiting, /opacity: calc\(var\(--m-hold\) \* var\(--eod-node-opacity, 1\)\);/);
+    // Words that take the element's fade (Batch 15b) raise the floor; nothing
+    // else about the waiting opacity changed.
+    assert.match(waiting, /opacity: calc\(max\(var\(--m-hold\), var\(--m-wo, 0\)\) \* var\(--eod-node-opacity, 1\)\);/);
     assert.ok(!/clip-path/.test(waiting), "the waiting state clips");
-    // The only clip anywhere in the advanced layer is inside the wipe itself.
-    const code = advancedCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    // The only clip anywhere in the advanced layer is inside the wipe itself —
+    // and the accessible copy's permanent one, which hides no entrance.
+    const code = advancedCss.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\[data-m-wa\] \{[\s\S]*?\}/, "");
     const keyframes = code.slice(code.indexOf("@keyframes eod-m-mask"), code.indexOf("@media (scripting: enabled)"));
     assert.equal((code.match(/clip-path: inset/g) ?? []).length, (keyframes.match(/clip-path: inset/g) ?? []).length);
   });
@@ -550,14 +569,26 @@ describe("the stylesheet: no script, reduced motion, print, RTL and transform ow
   test("start and end follow the reading direction, and nothing physical is stored", () => {
     assert.match(advancedCss, /\[dir="rtl"\] \[data-m-reveal\],\s*\[dir="rtl"\] \[data-m-group\] \{\s*--m-sign: -1;\s*--m-clip-r: var\(--m-clip-s\);\s*--m-clip-l: var\(--m-clip-e\);/);
     assert.match(advancedCss, /--m-sign: 1;\s*--m-clip-r: var\(--m-clip-e\);\s*--m-clip-l: var\(--m-clip-s\);/);
-    assert.match(advancedCss, /translate: calc\(var\(--m-x\) \* var\(--m-sign\)\) var\(--m-y\);/);
+    // The inline offset is multiplied by the sign whole — the entrance's own
+    // and a hover's nudge (Batch 15b) alike — so both mirror in Arabic.
+    assert.match(
+      advancedCss,
+      /translate: calc\(\(var\(--m-x\) \+ var\(--m-hx, 0px\)\) \* var\(--m-sign\)\) calc\(var\(--m-y\) \+ var\(--m-py, 0px\) \+ var\(--m-hy, 0px\)\);/,
+    );
     assert.match(advancedCss, /inset\(var\(--m-clip-t\) var\(--m-clip-r\) var\(--m-clip-b\) var\(--m-clip-l\)\)/);
   });
 
   test("an advanced entrance never writes transform or transition", () => {
     const code = advancedCss.replace(/\/\*[\s\S]*?\*\//g, "");
     assert.ok(!/(^|[\s;{])transform\s*:/.test(code), "the advanced layer writes transform");
-    assert.ok(!/(^|[\s;{])transition\s*:/.test(code), "the advanced layer writes transition");
+    // Batch 15b's hover is the one transition in the layer, and it lives in the
+    // base layer, where any component's own `transition` outranks it: two
+    // declarations, the element's and its picture's, and nothing else.
+    const transitions = code.match(/(^|[\s;{])transition\s*:[^;]*;/g) ?? [];
+    assert.equal(transitions.length, 2, transitions.join(" | "));
+    const base = code.slice(code.indexOf("@layer base {"), code.indexOf("}\n}", code.indexOf("@layer base {")));
+    assert.match(base, /\[data-m-hv\] \{\s*transition: var\(--m-hover-transition\);\s*\}/);
+    assert.match(base, /\[data-m-hv\] > img \{\s*transition: scale var\(--duration-slow\) var\(--ease-out-expo\);/);
   });
 
   test("the entrance holds its start through a delay and hands the element back afterwards", () => {
@@ -582,12 +613,14 @@ describe("the stylesheet: no script, reduced motion, print, RTL and transform ow
   });
 
   test("a fade lands on the element's own Style opacity, which no longer inherits", () => {
-    assert.match(advancedCss, /opacity: calc\(var\(--m-op\) \* var\(--eod-node-opacity, 1\)\);/);
+    assert.match(advancedCss, /opacity: calc\(max\(var\(--m-op\), var\(--m-wo, 0\)\) \* var\(--eod-node-opacity, 1\)\);/);
     assert.match(css, /@property --eod-node-opacity \{\s*syntax: "<number>";\s*inherits: false;\s*initial-value: 1;\s*\}/);
   });
 
   test("the legacy reveal rules are exactly the Batch 9 ones", () => {
-    const legacy = css.slice(css.indexOf("@media (scripting: enabled) {\n    .reveal {"));
+    // Located by the rule itself: Batch 15b wrote a comment above it about the
+    // hover variables its transition now carries (see the Batch 15b tests).
+    const legacy = css.slice(css.indexOf("    .reveal {\n      opacity: 0;"));
     assert.match(legacy, /\.reveal \{\s*opacity: 0;\s*transform: translate3d\(0, 18px, 0\);/);
     assert.match(legacy, /\.reveal-left \{ transform: translate3d\(-24px, 0, 0\); \}/);
     assert.match(legacy, /\[dir="rtl"\] \.reveal-left \{ transform: translate3d\(24px, 0, 0\); \}/);
@@ -657,8 +690,13 @@ describe("a section with no document renders exactly as it did before", () => {
 
   test("a page with no node motion gets no runtime", () => {
     const renderer = read("src/components/site/section-renderer.tsx");
-    assert.match(renderer, /\{runtime \? <MotionRuntime signature=\{fingerprint\(nodeMotion\)\} \/> : null\}/);
-    assert.match(renderer, /animatesAnywhere\(target\)\)\s*\n?\s*\? \[sections\[index\]!\.id, motion\.nodes\]/);
+    assert.match(renderer, /\{runtime \? \(\s*<MotionRuntime\s+signature=\{fingerprint\(nodeMotion\)\}/);
+    // A node that arrives, or (Batch 15b) drifts, is what needs a runtime; a
+    // hover is CSS and needs none.
+    assert.match(
+      renderer,
+      /\(target: MotionTarget\) => animatesAnywhere\(target\) \|\| parallaxAnywhere\(target\),\s*\)\s*\? \[sections\[index\]!\.id, motion\.nodes\]/,
+    );
   });
 });
 
@@ -779,18 +817,20 @@ describe("the capability model decides, once, what may move", () => {
 
   test("a setting is offered exactly when it can change what a visitor sees", () => {
     const list = motionTargetFor("why-us", "field:points");
-    assert.deepEqual([...offeredMotionFields(list, undefined, "base")], ["entrance"]);
+    // Parallax (Batch 15b) acts whether or not the list has an entrance, so it
+    // is always there; the entrance's own settings still come and go with it.
+    assert.deepEqual([...offeredMotionFields(list, undefined, "base")], ["entrance", "parallax"]);
     assert.deepEqual(
       [...offeredMotionFields(list, { base: { entrance: "fade-up" } }, "base")],
-      ["entrance", "duration", "delay", "easing", "stagger"],
+      ["entrance", "duration", "delay", "easing", "stagger", "parallax"],
     );
     assert.deepEqual(
       [...offeredMotionFields(list, { base: { entrance: "mask" } }, "base")],
-      ["entrance", "direction", "duration", "delay", "easing", "stagger"],
+      ["entrance", "direction", "duration", "delay", "easing", "stagger", "parallax"],
     );
     assert.deepEqual(
       [...offeredMotionFields(list, { base: { entrance: "fade-up" }, mobile: { entrance: "none" } }, "mobile")],
-      ["entrance"],
+      ["entrance", "parallax"],
     );
     const section = motionTargetFor("why-us", "root");
     // The section always has an entrance — the legacy preset stands in.
@@ -898,10 +938,16 @@ describe("one observer per page, and nothing per frame", () => {
     // `counter.tsx` is the pre-existing count-up on a Stats figure — decorative
     // motion that no document drives, one per figure (at most four). It is
     // named here so that a second entrance observer cannot hide behind it.
+    // `motion-parallax.ts` (Batch 15b) is the parallax coordinator's one
+    // active-set observer, which observes no entrance.
     const constructing = files.filter((file) => /new IntersectionObserver\(/.test(code(file)));
     assert.deepEqual(
       constructing.map((file) => path.relative(REPO_ROOT, file)).sort(),
-      ["src/components/site/counter.tsx", "src/components/site/motion-observer.ts"],
+      [
+        "src/components/site/counter.tsx",
+        "src/components/site/motion-observer.ts",
+        "src/components/site/motion-parallax.ts",
+      ],
     );
   });
 
