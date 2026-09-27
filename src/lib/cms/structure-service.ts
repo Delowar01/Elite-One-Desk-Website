@@ -576,7 +576,21 @@ export async function removeStructureSection(
 }
 
 /**
- * Puts a removed section back, near where the live page has it.
+ * Where a restored section goes, when the caller knows exactly (Batch 16).
+ *
+ * `beforeSectionId` names the member it is put in front of — by id, never by
+ * index — and `null` means the end. `visible` is the visibility it comes back
+ * with. The Visual Editor's Undo passes both, because taking back a removal
+ * has to put the section back where the editor had it and the way they had it,
+ * not where the live page happens to keep it; and redoing an Add puts the very
+ * same pending row back where it was added. Without a placement the section
+ * goes near its live position, exactly as before.
+ */
+export type RestorePlacement = { beforeSectionId: number | null; visible: boolean };
+
+/**
+ * Puts a removed section back, near where the live page has it — or exactly
+ * where `placement` says.
  *
  * "Near" is computed rather than remembered: the page's own `position` order is
  * the only record of where an established section belongs, so the section goes
@@ -584,10 +598,16 @@ export async function removeStructureSection(
  * position is past every established one, so it lands at the end — which is
  * where it was appended from, and is the honest answer without inventing a
  * column to remember an index in.
+ *
+ * A placement changes where, and nothing else: it is still this page's own
+ * section, not already in the layout, written under the same page revision
+ * guard. A placement anchored on a section that is not in the layout is refused
+ * rather than read as "the end".
  */
 export async function restoreStructureSection(
   context: Context,
   sectionId: number,
+  placement?: RestorePlacement,
 ): Promise<StructureResult> {
   const opened = await open(context);
   if (!opened.ok) return opened.result;
@@ -598,15 +618,28 @@ export async function restoreStructureSection(
     return fail("already_here", STRUCTURE_MESSAGES.alreadyHere);
   }
 
-  const canonical = opened.rows.map((candidate) => candidate.id);
-  const after = canonical.slice(canonical.indexOf(sectionId) + 1);
-  const anchor = opened.structure.sections.findIndex((entry) => after.includes(entry.sectionId));
-  const entry: DraftStructureEntry = {
-    sectionId,
-    // An established section comes back the way the live page has it; a pending
-    // one has no published state to come back to, so it is meant to be shown.
-    visible: row.isDraftOnly ? true : row.isPublished,
-  };
+  let anchor: number;
+  let entry: DraftStructureEntry;
+  if (placement) {
+    anchor =
+      placement.beforeSectionId === null
+        ? -1
+        : opened.structure.sections.findIndex((candidate) => candidate.sectionId === placement.beforeSectionId);
+    if (placement.beforeSectionId !== null && anchor < 0) {
+      return fail("not_a_member", STRUCTURE_MESSAGES.notAMember);
+    }
+    entry = { sectionId, visible: placement.visible };
+  } else {
+    const canonical = opened.rows.map((candidate) => candidate.id);
+    const after = canonical.slice(canonical.indexOf(sectionId) + 1);
+    anchor = opened.structure.sections.findIndex((candidate) => after.includes(candidate.sectionId));
+    entry = {
+      sectionId,
+      // An established section comes back the way the live page has it; a pending
+      // one has no published state to come back to, so it is meant to be shown.
+      visible: row.isDraftOnly ? true : row.isPublished,
+    };
+  }
   const next =
     anchor < 0
       ? [...opened.structure.sections, entry]

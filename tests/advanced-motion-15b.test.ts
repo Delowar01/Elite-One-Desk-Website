@@ -1063,7 +1063,9 @@ describe("Replay speaks version 5 of the protocol, in closed and bounded message
   const wrap = (message: unknown) => envelope(BRIDGE, message);
 
   test("the version moved, and a canvas from before it is not understood at all", () => {
-    assert.equal(PROTOCOL_VERSION, 5);
+    // Batch 15b moved it to 5; Batch 16 moved it again, to 6, for the Undo and
+    // Redo shortcut a canvas forwards. Replay itself is unchanged.
+    assert.equal(PROTOCOL_VERSION, 6);
     const old = { ...wrap({ type: "editor.motionReplay", address: "section:4", token: 1, mode: "all" }), v: 4 };
     assert.equal(readEditorMessage(old, { bridgeId: BRIDGE }), null);
   });

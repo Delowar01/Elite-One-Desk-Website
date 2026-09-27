@@ -8,7 +8,9 @@ import type { Locale } from "@/lib/i18n/config";
 import {
   bridgeOrigin,
   envelope,
+  isTextTarget,
   readEditorMessage,
+  shortcutFor,
   type CanvasMessage,
   type EditorNodeMeta,
   type EditorSectionMeta,
@@ -770,6 +772,26 @@ export function EditorBridge({
     const onEditBlur = () => stopEditing(true);
 
     /**
+     * Undo and Redo, pressed while this document has the keyboard (Batch 16).
+     *
+     * After a direct edit is committed the focus is still in here, so without
+     * this the editor's shortcut would land in a document that has nothing to
+     * undo. The precedence is the whole rule: **while a node is being typed
+     * into, the keystroke belongs to the text** — the browser's own text undo,
+     * inside the session — and the same goes for any real form field on the
+     * page. Anywhere else, the key is the editor's: it is forwarded as one word
+     * and the page's default is stopped. What Undo then does is the editor's
+     * decision, not this document's.
+     */
+    const onShortcutKey = (event: KeyboardEvent) => {
+      if (editing) return;
+      const command = shortcutFor(event);
+      if (!command || isTextTarget(event.target)) return;
+      event.preventDefault();
+      post({ type: "canvas.shortcut", command });
+    };
+
+    /**
      * A double-click asks to edit. It changes nothing.
      *
      * Until Batch 13's correction this made the element editable on the spot,
@@ -918,6 +940,7 @@ export function EditorBridge({
     document.addEventListener("dblclick", onDoubleClick, { capture: true });
     document.addEventListener("input", onEditInput, true);
     document.addEventListener("keydown", onEditKey, true);
+    document.addEventListener("keydown", onShortcutKey);
     document.addEventListener("focusout", onEditBlur, true);
     document.addEventListener("submit", onSubmit, { capture: true });
 
@@ -935,6 +958,7 @@ export function EditorBridge({
       document.removeEventListener("dblclick", onDoubleClick, { capture: true });
       document.removeEventListener("input", onEditInput, true);
       document.removeEventListener("keydown", onEditKey, true);
+      document.removeEventListener("keydown", onShortcutKey);
       document.removeEventListener("focusout", onEditBlur, true);
       document.removeEventListener("submit", onSubmit, { capture: true });
       for (const type of ["transitionrun", "transitionend", "animationstart", "animationend"]) {

@@ -100,6 +100,17 @@ export function middleware(request: NextRequest) {
 
   const finish = (response: NextResponse) => {
     response.headers.set("Content-Security-Policy", buildCsp(nonce, isDev));
+    /**
+     * A Version Compare pane (Batch 16) is a page of this site showing a state
+     * it no longer has, to a signed-in editor. It is never a search result and
+     * never stored by anything between the server and that editor — whether
+     * the session turned out to be allowed to see it or not, so the answer
+     * does not depend on anything the request cannot see.
+     */
+    if (request.nextUrl.searchParams.has("compare")) {
+      response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
+      response.headers.set("Cache-Control", "private, no-store, max-age=0");
+    }
     return response;
   };
 

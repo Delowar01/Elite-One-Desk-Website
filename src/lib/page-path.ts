@@ -43,6 +43,24 @@ export function previewPagePath(
   return `${localisedPagePath(slug, locale)}?${params}`;
 }
 
+/**
+ * One pane of Version Compare (Batch 16): the page's own address, asking for
+ * one state of it — `published`, or a version by id. Nothing else travels: no
+ * snapshot, no JSON, nothing the server did not store itself. The server
+ * checks the session, that the version belongs to this page, and that it can
+ * read it; see `lib/preview.ts`.
+ */
+export function compareFramePath(
+  slug: string,
+  locale: Locale,
+  target: "published" | number,
+  nonce?: number | string,
+): string {
+  const params = new URLSearchParams({ compare: target === "published" ? "published" : `v${target}` });
+  if (nonce !== undefined) params.set("r", String(nonce));
+  return `${localisedPagePath(slug, locale)}?${params}`;
+}
+
 /** The locale a stored value names, or English. Used to read URL state back. */
 export const localeOrDefault = (value: unknown): Locale =>
   value === "ar" || value === "en" ? value : DEFAULT_LOCALE;

@@ -63,6 +63,29 @@ import { formatNodePath, parseAddress } from "@/lib/cms/address";
 import { applyTextAt, directEditAt, textAt } from "@/lib/visual-editor/tree";
 import { acceptEdit, type DirectEditSession } from "@/lib/visual-editor/direct-edit";
 import { acceptReplayResult, type ReplaySession } from "@/lib/visual-editor/replay";
+import {
+  applyContent,
+  boundPages,
+  closeGroup,
+  describeContent,
+  describeMotion,
+  describeStructure,
+  describeStyle,
+  diffContent,
+  emptyHistory,
+  HISTORY_RESET,
+  record,
+  structureStep,
+  takeRedo,
+  takeUndo,
+  UNDO_SCOPE_NOTE,
+  type HistoryChange,
+  type PageHistory,
+  type StructureOp,
+  type StructureStep,
+} from "@/lib/visual-editor/history";
+import { isTextTarget, shortcutFor, type ShortcutCommand } from "@/lib/visual-editor/protocol";
+import { withDomainValue } from "@/lib/visual-editor/buffer-state";
 import { LayersPanel, type StructuralOps } from "./layers";
 import { PagePanel } from "./page-panel";
 
@@ -363,6 +386,83 @@ export function VisualEditorShell({
     },
     [],
   );
+
+  /* ------------------------------------------------------------------ */
+  /* Undo and Redo (Batch 16)                                            */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * The editing session's history, one per page, most recently used last.
+   *
+   * Session state and nothing more, like the buffers and the locks: held in
+   * memory for as long as the editor is open, never sent anywhere, never
+   * saved. Per page because an action belongs to the page it was taken on —
+   * Undo on About must never reach into Home — and kept across a page switch,
+   * because the buffers it describes are kept across one too. Bounded twice:
+   * `HISTORY_LIMIT` actions per page, `HISTORY_PAGES` pages.
+   *
+   * The map is the state and `historyTick` is how it gets drawn — the same
+   * split as `buffersRef` and `buffers`, for the same reason: Undo reads it
+   * between awaits.
+   */
+  const historiesRef = useRef<Map<number, PageHistory>>(new Map());
+  const historyOrder = useRef<number[]>([]);
+  const [historyTick, setHistoryTick] = useState(0);
+  /** Why a history was just thrown away, in the words the toolbar shows. */
+  const [historyNotice, setHistoryNotice] = useState<string | null>(null);
+  /** A layout Undo is on its way to the server. */
+  const [historyBusy, setHistoryBusy] = useState(false);
+  /** A slider is under the pointer: its whole drag is one action. */
+  const pointerHeld = useRef(false);
+
+  const historyOf = useCallback(
+    (pageId: number): PageHistory => historiesRef.current.get(pageId) ?? emptyHistory(),
+    [],
+  );
+
+  const writeHistory = useCallback((pageId: number, next: PageHistory) => {
+    const map = new Map(historiesRef.current);
+    map.set(pageId, next);
+    const order = [...historyOrder.current.filter((id) => id !== pageId), pageId];
+    const bounded = boundPages(map, order);
+    historiesRef.current = bounded.histories;
+    historyOrder.current = bounded.order;
+    setHistoryTick((n) => n + 1);
+  }, []);
+
+  /** One action, recorded on the page it was taken on. */
+  const recordChange = useCallback(
+    (pageId: number, change: HistoryChange, label: string, options: { held?: boolean } = {}) => {
+      writeHistory(
+        pageId,
+        record(historyOf(pageId), change, label, Date.now(), { held: options.held || pointerHeld.current }),
+      );
+      setHistoryNotice(null);
+    },
+    [historyOf, writeHistory],
+  );
+
+  /** Ends whatever typing or dragging group is open on the page on screen. */
+  const closeHistoryGroup = useCallback(() => {
+    const pageId = pageRef.current;
+    if (pageId === null) return;
+    const current = historiesRef.current.get(pageId);
+    if (current?.open) writeHistory(pageId, closeGroup(current));
+  }, [writeHistory]);
+
+  /**
+   * Throws a page's history away, and says why when there is a reason worth
+   * saying. Nothing is written anywhere: the drafts stay exactly as they are,
+   * only the list of what could be taken back is gone.
+   */
+  const resetHistory = useCallback((pageId: number, notice: string | null) => {
+    const map = new Map(historiesRef.current);
+    map.delete(pageId);
+    historiesRef.current = map;
+    historyOrder.current = historyOrder.current.filter((id) => id !== pageId);
+    setHistoryTick((n) => n + 1);
+    setHistoryNotice(notice);
+  }, []);
 
   /**
    * Autosave: a debounce per section, reset by every local edit.
@@ -826,6 +926,9 @@ export function VisualEditorShell({
 
       if (verdict.ends) editSession.current = null;
 
+      const held = buffersRef.current[verdict.sectionId];
+      // Assigned inside the update below; typed wide so the check after it reads it.
+      let written = null as Record<string, unknown> | null;
       writeBuffers((prev) => {
         const entry = prev[verdict.sectionId];
         // There is always a buffer by now: the session only exists because one
@@ -842,6 +945,7 @@ export function VisualEditorShell({
           verdict.text,
         );
         if (!values) return prev;
+        written = values;
 
         return {
           ...prev,
@@ -857,6 +961,30 @@ export function VisualEditorShell({
       });
 
       /**
+       * The same buffer the inspector edits, so the same history (Batch 16).
+       *
+       * A whole direct-edit session is one action: every keystroke grows it
+       * while the session lasts — however long the pauses — and committing
+       * closes it, so one Undo takes the edit back and the next Undo is
+       * something else. Escape puts the text back, which grows the action back
+       * into nothing, and an action that changes nothing is not kept. The
+       * change is located in the session's own edition, never in whichever
+       * language the editor is showing by the time Undo is pressed.
+       */
+      if (held && written) {
+        const changes = diffContent(held.data.blockType, held.values, written);
+        if (changes.length) {
+          recordChange(
+            held.data.pageId,
+            { domain: "content", sectionId: verdict.sectionId, blockType: held.data.blockType, changes },
+            describeContent(held.data.blockType, changes, written, verdict.locale),
+            { held: true },
+          );
+        }
+      }
+      if (edit.phase !== "input") closeHistoryGroup();
+
+      /**
        * A cancelled session saves nothing.
        *
        * The section's autosave timer may already be running because of earlier
@@ -866,12 +994,25 @@ export function VisualEditorShell({
        */
       if (edit.phase !== "cancel") scheduleAutosave(verdict.sectionId);
     },
-    [canManageContent, scheduleAutosave, writeBuffers],
+    [canManageContent, closeHistoryGroup, recordChange, scheduleAutosave, writeBuffers],
   );
 
   const onValues = useCallback(
     (values: Record<string, unknown>) => {
       if (activeId === null || !canManageContent) return;
+      const held = buffersRef.current[activeId];
+      if (held) {
+        // Recorded before the write, from the buffer as it stands: the action is
+        // the difference between what the section held and what it will hold.
+        const changes = diffContent(held.data.blockType, held.values, values);
+        if (changes.length) {
+          recordChange(
+            held.data.pageId,
+            { domain: "content", sectionId: activeId, blockType: held.data.blockType, changes },
+            describeContent(held.data.blockType, changes, values, locale),
+          );
+        }
+      }
       writeBuffers((prev) => {
         const entry = prev[activeId];
         if (!entry) return prev;
@@ -892,12 +1033,20 @@ export function VisualEditorShell({
       });
       scheduleAutosave(activeId);
     },
-    [activeId, canManageContent, scheduleAutosave, writeBuffers],
+    [activeId, canManageContent, locale, recordChange, scheduleAutosave, writeBuffers],
   );
 
   const onStyles = useCallback(
     (styles: StyleDocument) => {
       if (activeId === null || !canManageContent) return;
+      const held = buffersRef.current[activeId];
+      if (held) {
+        recordChange(
+          held.data.pageId,
+          { domain: "style", sectionId: activeId, blockType: held.data.blockType, before: held.styles, after: styles },
+          describeStyle(held.data.blockType, held.styles, styles, held.values, locale),
+        );
+      }
       writeBuffers((prev) => {
         const entry = prev[activeId];
         if (!entry) return prev;
@@ -915,7 +1064,7 @@ export function VisualEditorShell({
       });
       scheduleAutosave(activeId);
     },
-    [activeId, canManageContent, scheduleAutosave, writeBuffers],
+    [activeId, canManageContent, locale, recordChange, scheduleAutosave, writeBuffers],
   );
 
   /**
@@ -932,6 +1081,14 @@ export function VisualEditorShell({
   const onMotion = useCallback(
     (motion: MotionDocument) => {
       if (activeId === null || !canManageContent) return;
+      const held = buffersRef.current[activeId];
+      if (held) {
+        recordChange(
+          held.data.pageId,
+          { domain: "motion", sectionId: activeId, blockType: held.data.blockType, before: held.motion, after: motion },
+          describeMotion(held.data.blockType, held.motion, motion, held.values, locale),
+        );
+      }
       writeBuffers((prev) => {
         const entry = prev[activeId];
         if (!entry) return prev;
@@ -949,7 +1106,27 @@ export function VisualEditorShell({
       });
       scheduleAutosave(activeId);
     },
-    [activeId, canManageContent, scheduleAutosave, writeBuffers],
+    [activeId, canManageContent, locale, recordChange, scheduleAutosave, writeBuffers],
+  );
+
+  /**
+   * One domain of one section, set to a value Undo or Redo chose (Batch 16).
+   *
+   * The same write an edit makes — the buffer, the dirty flag measured against
+   * what the server last said — so a section undone all the way back to its
+   * saved state is clean and saves nothing, and anything else is saved by the
+   * ordinary autosave like any other edit. A conflict is kept, never cleared:
+   * the section really did change elsewhere.
+   */
+  const setDomainValue = useCallback(
+    (sectionId: number, domain: EditDomain, value: unknown) => {
+      writeBuffers((prev) => {
+        const entry = prev[sectionId];
+        if (!entry) return prev;
+        return { ...prev, [sectionId]: withDomainValue(entry, domain, value) };
+      });
+    },
+    [writeBuffers],
   );
 
   /** Puts one domain back to what the server last said, leaving the others alone. */
@@ -963,6 +1140,34 @@ export function VisualEditorShell({
       if (pending) {
         window.clearTimeout(pending);
         autosaveTimers.current.delete(activeId);
+      }
+      /**
+       * Discarding unsaved work in one domain is itself an action (Batch 16),
+       * so it is recorded like one: Undo brings the work back, Redo discards it
+       * again. It is not Discard *all saved changes* — that is a page act on
+       * the server, and it resets the history instead.
+       */
+      const held = buffersRef.current[activeId];
+      if (held) {
+        const { blockType, pageId } = held.data;
+        if (domain === "content") {
+          const changes = diffContent(blockType, held.values, held.data.values);
+          if (changes.length) {
+            recordChange(pageId, { domain: "content", sectionId: activeId, blockType, changes }, "Discard unsaved content changes");
+          }
+        } else if (domain === "style") {
+          recordChange(
+            pageId,
+            { domain: "style", sectionId: activeId, blockType, before: held.styles, after: held.data.styles },
+            "Discard unsaved style changes",
+          );
+        } else {
+          recordChange(
+            pageId,
+            { domain: "motion", sectionId: activeId, blockType, before: held.motion, after: held.data.motionDocument },
+            "Discard unsaved motion changes",
+          );
+        }
       }
       writeBuffers((prev) => {
         const entry = prev[activeId];
@@ -979,7 +1184,7 @@ export function VisualEditorShell({
         };
       });
     },
-    [activeId, writeBuffers],
+    [activeId, recordChange, writeBuffers],
   );
 
   /**
@@ -992,6 +1197,14 @@ export function VisualEditorShell({
    */
   const takeLatest = useCallback(() => {
     if (activeId === null) return;
+    /**
+     * The section's history was built against the version that lost, so none
+     * of it can be replayed over the one that won without merge rules nobody
+     * has written (Batch 16). The page's whole history goes — the simpler rule
+     * that is safe in every case — and the editor is told why.
+     */
+    const held = buffersRef.current[activeId];
+    if (held) resetHistory(held.data.pageId, HISTORY_RESET.section);
     writeBuffers((prev) => {
       const entry = prev[activeId];
       if (!entry?.latest) return prev;
@@ -1012,7 +1225,7 @@ export function VisualEditorShell({
       };
     });
     freshCanvas();
-  }, [activeId, writeBuffers]);
+  }, [activeId, resetHistory, writeBuffers]);
 
   /**
    * One domain of one section, written.
@@ -1217,7 +1430,13 @@ export function VisualEditorShell({
           const domain = EDIT_DOMAINS.find((key) => dirty[key]);
           if (!domain) break;
           const result = await runSave(sectionId, domain);
-          if (result !== "ok") break;
+          if (result !== "ok") {
+            // The section moved elsewhere. Its history was built against the
+            // version that lost, and nothing in it may be replayed over the
+            // one that won (Batch 16).
+            if (result === "conflict") resetHistory(entry.data.pageId, HISTORY_RESET.section);
+            break;
+          }
           wrote = true;
         }
       } finally {
@@ -1235,7 +1454,7 @@ export function VisualEditorShell({
       freshCanvas();
       if (address) setRestoreToken((n) => n + 1);
     },
-    [canManageContent, runSave],
+    [canManageContent, resetHistory, runSave],
   );
 
   drainRef.current = (sectionId: number) => void drainSection(sectionId);
@@ -1278,11 +1497,19 @@ export function VisualEditorShell({
       operate: (form: FormData) => Promise<VisualStructureResult>,
       fill: (form: FormData) => void,
       select: "new" | "keep" | "clear",
-    ) => {
-      if (!canManageContent || !page || !structure || structureBusy) return;
+      /**
+       * What to record in the page's history, or `null` for a step that is
+       * itself an Undo or a Redo — those move through the history rather than
+       * adding to it (Batch 16).
+       */
+      history: { op: StructureOp; sectionId: number | null; visible?: boolean } | null,
+    ): Promise<VisualStructureResult | null> => {
+      if (!canManageContent || !page || !structure || structureBusy) return null;
       setStructureBusy(true);
       setStructureFailure(null);
+      closeHistoryGroup();
 
+      const before = structure.structure;
       const form = new FormData();
       form.set("_csrf", csrf);
       form.set("pageId", String(page.id));
@@ -1295,9 +1522,27 @@ export function VisualEditorShell({
 
       if (!result.ok) {
         setStructureFailure({ reason: result.reason, message: result.message });
-        return;
+        // A layout that changed elsewhere invalidates every layout action in
+        // the history, and the content ones are no safer for sitting beside
+        // them: the page's history goes, and the editor is told why.
+        if (result.reason === "conflict") resetHistory(page.id, HISTORY_RESET.layout);
+        return result;
       }
       if (result.structure) setStructure(result.structure);
+
+      if (history && result.structure) {
+        const sectionId =
+          history.op === "add" || history.op === "duplicate" ? (result.sectionId ?? null) : history.sectionId;
+        const blockType =
+          sectionId === null
+            ? null
+            : (result.structure.sections.find((row) => row.sectionId === sectionId)?.blockType ?? null);
+        recordChange(
+          page.id,
+          { domain: "structure", op: history.op, sectionId, before, after: result.structure.structure },
+          describeStructure(history.op, blockType, history.visible),
+        );
+      }
 
       // Where the selection goes, by section id — the one thing that survives a
       // document being rebuilt.
@@ -1312,8 +1557,9 @@ export function VisualEditorShell({
         : null;
       freshCanvas();
       if (wanted) setRestoreToken((n) => n + 1);
+      return result;
     },
-    [canManageContent, csrf, page, structure, structureBusy],
+    [canManageContent, closeHistoryGroup, csrf, page, recordChange, resetHistory, structure, structureBusy],
   );
 
   /**
@@ -1347,6 +1593,8 @@ export function VisualEditorShell({
 
     setStructure(latest);
     setStructureFailure(null);
+    // The layout that won is not the one this history describes.
+    resetHistory(page.id, HISTORY_RESET.layout);
 
     // Keep the selection only if the section is still in the layout that won.
     const selected = selectedRef.current;
@@ -1357,7 +1605,7 @@ export function VisualEditorShell({
       : null;
     freshCanvas();
     if (survives) setRestoreToken((n) => n + 1);
-  }, [page, structureBusy]);
+  }, [page, resetHistory, structureBusy]);
 
   const ops: StructuralOps = useMemo(
     () => ({
@@ -1369,12 +1617,14 @@ export function VisualEditorShell({
             if (afterSectionId) form.set("afterSectionId", String(afterSectionId));
           },
           "new",
+          { op: "add", sectionId: null },
         ),
       onDuplicate: (sectionId) =>
         void runStructural(
           duplicatePageSection,
           (form) => form.set("sectionId", String(sectionId)),
           "new",
+          { op: "duplicate", sectionId: null },
         ),
       onMove: (sectionId, direction) => {
         const order = sections.map((row) => row.sectionId);
@@ -1386,6 +1636,7 @@ export function VisualEditorShell({
           reorderPageStructure,
           (form) => form.set("order", JSON.stringify(order)),
           "keep",
+          { op: "reorder", sectionId },
         );
       },
       onReorder: (order) =>
@@ -1393,6 +1644,7 @@ export function VisualEditorShell({
           reorderPageStructure,
           (form) => form.set("order", JSON.stringify(order)),
           "keep",
+          { op: "reorder", sectionId: null },
         ),
       onVisibility: (sectionId, visible) =>
         void runStructural(
@@ -1402,6 +1654,7 @@ export function VisualEditorShell({
             form.set("visible", visible ? "true" : "false");
           },
           "keep",
+          { op: "visibility", sectionId, visible },
         ),
       onRemove: (sectionId) =>
         void runStructural(
@@ -1411,12 +1664,14 @@ export function VisualEditorShell({
           // inspector describing something the canvas is not showing is worse
           // than an empty inspector.
           selectedRef.current?.sectionId === sectionId ? "clear" : "keep",
+          { op: "remove", sectionId },
         ),
       onRestore: (sectionId) =>
         void runStructural(
           restorePageSection,
           (form) => form.set("sectionId", String(sectionId)),
           "new",
+          { op: "restore", sectionId },
         ),
       onDiscard: () => {
         // A pending section's unsaved text would go with the row. Saying so and
@@ -1433,11 +1688,237 @@ export function VisualEditorShell({
           return;
         }
         if (!window.confirm("Discard the layout changes? Sections added here are deleted.")) return;
-        void runStructural(discardPageLayout, () => undefined, "clear");
+        // Deleting the new sections is not something an Undo could take back —
+        // the rows are gone — so the history goes with them (Batch 16).
+        void runStructural(discardPageLayout, () => undefined, "clear", null).then((result) => {
+          if (result?.ok && page) {
+            resetHistory(page.id, "Undo history was cleared because the layout changes were discarded.");
+          }
+        });
       },
     }),
-    [dirtyIds, runStructural, sections, structure],
+    [dirtyIds, page, resetHistory, runStructural, sections, structure],
   );
+
+  /* ------------------------------------------------------------------ */
+  /* Undo and Redo: taking an action back                                */
+  /* ------------------------------------------------------------------ */
+
+  /** One layout step, run through the same structural request as the action it reverses. */
+  const runLayoutStep = useCallback(
+    (step: StructureStep) => {
+      switch (step.action) {
+        case "reorder":
+          return runStructural(
+            reorderPageStructure,
+            (form) => form.set("order", JSON.stringify(step.order)),
+            "keep",
+            null,
+          );
+        case "visibility":
+          return runStructural(
+            setPageSectionVisibility,
+            (form) => {
+              form.set("sectionId", String(step.sectionId));
+              form.set("visible", step.visible ? "true" : "false");
+            },
+            "keep",
+            null,
+          );
+        case "remove":
+          return runStructural(
+            removePageSection,
+            (form) => form.set("sectionId", String(step.sectionId)),
+            selectedRef.current?.sectionId === step.sectionId ? "clear" : "keep",
+            null,
+          );
+        case "restore":
+          return runStructural(
+            restorePageSection,
+            (form) => {
+              form.set("sectionId", String(step.sectionId));
+              form.set("placement", "1");
+              form.set("beforeSectionId", step.beforeSectionId === null ? "end" : String(step.beforeSectionId));
+              form.set("visible", step.visible ? "true" : "false");
+            },
+            "keep",
+            null,
+          );
+      }
+    },
+    [runStructural],
+  );
+
+  /**
+   * Undo or Redo — the one way either happens, from the toolbar, the keyboard
+   * or a key pressed on the canvas.
+   *
+   * **Content, style and motion** go back into the section's buffer, and the
+   * ordinary autosave takes it from there: same debounce, same queue, same
+   * guard. Nothing is un-saved. If the later state had already autosaved, the
+   * earlier one is simply the new state of the draft and is saved on top of it,
+   * a revision later — which is what lets autosaved work be undone at all.
+   *
+   * **Layout** runs the structural operation that reverses the action, through
+   * the same request and the same page-revision guard as every layout change,
+   * and only if the layout on screen is exactly the one the action left behind.
+   *
+   * What stops it, and why: a direct edit still being typed (Undo belongs to
+   * the text field until it is committed); a layout or page request already on
+   * its way; and a history that no longer describes the page — a section that
+   * lost a race, a layout that is not the recorded one — which is thrown away
+   * rather than replayed over somebody else's work.
+   */
+  const stepHistory = useCallback(
+    async (direction: "undo" | "redo") => {
+      if (!page || !canManageContent || historyBusy || structureBusy || pageBusy) return;
+      if (editSession.current) {
+        setHistoryNotice("Finish typing on the canvas first — press Enter — then Undo takes the whole edit back.");
+        return;
+      }
+      const pageId = page.id;
+      const start = closeGroup(historyOf(pageId));
+      const taken = direction === "undo" ? takeUndo(start) : takeRedo(start);
+      if (!taken) return;
+      const { entry } = taken;
+      const change = entry.change;
+
+      if (change.domain === "structure") {
+        if (!structure) return;
+        const step = structureStep(change, direction, structure.structure);
+        if (!step) {
+          resetHistory(pageId, HISTORY_RESET.layout);
+          return;
+        }
+        setHistoryBusy(true);
+        const result = await runLayoutStep(step);
+        setHistoryBusy(false);
+        // Not started — another request was on its way. Nothing moved.
+        if (!result) return;
+        if (!result.ok) {
+          // A conflict has already reset the history, with its own reason.
+          if (result.reason !== "conflict") resetHistory(pageId, HISTORY_RESET.failed);
+          return;
+        }
+        // Moved relative to the history as it is *now*: anything recorded
+        // while the request was in flight means the two no longer line up, and
+        // a history that cannot say what it holds is not kept.
+        const now = closeGroup(historyOf(pageId));
+        const again = direction === "undo" ? takeUndo(now) : takeRedo(now);
+        if (!again || again.entry.id !== entry.id) {
+          resetHistory(pageId, HISTORY_RESET.failed);
+          return;
+        }
+        writeHistory(pageId, again.history);
+        setHistoryNotice(null);
+        return;
+      }
+
+      const buffer = buffersRef.current[change.sectionId];
+      if (!buffer || buffer.status === "conflict") {
+        resetHistory(pageId, HISTORY_RESET.section);
+        return;
+      }
+      if (change.domain === "content") {
+        const values = applyContent(buffer.values, change.changes, direction);
+        if (!values) {
+          resetHistory(pageId, HISTORY_RESET.section);
+          return;
+        }
+        setDomainValue(change.sectionId, "content", values);
+      } else {
+        setDomainValue(change.sectionId, change.domain, direction === "undo" ? change.before : change.after);
+      }
+      writeHistory(pageId, taken.history);
+      setHistoryNotice(null);
+      scheduleAutosave(change.sectionId);
+
+      /**
+       * Back at exactly what the server holds, there is nothing to save — and
+       * so nothing that would reload the canvas, which may still be showing
+       * text typed straight onto it and never saved. Redraw it from the server
+       * now, the way a save would have, so it shows what the section holds.
+       * Anything still dirty is left to the autosave, which reloads it anyway.
+       */
+      const after = buffersRef.current[change.sectionId];
+      if (after && !isDirty(after) && after.data.pageId === pageRef.current) {
+        const address = selectedRef.current?.address ?? null;
+        restoreTo.current = address ? { address, fallback: `section:${change.sectionId}` } : null;
+        freshCanvas();
+        if (address) setRestoreToken((n) => n + 1);
+      }
+    },
+    [
+      canManageContent,
+      historyBusy,
+      historyOf,
+      page,
+      pageBusy,
+      resetHistory,
+      runLayoutStep,
+      scheduleAutosave,
+      setDomainValue,
+      structure,
+      structureBusy,
+      writeHistory,
+    ],
+  );
+
+  /** The latest Undo and Redo, reachable from listeners attached once. */
+  const undoRef = useRef<() => void>(() => {});
+  const redoRef = useRef<() => void>(() => {});
+  undoRef.current = () => void stepHistory("undo");
+  redoRef.current = () => void stepHistory("redo");
+
+  /** Undo or Redo pressed on the canvas, forwarded by the bridge. */
+  const onShortcut = useCallback(
+    (command: ShortcutCommand) => (command === "undo" ? undoRef.current() : redoRef.current()),
+    [],
+  );
+
+  /**
+   * The keyboard, and the two gestures that end an action.
+   *
+   * Ctrl/⌘+Z and Ctrl/⌘+Shift+Z (and Ctrl+Y) anywhere in the editor — except
+   * inside a text field, a select or anything editable, where the key is the
+   * field's own undo and is left alone. Once the field is left, the whole
+   * typing burst is one action for the editor's Undo.
+   *
+   * Leaving a field closes the action it was growing, and so does letting go
+   * of a slider: one drag, however many values it passed through, is one
+   * action — and the next drag of the same slider is another.
+   */
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const command = shortcutFor(event);
+      if (!command || isTextTarget(event.target)) return;
+      event.preventDefault();
+      (command === "undo" ? undoRef : redoRef).current();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      pointerHeld.current = event.target instanceof HTMLInputElement && event.target.type === "range";
+    };
+    const onPointerUp = () => {
+      if (!pointerHeld.current) return;
+      pointerHeld.current = false;
+      closeHistoryGroup();
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      if (isTextTarget(event.target)) closeHistoryGroup();
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("pointerup", onPointerUp, true);
+    window.addEventListener("pointercancel", onPointerUp, true);
+    window.addEventListener("focusout", onFocusOut, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("pointerup", onPointerUp, true);
+      window.removeEventListener("pointercancel", onPointerUp, true);
+      window.removeEventListener("focusout", onFocusOut, true);
+    };
+  }, [closeHistoryGroup]);
 
   /* ------------------------------------------------------------------ */
   /* The page: publish, discard, restore                                 */
@@ -1526,6 +2007,8 @@ export function VisualEditorShell({
   useEffect(() => {
     setPageMessage(null);
     setPageError(null);
+    // A reset reported on one page says nothing about the next one.
+    setHistoryNotice(null);
   }, [pageId]);
 
   /**
@@ -1539,9 +2022,18 @@ export function VisualEditorShell({
    * the canvas and the summary are re-read from the server.
    */
   const afterPageAction = useCallback(
-    async (keepSelection: boolean) => {
+    async (keepSelection: boolean, historyNotice: string) => {
       if (!page) return;
       const pageId = page.id;
+      /**
+       * First, the session's history (Batch 16). A publication, a discard and
+       * a restore are durable acts on the server, and a local Undo after one
+       * must not masquerade as reversing it: publishing is reversed from
+       * Version History, a discard is not something Redo may resurrect, and a
+       * restore is reversed by restoring again. So the page's history is
+       * cleared before anything is re-read, and the editor is told why.
+       */
+      resetHistory(pageId, historyNotice);
       for (const [id, timer] of autosaveTimers.current) {
         const entry = buffersRef.current[Number(id)];
         if (!entry || entry.data.pageId === pageId) {
@@ -1589,7 +2081,7 @@ export function VisualEditorShell({
       freshCanvas();
       if (survives) setRestoreToken((n) => n + 1);
     },
-    [page, refreshPageState, writeBuffers],
+    [page, refreshPageState, resetHistory, writeBuffers],
   );
 
   /* ------------------------------------------------------------------ */
@@ -1652,6 +2144,8 @@ export function VisualEditorShell({
       operate: (form: FormData) => Promise<{ ok: boolean; message: string }>,
       fill: (form: FormData) => void,
       keepSelection: boolean,
+      /** What the toolbar says about the session's history once this succeeds. */
+      historyNotice: string,
     ) => {
       if (!page || !canManageContent || pageBusy) return;
       setPageBusy(true);
@@ -1682,7 +2176,7 @@ export function VisualEditorShell({
         return;
       }
 
-      await afterPageAction(keepSelection);
+      await afterPageAction(keepSelection, historyNotice);
       setPageBusy(false);
       setPageMessage(answer.message);
     },
@@ -1700,7 +2194,12 @@ export function VisualEditorShell({
       .filter(Boolean)
       .join("\n\n");
     if (!window.confirm(question)) return;
-    void runPageAction(publishPageFromEditor, () => undefined, true);
+    void runPageAction(
+      publishPageFromEditor,
+      () => undefined,
+      true,
+      "Undo history was cleared: this page was published. Version History keeps the state before it.",
+    );
   }, [runPageAction, summary]);
 
   const discardPage = useCallback(() => {
@@ -1712,7 +2211,12 @@ export function VisualEditorShell({
     ) {
       return;
     }
-    void runPageAction(discardPageFromEditor, () => undefined, false);
+    void runPageAction(
+      discardPageFromEditor,
+      () => undefined,
+      false,
+      "Undo history was cleared: the saved changes were discarded, and Redo cannot bring them back.",
+    );
   }, [runPageAction]);
 
   const restoreVersion = useCallback(
@@ -1721,6 +2225,7 @@ export function VisualEditorShell({
         restoreVersionFromEditor,
         (form) => form.set("versionId", String(versionId)),
         false,
+        "Undo history was cleared: a version was restored into saved changes. Version History is how a restore is reversed.",
       );
     },
     [runPageAction],
@@ -1782,6 +2287,17 @@ export function VisualEditorShell({
     };
   }, []);
 
+  /** The history of the page on screen, redrawn whenever any history moves. */
+  const pageHistory = useMemo(
+    () => (pageId === null ? emptyHistory() : historyOf(pageId)),
+    // `historyTick` is what says the map behind `historyOf` has changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pageId, historyOf, historyTick],
+  );
+  const nextUndo = pageHistory.undo[pageHistory.undo.length - 1] ?? null;
+  const nextRedo = pageHistory.redo[pageHistory.redo.length - 1] ?? null;
+  const historyIdle = canManageContent && !historyBusy && !structureBusy && !pageBusy;
+
   if (!page) {
     return (
       <div className="flex h-dvh items-center justify-center p-8 text-center">
@@ -1821,6 +2337,64 @@ export function VisualEditorShell({
             ) : null}
           </span>
         </div>
+
+        {/*
+          Undo and Redo (Batch 16): this editing session's own actions on this
+          page, newest first. Named for what they would take back, so a person
+          knows before pressing; described as the session's, so nobody mistakes
+          them for Version History.
+        */}
+        <div className="flex items-center gap-1" role="group" aria-label="Undo and redo">
+          <button
+            type="button"
+            onClick={() => undoRef.current()}
+            disabled={!historyIdle || !nextUndo}
+            className="admin-btn admin-btn-sm"
+            aria-label={nextUndo ? `Undo: ${nextUndo.label}` : "Undo — nothing to undo"}
+            aria-describedby="ve-undo-scope"
+            aria-keyshortcuts="Control+Z Meta+Z"
+            title={`${nextUndo ? `Undo: ${nextUndo.label}` : "Nothing to undo"} (Ctrl+Z / ⌘Z)`}
+            data-history="undo"
+          >
+            <HistoryGlyph direction="undo" />
+            <span className="hidden 2xl:inline">Undo</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => redoRef.current()}
+            disabled={!historyIdle || !nextRedo}
+            className="admin-btn admin-btn-sm"
+            aria-label={nextRedo ? `Redo: ${nextRedo.label}` : "Redo — nothing to redo"}
+            aria-describedby="ve-undo-scope"
+            aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z Control+Y"
+            title={`${nextRedo ? `Redo: ${nextRedo.label}` : "Nothing to redo"} (Ctrl+Shift+Z / ⇧⌘Z)`}
+            data-history="redo"
+          >
+            <HistoryGlyph direction="redo" />
+            <span className="hidden 2xl:inline">Redo</span>
+          </button>
+          <span id="ve-undo-scope" className="sr-only">
+            {UNDO_SCOPE_NOTE}
+          </span>
+        </div>
+        {historyNotice ? (
+          <p
+            className="flex max-w-[26rem] items-center gap-1.5 text-[0.72rem] leading-snug"
+            style={{ color: "var(--color-peach)" }}
+            role="status"
+            data-history-notice
+          >
+            {historyNotice}
+            <button
+              type="button"
+              onClick={() => setHistoryNotice(null)}
+              className="admin-btn admin-btn-sm px-1.5 py-0"
+              aria-label="Dismiss"
+            >
+              <Icon name="close" size={10} />
+            </button>
+          </p>
+        ) : null}
 
         <div className="flex items-center gap-2">
           <label htmlFor="ve-page" className="sr-only">
@@ -2025,6 +2599,7 @@ export function VisualEditorShell({
               onEdit={onCanvasEdit}
               onEditRequest={requestDirectEdit}
               onReplayResult={onReplayResult}
+              onShortcut={onShortcut}
             />
           </div>
 
@@ -2098,3 +2673,27 @@ export function VisualEditorShell({
   );
 }
 
+/**
+ * The toolbar's two arrows. Drawn here rather than added to the site's icon
+ * set, because that set is also the list of icons an editor may choose for a
+ * page — and an Undo arrow is not a picture anybody should put on a card.
+ */
+function HistoryGlyph({ direction }: { direction: "undo" | "redo" }) {
+  return (
+    <svg
+      aria-hidden
+      width={13}
+      height={13}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={direction === "redo" ? { transform: "scaleX(-1)" } : undefined}
+    >
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+    </svg>
+  );
+}

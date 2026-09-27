@@ -1029,6 +1029,47 @@
   .ql-card:focus-visible .ql-arrow { translate: none; }
 }
 
+/* ==========================================================================
+   Version Compare — the still presentation (Batch 16)
+   ==========================================================================
+
+   Two states of a page side by side are compared by looking, so both are
+   drawn at rest. `SectionRenderer` marks each section wrapper of an authorised
+   comparison with `data-eod-still` (never a public page) and applies no editor
+   motion there; what is left to hold still is the site's own movement, and
+   these are the site's own reduced-motion rules, word for word, scoped to the
+   mark instead of the media query — so "still" means exactly what reduced
+   motion already means here, and a test holds the two lists together.
+
+   Every animation and transition finishes at once, every legacy reveal is
+   shown, and the three cards and the button that travel on hover do not. */
+[data-eod-still],
+[data-eod-still] *,
+[data-eod-still] *::before,
+[data-eod-still] *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}
+[data-eod-still].reveal,
+[data-eod-still] .reveal { opacity: var(--eod-node-opacity, 1) !important; transform: none !important; }
+
+[data-eod-still] .svc-card:hover,
+[data-eod-still] .svc-card:focus-visible { transform: none; }
+[data-eod-still] .svc-card:hover .svc-wedge-img,
+[data-eod-still] .svc-card:focus-visible .svc-wedge-img { transform: none; }
+[data-eod-still] .svc-card:hover .svc-card-arrow,
+[data-eod-still] .svc-card:focus-visible .svc-card-arrow { translate: none; }
+[data-eod-still] .ql-card:hover,
+[data-eod-still] .ql-card:focus-visible { transform: none; }
+[data-eod-still] .ql-card:hover .ql-img,
+[data-eod-still] .ql-card:focus-visible .ql-img { transform: none; }
+[data-eod-still] .ql-card:hover .ql-arrow,
+[data-eod-still] .ql-card:focus-visible .ql-arrow { translate: none; }
+[data-eod-still] .btn:hover,
+[data-eod-still] .btn:focus-visible { transform: none; }
+
 /* Printing a service page should give a client something readable. */
 @media print {
   html { background: #fff; }

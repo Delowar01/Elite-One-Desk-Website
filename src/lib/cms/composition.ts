@@ -1,5 +1,6 @@
 import { effectiveMotion, motionOf, type MotionPreset } from "./motion";
 import { readMotionDocument, type MotionDocument } from "./motion-doc";
+import type { PageSnapshot } from "./snapshot";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 import { type DraftStructure } from "./structure";
 
@@ -242,4 +243,45 @@ export function composePreview(
     out.push(editing(row, entry.visible));
   }
   return out;
+}
+
+/**
+ * A page version, composed the way the live page composes itself (Batch 16).
+ *
+ * What a visitor would have got from that state: the snapshot's visible
+ * sections, in its order, with the published values, styles, entrance and
+ * motion it kept — the same shape `composePublished` produces from live rows,
+ * so the one renderer draws either without knowing which it has. A hidden
+ * section stays out, exactly as it stayed off the live page.
+ *
+ * The snapshot has already been read strictly and rebuilt through the block
+ * validator (`readPageSnapshot`), so nothing here trusts a stored value it
+ * has not checked. Ids are the rows the sections came from; one that is
+ * missing or repeated in a damaged document is given a key of its own, so two
+ * sections never share one.
+ */
+export function composeSnapshot(snapshot: PageSnapshot): ComposedSection[] {
+  const seen = new Set<number>();
+  return snapshot.sections
+    .map((section, index) => ({ section, index }))
+    .filter(({ section }) => section.visible)
+    .map(({ section, index }) => {
+      const id =
+        section.sourceSectionId > 0 && !seen.has(section.sourceSectionId) ? section.sourceSectionId : -(index + 1);
+      seen.add(id);
+      return {
+        id,
+        blockType: section.blockType,
+        animation: motionOf(section.animation),
+        values: section.published,
+        styles: section.styles,
+        motion: section.motion ?? null,
+        isDraft: false,
+        hasContentDraft: false,
+        hasStyleDraft: false,
+        hasMotionDraft: false,
+        isDraftOnly: false,
+        visible: true,
+      };
+    });
 }

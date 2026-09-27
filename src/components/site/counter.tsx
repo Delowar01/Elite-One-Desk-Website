@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import { useStill } from "./still-presentation";
+
 /**
  * Counts a figure up once, when it is first scrolled into view.
  *
@@ -13,11 +15,14 @@ export function Counter({ value, className }: { value: string; className?: strin
   const ref = useRef<HTMLSpanElement>(null);
   const match = /^(\D*)(\d[\d,]*)(.*)$/s.exec(value.trim());
   const target = match ? Number(match[2]!.replace(/,/g, "")) : null;
-  const [display, setDisplay] = useState(target === null ? value : `${match![1]}0${match![3]}`);
+  // A still presentation (Version Compare, Batch 16) shows the figure itself,
+  // not a count-up waiting to be scrolled to.
+  const still = useStill();
+  const [display, setDisplay] = useState(target === null || still ? value : `${match![1]}0${match![3]}`);
 
   useEffect(() => {
     const node = ref.current;
-    if (!node || target === null) return;
+    if (!node || target === null || still) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       setDisplay(value);
       return;
@@ -43,7 +48,7 @@ export function Counter({ value, className }: { value: string; className?: strin
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [match, target, value]);
+  }, [match, still, target, value]);
 
   return (
     <span ref={ref} className={className} aria-label={value}>

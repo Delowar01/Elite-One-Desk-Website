@@ -23,7 +23,7 @@ export default async function HomePage({ params, searchParams }: Params) {
   const { lang } = await params;
   if (!isLocale(lang)) notFound();
 
-  const [{ page, isPreview, editor }, ctx, organization] = await Promise.all([
+  const [{ page, isPreview, editor, compare }, ctx, organization] = await Promise.all([
     resolvePageForRender("home", await searchParams),
     buildBlockContext(lang),
     organizationJsonLd(lang),
@@ -40,7 +40,13 @@ export default async function HomePage({ params, searchParams }: Params) {
           rhythm than the rest of the site — see `.home-rhythm` in globals.css.
           A wrapper rather than a change to the tokens, so no other page moves. */}
       <div className="home-rhythm">
-        <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} editorMode={Boolean(editor)} />
+        <SectionRenderer
+          sections={page.sections}
+          locale={lang}
+          ctx={ctx}
+          editorMode={Boolean(editor)}
+          still={Boolean(compare)}
+        />
       </div>
       {editor ? (
         <EditorBridge bridgeId={editor.bridgeId} pageId={page.id} slug={page.slug} locale={lang} />

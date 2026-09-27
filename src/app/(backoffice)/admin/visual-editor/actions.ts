@@ -34,6 +34,7 @@ import {
   restoreStructureSection,
   setStructureVisibility,
   type PageStructure,
+  type RestorePlacement,
   type StructureResult,
 } from "@/lib/cms/structure-service";
 import { readVisibility } from "@/lib/cms/structure";
@@ -675,9 +676,26 @@ export async function removePageSection(form: FormData): Promise<VisualStructure
 }
 
 export async function restorePageSection(form: FormData): Promise<VisualStructureResult> {
+  /**
+   * An exact placement, when Undo or Redo asks for one (Batch 16): the member
+   * to go in front of, by id (`end` for the end), and the visibility to come
+   * back with. Both or neither — half a placement is not something to guess
+   * the rest of — and each read strictly, so a malformed one is refused rather
+   * than turned into "near its live position".
+   */
+  let placement: RestorePlacement | undefined;
+  if (form.get("placement") !== null) {
+    const rawBefore = String(form.get("beforeSectionId") ?? "");
+    const before = rawBefore === "end" ? null : Number(rawBefore);
+    const visible = readVisibility(form.get("visible"));
+    if (visible === null || (before !== null && (!Number.isInteger(before) || before <= 0))) {
+      return { ok: false, reason: "invalid", message: "That request could not be read. Reload the layout." };
+    }
+    placement = { beforeSectionId: before, visible };
+  }
   return runStructure(
     form,
-    (context) => restoreStructureSection(context, Number(form.get("sectionId"))),
+    (context) => restoreStructureSection(context, Number(form.get("sectionId")), placement),
     "restore",
   );
 }

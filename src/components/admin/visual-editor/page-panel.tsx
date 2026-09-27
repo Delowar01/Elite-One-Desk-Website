@@ -2,6 +2,7 @@
 
 import { PageHistory } from "@/components/admin/page-history";
 import { Icon } from "@/components/ui/icon";
+import { UNDO_SCOPE_NOTE } from "@/lib/visual-editor/history";
 import {
   describePending,
   describeRemoval,
@@ -158,6 +159,11 @@ export function PagePanel({
           <h3 className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">
             Version history
           </h3>
+          {/* Two different ways back, and the one sentence that tells them apart
+              (Batch 16) — the toolbar's Undo buttons carry it as well. */}
+          <p className="text-[0.72rem] leading-relaxed text-muted" data-undo-scope>
+            {UNDO_SCOPE_NOTE}
+          </p>
           <PageHistory
             history={history}
             canManage={canManage}

@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { Icon } from "@/components/ui/icon";
 import type { PageHistoryView } from "@/lib/visual-editor/publish";
 
@@ -95,20 +97,37 @@ export function PageHistory({
               <p className="mt-0.5 text-[0.7rem] text-muted">
                 {when(version.createdAt)} · {version.actorName}
               </p>
-              {canManage ? (
-                <button
-                  type="button"
-                  disabled={busy || Boolean(blocked)}
-                  onClick={() => {
-                    if (!window.confirm(RESTORE_CONFIRM)) return;
-                    onRestore(version.id);
-                  }}
-                  className="admin-btn admin-btn-sm mt-2"
+              <div className="mt-2 flex flex-wrap gap-2">
+                {/*
+                  Version Compare (Batch 16): this state beside the current
+                  published page, read-only — nothing is restored by looking.
+                  A new tab, so an editor's open work stays where it is.
+                */}
+                <Link
+                  href={`/admin/compare?page=${history.pageId}&version=${version.id}`}
+                  target="_blank"
+                  rel="noopener"
+                  className="admin-btn admin-btn-sm"
+                  data-compare-version={version.id}
                 >
-                  <Icon name="refresh" size={12} />
-                  Restore to draft
-                </button>
-              ) : null}
+                  <Icon name="eye" size={12} />
+                  Compare with current
+                </Link>
+                {canManage ? (
+                  <button
+                    type="button"
+                    disabled={busy || Boolean(blocked)}
+                    onClick={() => {
+                      if (!window.confirm(RESTORE_CONFIRM)) return;
+                      onRestore(version.id);
+                    }}
+                    className="admin-btn admin-btn-sm"
+                  >
+                    <Icon name="refresh" size={12} />
+                    Restore to draft
+                  </button>
+                ) : null}
+              </div>
             </li>
           ))}
         </ol>

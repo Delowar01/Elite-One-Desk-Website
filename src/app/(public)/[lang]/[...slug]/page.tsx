@@ -39,16 +39,23 @@ export default async function CmsPage({ params, searchParams }: Params) {
   const { lang, slug } = await params;
   if (!isLocale(lang) || slug.length !== 1) notFound();
 
-  const { page, isPreview, editor } = await resolvePageForRender(slug[0]!, await searchParams);
-  // An unpublished page is still viewable in preview, which is the point of it.
-  if (!page || (!page.isPublished && !isPreview)) notFound();
+  const { page, isPreview, editor, compare } = await resolvePageForRender(slug[0]!, await searchParams);
+  // An unpublished page is still viewable in preview, which is the point of it
+  // — and in an authorised comparison, which reads its history (Batch 16).
+  if (!page || (!page.isPublished && !isPreview && !compare)) notFound();
 
   const ctx = await buildBlockContext(lang);
   return (
     <>
       {/* Suppressed inside the Visual Editor only — see the homepage route. */}
       {isPreview && !editor ? <PreviewBanner /> : null}
-      <SectionRenderer sections={page.sections} locale={lang} ctx={ctx} editorMode={Boolean(editor)} />
+      <SectionRenderer
+        sections={page.sections}
+        locale={lang}
+        ctx={ctx}
+        editorMode={Boolean(editor)}
+        still={Boolean(compare)}
+      />
       {editor ? (
         <EditorBridge bridgeId={editor.bridgeId} pageId={page.id} slug={page.slug} locale={lang} />
       ) : null}

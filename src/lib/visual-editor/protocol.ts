@@ -61,12 +61,19 @@ export const EDITOR_CHANNEL = "eod.visual-editor";
  *     integer token or a name from a closed list: no selector, no script, no
  *     markup and no style travels. Nothing is saved on either side.
  *
+ * 6 — Shortcuts (Batch 16). `canvas.shortcut` forwards Undo or Redo pressed
+ *     while the canvas has the keyboard — after a direct edit is committed,
+ *     focus is still in the frame, and the key would otherwise go nowhere. It
+ *     carries one word from a closed list and nothing else, and it is never
+ *     sent while a node is being typed into: that keystroke is the text
+ *     field's own.
+ *
  * Bumped rather than extended in place: a canvas document served by an older
  * build must not answer a newer editor with a message the editor will read
  * half of. The two simply do not recognise each other, which is the outcome
  * that cannot go subtly wrong.
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /* -------------------------------------------------------------------------- */
 /* Bridge ids                                                                 */
@@ -366,6 +373,52 @@ export type CanvasMotionReplayResult = {
   outcome: ReplayOutcome;
 };
 
+/* -------------------------------------------------------------------------- */
+/* Shortcuts (version 6)                                                      */
+/* -------------------------------------------------------------------------- */
+
+/** The editor commands a key pressed inside the canvas may ask for. */
+export const SHORTCUT_COMMANDS = ["undo", "redo"] as const;
+export type ShortcutCommand = (typeof SHORTCUT_COMMANDS)[number];
+
+/**
+ * Undo or Redo, pressed while the canvas had the keyboard. A request, like a
+ * double-click's `canvas.editRequest`: the editor decides what it does.
+ */
+export type CanvasShortcut = { type: "canvas.shortcut"; command: ShortcutCommand };
+
+/**
+ * Which command a key press is, if either — the one reading of the shortcuts,
+ * shared by the editor's own window and the canvas that forwards them.
+ *
+ * Ctrl+Z / ⌘Z is Undo; Ctrl+Shift+Z / ⌘⇧Z is Redo, and so is Ctrl+Y (the
+ * Windows habit — ⌘Y is left alone, it is not Redo on a Mac). Alt anything is
+ * somebody else's shortcut.
+ */
+export function shortcutFor(event: {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+}): ShortcutCommand | null {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return null;
+  const key = event.key.toLowerCase();
+  if (key === "z") return event.shiftKey ? "redo" : "undo";
+  if (key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey) return "redo";
+  return null;
+}
+
+/**
+ * Whether a key press belongs to a text field rather than to the editor: an
+ * input, a text area, a select or anything editable, where Ctrl+Z is the
+ * field's own undo and must stay the field's.
+ */
+export function isTextTarget(target: EventTarget | null): boolean {
+  if (typeof HTMLElement === "undefined" || !(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || Boolean(target.closest("input, textarea, select, [contenteditable]"));
+}
+
 export type EditorPing = { type: "editor.ping"; at: number };
 
 /** Select by stable address — what a click on a Layers row sends. */
@@ -383,7 +436,8 @@ export type CanvasMessage =
   | CanvasBounds
   | CanvasEdit
   | CanvasEditRequest
-  | CanvasMotionReplayResult;
+  | CanvasMotionReplayResult
+  | CanvasShortcut;
 
 export type EditorMessage =
   | EditorPing
@@ -654,6 +708,11 @@ export function readCanvasMessage(
       const parsed = parseAddress(message.address);
       if (!parsed || !parsed.path.length) return null;
       return { type: "canvas.editRequest", address: formatAddress(parsed.sectionId, parsed.path) };
+    }
+    case "canvas.shortcut": {
+      if (typeof message.command !== "string") return null;
+      if (!(SHORTCUT_COMMANDS as readonly string[]).includes(message.command)) return null;
+      return { type: "canvas.shortcut", command: message.command as ShortcutCommand };
     }
     case "canvas.motionReplayResult": {
       if (typeof message.address !== "string") return null;

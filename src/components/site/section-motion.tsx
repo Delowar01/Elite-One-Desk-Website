@@ -22,6 +22,10 @@ export type SectionWrapperAttrs = NodeAttrs & {
   "data-eod-draft"?: string;
   "data-eod-draft-only"?: string;
   "data-eod-visible"?: string;
+  /** A still presentation (Version Compare, Batch 16): see `SectionRenderer`. */
+  "data-eod-still"?: "";
+  /** The row a compared section came from, so the comparison can scroll to it. */
+  "data-eod-compare"?: string;
 };
 
 /**

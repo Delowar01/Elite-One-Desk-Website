@@ -3,6 +3,8 @@
 import { useReducedMotion } from "motion/react";
 import { useEffect, useState } from "react";
 
+import { useStill } from "./still-presentation";
+
 /**
  * `prefers-reduced-motion`, but safe to branch markup on.
  *
@@ -19,5 +21,8 @@ export function useCalmMotion(): boolean {
   const reduce = useReducedMotion();
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  return mounted && Boolean(reduce);
+  // A still presentation (Version Compare, Batch 16) is calm from the first
+  // render: the server decided it, so server and client agree without waiting.
+  const still = useStill();
+  return still || (mounted && Boolean(reduce));
 }

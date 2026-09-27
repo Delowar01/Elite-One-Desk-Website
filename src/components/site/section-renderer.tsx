@@ -25,6 +25,7 @@ import type { EditorRender } from "@/lib/visual-editor/render";
 
 import { MotionRuntime } from "./motion-runtime";
 import { SectionMotion, type SectionWrapperAttrs } from "./section-motion";
+import { StillPresentation } from "./still-presentation";
 import { ContactDetailsBlock } from "./blocks/contact-details";
 import type { BlockContext, BlockProps } from "./blocks/context";
 import { DestinationFeatureBlock } from "./blocks/destination-feature";
@@ -140,11 +141,28 @@ export async function SectionRenderer({
   locale,
   ctx,
   editorMode = false,
+  still = false,
 }: {
   sections: RenderedSection[];
   locale: Locale;
   ctx?: BlockContext;
   editorMode?: boolean;
+  /**
+   * The still presentation (Batch 16): Version Compare's read-only rendering,
+   * decided by the server behind the session check like `editorMode` and
+   * never sniffed.
+   *
+   * Every section is drawn in its finished, resting state — the state every
+   * entrance, stagger, word reveal and hover ends in, and parallax at rest —
+   * by the same blocks, with the same values and styles, so the two panes of a
+   * comparison look like the site with nothing left to arrive. Concretely: no
+   * motion document is applied (the stored document is not touched, only not
+   * used), each wrapper is the plain element with `data-eod-still`, which the
+   * stylesheet uses to hold every legacy reveal and CSS animation at its end,
+   * no motion runtime is shipped, and the few script-driven decorations are
+   * told through `StillPresentation`.
+   */
+  still?: boolean;
 }) {
   const context = ctx ?? (await buildBlockContext(locale));
 
@@ -156,7 +174,7 @@ export async function SectionRenderer({
    * own keyframes would be a second animation on that element's opacity.
    */
   const motions: (MotionDocument | null)[] = sections.map((section) =>
-    section.motion ? motionForBlock(section.motion, section.blockType) : null,
+    section.motion && !still ? motionForBlock(section.motion, section.blockType) : null,
   );
 
   /**
@@ -173,9 +191,9 @@ export async function SectionRenderer({
       ? [sections[index]!.id, motion.nodes]
       : null,
   );
-  const runtime = nodeMotion.some((entry) => entry !== null);
+  const runtime = !still && nodeMotion.some((entry) => entry !== null);
 
-  return (
+  const rendered = (
     <>
       {sections.map((section, index) => {
         const Renderer = RENDERERS[section.blockType];
@@ -204,6 +222,9 @@ export async function SectionRenderer({
                 "data-eod-visible": String(section.visible),
               }
             : {}),
+          // The still presentation's mark, and the row identity the comparison
+          // scrolls both panes to. Only ever in an authorised comparison.
+          ...(still ? { "data-eod-still": "" as const, "data-eod-compare": String(section.id) } : {}),
         };
 
         const body = (
@@ -260,7 +281,15 @@ export async function SectionRenderer({
          * real answer rather than an animation that happens to end where it
          * began.
          */
-        return motion === "none" ? (
+        /*
+         * Still (Batch 16) is the plain wrapper too, whatever the entrance
+         * would be: the element as it stands once any entrance has finished —
+         * this same branch, so there is still one definition of a wrapper.
+         * The advanced branch above is never reached in still, because no
+         * motion document is applied there and every legacy preset is one of
+         * the classes this branch chooses between.
+         */
+        return still || motion === "none" ? (
           <div key={section.id} {...attrs}>
             {body}
           </div>
@@ -280,4 +309,6 @@ export async function SectionRenderer({
       ) : null}
     </>
   );
+
+  return still ? <StillPresentation>{rendered}</StillPresentation> : rendered;
 }

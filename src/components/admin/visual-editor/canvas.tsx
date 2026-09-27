@@ -15,6 +15,7 @@ import {
   type EditorSectionMeta,
   type ReplayMode,
   type ReplayOutcome,
+  type ShortcutCommand,
 } from "@/lib/visual-editor/protocol";
 import { deviceWidth, type DeviceKey } from "@/lib/visual-editor/viewport";
 
@@ -102,6 +103,7 @@ export function VisualCanvas({
   onEdit,
   onEditRequest,
   onReplayResult,
+  onShortcut,
 }: {
   slug: string;
   locale: Locale;
@@ -128,6 +130,11 @@ export function VisualCanvas({
   onEditRequest: (address: string) => void;
   /** What became of a Replay. The editor decides whether it still belongs here. */
   onReplayResult: (result: { address: string; token: number; outcome: ReplayOutcome }) => void;
+  /**
+   * Undo or Redo pressed while the canvas had the keyboard (Batch 16). The
+   * canvas never sends it while a node is being typed into.
+   */
+  onShortcut: (command: ShortcutCommand) => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -237,6 +244,9 @@ export function VisualCanvas({
           return;
         case "canvas.motionReplayResult":
           onReplayResult({ address: message.address, token: message.token, outcome: message.outcome });
+          return;
+        case "canvas.shortcut":
+          onShortcut(message.command);
           return;
         case "canvas.error":
           onState({ status: "error", innerWidth: null, message: message.message });

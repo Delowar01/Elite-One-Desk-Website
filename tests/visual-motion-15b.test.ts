@@ -187,8 +187,63 @@ const markup = (html: string) => {
   return at < 0 ? html : html.slice(0, at);
 };
 const count = (html: string, needle: string) => markup(html).split(needle).length - 1;
-/** The markup with its per-request nonces removed, so two renders of one page compare equal. */
-const stable = (html: string) => markup(html).replace(/ nonce="[^"]*"/g, "");
+/**
+ * Every Suspense boundary as the visitor ends up with it.
+ *
+ * React writes a boundary that was not ready at the first flush as a
+ * placeholder — `<!--$?--><template id="B:n"></template>` — and sends its
+ * content later in a hidden `<div id="S:n">` that a script moves into place.
+ * Whether one made the first flush is timing, and Next 15 puts such a boundary
+ * inside the page itself: the streamed-metadata outlet at the end of the page
+ * segment, which renders nothing. So the placeholder is replaced by what was
+ * streamed for it, exactly as the browser does, and a boundary that was late
+ * compares equal to one that was not.
+ */
+function settled(html: string): string {
+  const streamed = (n: string): string => {
+    const open = `<div hidden id="S:${n}">`;
+    const at = html.indexOf(open);
+    if (at < 0) return "";
+    const from = at + open.length;
+    const tags = /<div\b|<\/div>/g;
+    tags.lastIndex = from;
+    let depth = 1;
+    for (let match = tags.exec(html); match; match = tags.exec(html)) {
+      depth += match[0] === "</div>" ? -1 : 1;
+      if (depth === 0) return html.slice(from, match.index);
+    }
+    return "";
+  };
+  return html.replace(
+    /<!--\$\?--><template id="B:(\d+)"><\/template>[\s\S]*?<!--\/\$-->/g,
+    (_boundary, n: string) => `<!--$-->${streamed(n)}<!--/$-->`,
+  );
+}
+
+/**
+ * What a visitor is shown, in a form two renders of one unchanged page compare
+ * equal in: the page's title, and its `<main>` — every section — with the
+ * per-request nonces removed and every streamed boundary settled.
+ *
+ * Not the whole document. Next 15 streams page metadata, and whether the
+ * `<title>` and meta tags are written inside `<head>` or arrive later in the
+ * body behind a `<template id="B:0">` placeholder depends on how quickly they
+ * resolved on that particular request. Two renders of the same page can
+ * therefore differ byte for byte outside `<main>` while showing exactly the same
+ * thing — which is how the restore test below failed once in the Batch 16
+ * baseline run with identical sections on both sides. The same outlet also
+ * sits at the end of `<main>` as an empty boundary, pending on one request and
+ * resolved on the next — which failed it once more in the Batch 16 final
+ * runs — hence `settled`. Nothing a draft, a discard or a restore can change
+ * lives outside `<main>` or the title.
+ */
+const stable = (html: string) => {
+  const title = html.match(/<title>([^<]*)<\/title>/)?.[1] ?? "";
+  const page = markup(settled(html)).replace(/ nonce="[^"]*"/g, "");
+  const main = page.match(/<main id="main"[^>]*>[\s\S]*<\/main>/)?.[0];
+  assert.ok(main, "the page has no <main> to compare");
+  return `${title}\n${main}`;
+};
 /** Every annotated element's opening tag, by address. */
 const annotated = (html: string): Map<string, string> => {
   const out = new Map<string, string>();
