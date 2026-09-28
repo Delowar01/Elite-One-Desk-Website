@@ -9,6 +9,8 @@ import { draftKindOf } from "@/lib/cms/drafts";
 import { effectiveMotion } from "@/lib/cms/motion";
 import { hasAdvancedMotion } from "@/lib/cms/motion-write";
 import { emptyValues } from "@/lib/cms/values";
+import { readReuse, slotDef } from "@/lib/cms/reuse/reference";
+import { loadComponentSources } from "@/lib/cms/reuse/store";
 import { db } from "@/lib/db";
 import { media, pageSections, pages } from "@/lib/db/schema";
 import { SectionForm } from "./section-form";
@@ -52,6 +54,23 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
     ...((row.section.draft ?? row.section.published) as Record<string, unknown>),
   };
 
+  // The fields a reusable component supplies (Batch 17), named with it.
+  const links = readReuse(values, block.type);
+  const sources = await loadComponentSources(
+    db,
+    Object.values(links).map((entry) => entry.c),
+  );
+  const linked: Record<string, string> = {};
+  for (const [slot, entry] of Object.entries(links)) {
+    const name = sources.get(entry.c)?.name;
+    for (const field of slotDef(block.type, slot)?.fields ?? []) {
+      linked[field.name] =
+        `comes from the reusable component ${name ? `“${name}”` : "this section is linked to"}` +
+        (entry.o?.some((key) => key.split(".")[0] === field.name) ? ", with an override on this page" : "") +
+        ". Change it in the Visual Editor, or on the Reusable components screen.";
+    }
+  }
+
   return (
     <>
       <AdminPageHeader
@@ -84,6 +103,7 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
           block={block}
           media={library}
           previewHref={`/admin/pages/${row.page.slug}/preview`}
+          linked={Object.keys(linked).length ? linked : undefined}
           section={{
             id: row.section.id,
             /**

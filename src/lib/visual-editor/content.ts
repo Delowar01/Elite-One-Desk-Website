@@ -108,6 +108,16 @@ export type VisualContentSaveResult =
   | { ok: false; reason: VisualLoadFailure | "invalid"; message: string };
 
 /**
+ * Detaching one reusable-component instance (Batch 17): a content save the
+ * server resolves, so it can also lose a race to the component itself — a
+ * publication since the canvas was drawn would bake content nobody here has
+ * seen, and is refused by name.
+ */
+export type VisualDetachResult =
+  | VisualContentSaveResult
+  | { ok: false; reason: "component_conflict"; message: string };
+
+/**
  * The answer to a style-draft save.
  *
  * Narrower than the content result on purpose: a style save owns `draft_styles`

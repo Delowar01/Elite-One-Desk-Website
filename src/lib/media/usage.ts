@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import {
   pageSections,
   pages,
+  reusableComponents,
   serviceCategories,
   services,
   testimonials,
@@ -29,7 +30,7 @@ export type MediaUse = { label: string; where: string; href: string };
 export async function mediaUsage(id: number): Promise<MediaUse[]> {
   const uses: MediaUse[] = [];
 
-  const [sections, categories, serviceRows, packageRows, videoRows, testimonialRows] =
+  const [sections, categories, serviceRows, packageRows, videoRows, testimonialRows, componentRows] =
     await Promise.all([
       db
         .select({
@@ -65,6 +66,22 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
         .select({ id: testimonials.id, name: testimonials.name })
         .from(testimonials)
         .where(eq(testimonials.imageId, id)),
+      /**
+       * A reusable component (Batch 17) draws its own picture on every page
+       * that links to it, so a picture in its published content — or in a
+       * draft about to be published — is placed as surely as one in a section.
+       */
+      db
+        .select({ id: reusableComponents.id, name: reusableComponents.name })
+        .from(reusableComponents)
+        .where(
+          sql`
+            exists (select 1 from jsonb_each(coalesce(${reusableComponents.published}, '{}'::jsonb)) e
+                    where e.value = to_jsonb(${id}::int))
+            or exists (select 1 from jsonb_each(coalesce(${reusableComponents.draft}, '{}'::jsonb)) e
+                       where e.value = to_jsonb(${id}::int))
+          `,
+        ),
     ]);
 
   for (const row of sections) {
@@ -88,6 +105,9 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
   }
   for (const row of testimonialRows) {
     uses.push({ label: row.name, where: "Testimonials", href: `/admin/testimonials` });
+  }
+  for (const row of componentRows) {
+    uses.push({ label: row.name, where: "Reusable components", href: `/admin/components/${row.id}` });
   }
 
   return uses;

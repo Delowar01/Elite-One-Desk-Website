@@ -40,7 +40,8 @@ import type { PageStructure, PageStructureSection } from "@/lib/cms/structure";
  */
 
 export type StructuralOps = {
-  onAdd: (blockType: string, afterSectionId: number | null) => void;
+  /** `componentId` adds a section linked to a reusable block (Batch 17) — one action, one Undo. */
+  onAdd: (blockType: string, afterSectionId: number | null, componentId?: number) => void;
   onDuplicate: (sectionId: number) => void;
   onMove: (sectionId: number, direction: "up" | "down") => void;
   onReorder: (order: number[]) => void;
@@ -70,6 +71,8 @@ export function LayersPanel({
   onSelect,
   onToggleLock,
   onEditText,
+  reuseOf,
+  reusableBlocks = [],
 }: {
   sections: EditorSectionMeta[];
   structure: PageStructure | null;
@@ -96,6 +99,15 @@ export function LayersPanel({
   onSelect: (address: string) => void;
   onToggleLock: (address: string) => void;
   onEditText: (address: string) => void;
+  /**
+   * The reusable components a section links to (Batch 17): a component's name
+   * per link, and the fields it supplies — for the "Reusable" badge on the
+   * section and on each linked field. The same tree, the same addresses; the
+   * badge is a label on rows that already exist, not a second tree.
+   */
+  reuseOf?: (sectionId: number) => { slot: string; name: string; fields: string[] }[];
+  /** Published, active reusable blocks; the picker offers those whose block this page may add. */
+  reusableBlocks?: { id: number; name: string; blockType: string; usage: string }[];
 }) {
   const [order, setOrder] = useState<EditorSectionMeta[]>(sections);
   const [dragging, setDragging] = useState<number | null>(null);
@@ -233,11 +245,12 @@ export function LayersPanel({
       {adding && canManage ? (
         <BlockPicker
           blocks={blocks}
+          reusable={reusableBlocks}
           after={selectedSectionId}
           disabled={busy}
-          onPick={(blockType, after) => {
+          onPick={(blockType, after, componentId) => {
             setAdding(false);
-            ops.onAdd(blockType, after);
+            ops.onAdd(blockType, after, componentId);
           }}
           onClose={() => setAdding(false)}
         />
@@ -322,6 +335,19 @@ export function LayersPanel({
                       {section.isDraft && !section.isDraftOnly ? <Badge tone="draft">Draft</Badge> : null}
                       {!section.visible ? <Badge tone="muted">Will hide</Badge> : null}
                       {lockSet.has(section.address) ? <Badge tone="muted">Locked</Badge> : null}
+                      {reuseOf?.(section.sectionId).length ? (
+                        <span
+                          title={`Linked to ${reuseOf(section.sectionId)
+                            .map((link) => `“${link.name}”`)
+                            .join(", ")}`}
+                          data-layer-reusable={section.sectionId}
+                        >
+                          <Badge tone="reuse">Reusable</Badge>
+                          <span className="sr-only">
+                            Linked to {reuseOf(section.sectionId).map((link) => link.name).join(", ")}
+                          </span>
+                        </span>
+                      ) : null}
                     </span>
                     <span className="truncate text-[0.68rem] text-muted">{section.blockType}</span>
                   </button>
@@ -349,6 +375,13 @@ export function LayersPanel({
                           lockSet={lockSet}
                           selectedAddress={selectedAddress}
                           editable={editableOf(section)}
+                          linked={
+                            new Set(
+                              (reuseOf?.(section.sectionId) ?? []).flatMap((link) =>
+                                link.fields.map((field) => `${section.address}/field:${field}`),
+                              ),
+                            )
+                          }
                           onToggleOpen={toggleOpen}
                           onSelect={onSelect}
                           onToggleLock={onToggleLock}
@@ -478,6 +511,7 @@ function LayerRow({
   lockSet,
   selectedAddress,
   editable,
+  linked,
   onToggleOpen,
   onSelect,
   onToggleLock,
@@ -488,6 +522,8 @@ function LayerRow({
   lockSet: Set<string>;
   selectedAddress: string | null;
   editable: Set<string>;
+  /** Field addresses a reusable component supplies (Batch 17). */
+  linked: Set<string>;
   onToggleOpen: (address: string) => void;
   onSelect: (address: string) => void;
   onToggleLock: (address: string) => void;
@@ -540,6 +576,11 @@ function LayerRow({
           <span className="truncate text-[0.74rem] text-body">{node.label}</span>
           <span className="sr-only">{group.word}</span>
           {lockSet.has(node.address) ? <Badge tone="muted">Locked</Badge> : null}
+          {linked.has(node.address) ? (
+            <span data-layer-reusable-field={node.address}>
+              <Badge tone="reuse">Reusable</Badge>
+            </span>
+          ) : null}
         </button>
         {editable.has(node.address) ? (
           <button
@@ -574,6 +615,7 @@ function LayerRow({
               lockSet={lockSet}
               selectedAddress={selectedAddress}
               editable={editable}
+              linked={linked}
               onToggleOpen={onToggleOpen}
               onSelect={onSelect}
               onToggleLock={onToggleLock}
@@ -630,17 +672,20 @@ function LockButton({
  */
 function BlockPicker({
   blocks,
+  reusable,
   after,
   disabled,
   onPick,
   onClose,
 }: {
   blocks: BlockDef[];
+  reusable: { id: number; name: string; blockType: string; usage: string }[];
   after: number | null;
   disabled: boolean;
-  onPick: (blockType: string, after: number | null) => void;
+  onPick: (blockType: string, after: number | null, componentId?: number) => void;
   onClose: () => void;
 }) {
+  const offered = reusable.filter((entry) => blocks.some((block) => block.type === entry.blockType));
   return (
     <div
       className="mx-2 mb-2 shrink-0 rounded-[var(--radius-xs)] border border-[var(--admin-line)] bg-[var(--admin-bg)] p-2"
@@ -670,6 +715,36 @@ function BlockPicker({
           </li>
         ))}
       </ul>
+      {/*
+        Reusable blocks (Batch 17): a section added from here is an instance of
+        the component from the moment it exists — its content follows the
+        component, its place, style and motion are this page's own.
+      */}
+      {offered.length ? (
+        <>
+          <p className="mb-1 mt-2 text-[0.68rem] font-semibold uppercase tracking-wide text-muted">
+            Reusable blocks
+          </p>
+          <ul className="max-h-40 overflow-y-auto" aria-label="Reusable blocks" data-reusable-blocks>
+            {offered.map((entry) => (
+              <li key={entry.id}>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onPick(entry.blockType, after, entry.id)}
+                  data-reusable-block={entry.id}
+                  className="w-full rounded-[var(--radius-xs)] px-2 py-1.5 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--color-orange)_12%,transparent)]"
+                >
+                  <span className="block truncate text-[0.76rem] text-strong">{entry.name}</span>
+                  <span className="block truncate text-[0.66rem] text-muted">
+                    Reusable · {blocks.find((block) => block.type === entry.blockType)?.name} · {entry.usage}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -701,9 +776,15 @@ function RowButton({
   );
 }
 
-function Badge({ tone, children }: { tone: "draft" | "new" | "muted"; children: React.ReactNode }) {
+function Badge({ tone, children }: { tone: "draft" | "new" | "muted" | "reuse"; children: React.ReactNode }) {
   const colour =
-    tone === "new" ? "#5ad19a" : tone === "draft" ? "var(--color-peach)" : "var(--color-muted)";
+    tone === "new"
+      ? "#5ad19a"
+      : tone === "draft"
+        ? "var(--color-peach)"
+        : tone === "reuse"
+          ? "#8ab4ff"
+          : "var(--color-muted)";
   return (
     <span
       className="shrink-0 rounded-full border px-1.5 text-[0.6rem] font-semibold uppercase tracking-wide"

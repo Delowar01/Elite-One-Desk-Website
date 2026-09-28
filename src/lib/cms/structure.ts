@@ -184,6 +184,13 @@ export type PageStructureSection = {
   /** What the live page currently does with it — never what the draft intends. */
   publishedPosition: number;
   publishedVisible: boolean;
+  /**
+   * The reusable components this section links to in the content an editor
+   * sees — its draft, or its published values without one (Batch 17). Ids and
+   * slots only; names are the catalogue's. Optional so a structure built
+   * before this field existed still reads.
+   */
+  reuse?: { slot: string; componentId: number }[];
 };
 
 /**

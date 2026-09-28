@@ -13,6 +13,7 @@
  */
 import { emptyMotionDocument, readMotionDocument, type MotionDocument } from "./motion-doc";
 import { sameMotion } from "./motion-write";
+import { unpinReuse } from "./reuse/reference";
 import { validatePageSnapshot, type PageSnapshot } from "./snapshot";
 
 /**
@@ -131,7 +132,10 @@ export function planRestoreFrom(
       claimed.add(match.id);
       drafts.push({
         sectionId: match.id,
-        draft: entry.published,
+        // The reference comes back without its pin (Batch 17): the restored
+        // section follows its component from now on, and the content it was
+        // showing stays in its own fields as the fallback.
+        draft: unpinReuse(entry.published, entry.blockType),
         draftStyles: entry.styles,
         draftAnimation: entry.animation,
         draftMotionConfig: restoredMotion(entry.motion, match.motionConfig),
@@ -141,7 +145,7 @@ export function planRestoreFrom(
     }
     recreate.push({
       blockType: entry.blockType,
-      draft: entry.published,
+      draft: unpinReuse(entry.published, entry.blockType),
       draftStyles: entry.styles,
       draftAnimation: entry.animation,
       // A new row publishes nothing yet, so only a version that had a document

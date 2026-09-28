@@ -15,6 +15,7 @@ import {
   DRAFT_STRUCTURE_VERSION,
 } from "@/lib/cms/structure";
 import { planRestoreFrom, type RestorePlan } from "@/lib/cms/restore";
+import { pinPublishedValues } from "@/lib/cms/reuse/resolve";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
 import { KEEP_PAGE_VERSIONS } from "@/lib/visual-editor/publish";
@@ -100,7 +101,15 @@ export async function capturePageSnapshotIn(on: Executor, pageId: number): Promi
     .where(and(eq(pageSections.pageId, pageId), eq(pageSections.isDraftOnly, false)))
     .orderBy(asc(pageSections.position), asc(pageSections.id));
 
-  return snapshotFromSections(rows);
+  /**
+   * A section linked to a reusable component (Batch 17) is recorded as what
+   * visitors saw: the component's published content in the section's own
+   * fields, and the reference pinned to that version. So a restore point
+   * never pretends to hold content it does not — it holds exactly what was
+   * live — and Version Compare draws it without depending on the component's
+   * own history still keeping that version.
+   */
+  return snapshotFromSections(await pinPublishedValues(on, rows));
 }
 
 /** The same, on the pool, for a caller that is not inside a transaction. */

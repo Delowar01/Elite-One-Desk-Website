@@ -371,7 +371,119 @@ export const pageSections = pgTable(
     updatedBy: integer("updated_by").references(() => users.id, { onDelete: "set null" }),
     ...timestamps,
   },
-  (t) => [index("page_sections_page_idx").on(t.pageId, t.position)],
+  (t) => [
+    index("page_sections_page_idx").on(t.pageId, t.position),
+    /**
+     * The sections that reference a reusable component (Batch 17).
+     *
+     * A reference lives inside the section's own content document, under the
+     * reserved `_reuse` key — see `lib/cms/reuse/reference.ts` for why there is
+     * no separate instances table. Partial, so it holds only the few rows that
+     * carry one, and it is what lets "Used on X pages" be a query over those
+     * rows rather than a scan of every page's content. Additive: nothing reads
+     * it but the planner.
+     */
+    index("page_sections_reuse_idx")
+      .on(t.pageId)
+      .where(sql`(${t.published} ? '_reuse') OR (${t.draft} ? '_reuse')`),
+  ],
+);
+
+/* -------------------------------------------------------------------------- */
+/* Reusable content components (Batch 17)                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A piece of content several page sections deliberately share.
+ *
+ * Not a site global. Navigation, contact details, WhatsApp and social links are
+ * site settings with their own screens and their own immediate-live rules, and
+ * they stay exactly as they are. This is the other kind: a call to action, or a
+ * whole closing panel, that an editor chose to reuse — edited once, published
+ * once, and followed by every section that links to it.
+ *
+ * What a component is, deliberately, is **values of a registered kind** — the
+ * same validated, closed-vocabulary documents a section's content already is,
+ * checked by the same validator. Never markup, never CSS, never a selector.
+ * `kind` names the shape (`cta`, or `block:<type>` for a whole block); the list
+ * of kinds lives in code (`lib/cms/reuse/kinds.ts`), not here.
+ *
+ * It has a draft and a published form, like a section, and for the same
+ * reason: a change that reaches every linked page at once has to be looked at
+ * before it goes out. `published` is what linked pages show; `draft` is pending
+ * work, `NULL` when there is none. `published` is `NULL` until the first
+ * publication, and a component nobody has published cannot be linked.
+ *
+ * The component owns its content and nothing else. Where it sits, how it is
+ * styled and how it moves belong to each section that uses it, so one token is
+ * never decided in two places.
+ */
+export const reusableComponents = pgTable(
+  "reusable_components",
+  {
+    id: serial("id").primaryKey(),
+    /** `cta` or `block:<type>` — a key in the in-code kind registry. */
+    kind: varchar("kind", { length: 48 }).notNull(),
+    /** Admin metadata. Never rendered; references are by id, so a rename breaks nothing. */
+    name: varchar("name", { length: 120 }).notNull(),
+    /** What linked sections render. `NULL` until the first publication. */
+    published: jsonb("published").$type<Record<string, unknown>>(),
+    /** Pending edits, or `NULL` for none. Seen only in the component's own preview. */
+    draft: jsonb("draft").$type<Record<string, unknown>>(),
+    /**
+     * How many times the component has been published: 0 before the first
+     * publication, then 1, 2, … A page version records the number it was
+     * showing, which is how history can say which content a page had.
+     */
+    publishedVersion: integer("published_version").notNull().default(0),
+    /**
+     * The component's own concurrency token. Not a section's and not a page's:
+     * editing a component never moves a page's revision, and every write to
+     * the component names this one.
+     */
+    revision: integer("revision").notNull().default(0),
+    /** `active` or `archived`. Archived components keep rendering and cannot be newly linked. */
+    status: varchar("status", { length: 16 }).notNull().default("active"),
+    createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+    updatedBy: integer("updated_by").references(() => users.id, { onDelete: "set null" }),
+    publishedBy: integer("published_by").references(() => users.id, { onDelete: "set null" }),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [index("reusable_components_status_idx").on(t.status, t.name)],
+);
+
+/**
+ * A component as it was published, kept so it can be put back.
+ *
+ * The component's counterpart to `page_versions`, and deliberately not that
+ * table: a page version is a page's composition, and rolling one component
+ * back must not roll any page back. One row per publication, holding the
+ * definition that publication replaced — so the first publication writes none,
+ * and "Current live" is always the component row itself. Written and pruned
+ * inside the publishing transaction.
+ */
+export const reusableComponentVersions = pgTable(
+  "reusable_component_versions",
+  {
+    id: serial("id").primaryKey(),
+    componentId: integer("component_id")
+      .notNull()
+      .references(() => reusableComponents.id, { onDelete: "cascade" }),
+    /** The published version number these values were. */
+    version: integer("version").notNull(),
+    values: jsonb("values").$type<Record<string, unknown>>().notNull(),
+    label: varchar("label", { length: 120 }).notNull().default(""),
+    createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+    /** Captured at write time so the row survives a deleted user. */
+    actorName: varchar("actor_name", { length: 120 }).notNull().default("System"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("reusable_component_versions_version_idx").on(t.componentId, t.version),
+    index("reusable_component_versions_component_idx").on(t.componentId, t.id),
+  ],
 );
 
 /* -------------------------------------------------------------------------- */

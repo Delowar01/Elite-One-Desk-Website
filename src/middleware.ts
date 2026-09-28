@@ -106,8 +106,12 @@ export function middleware(request: NextRequest) {
      * never stored by anything between the server and that editor — whether
      * the session turned out to be allowed to see it or not, so the answer
      * does not depend on anything the request cannot see.
+     *
+     * A reusable component's own preview (Batch 17) is the same kind of
+     * thing — a signed-in editor looking at content that is not live — and
+     * gets the same headers, for the same reasons.
      */
-    if (request.nextUrl.searchParams.has("compare")) {
+    if (request.nextUrl.searchParams.has("compare") || request.nextUrl.searchParams.has("component")) {
       response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
       response.headers.set("Cache-Control", "private, no-store, max-age=0");
     }

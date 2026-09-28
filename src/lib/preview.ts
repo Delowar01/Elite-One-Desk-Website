@@ -1,8 +1,14 @@
 import "server-only";
 
+import { and, eq, or } from "drizzle-orm";
+
 import { getSession } from "@/lib/auth/session";
 import { composeSnapshot } from "@/lib/cms/composition";
-import { getPage, getPagePreview, type RenderedPage } from "@/lib/queries/content";
+import { reuseAllowed } from "@/lib/cms/reuse/authority";
+import { HAS_REFERENCE, refersTo } from "@/lib/cms/reuse/store";
+import { db } from "@/lib/db";
+import { pageSections, reusableComponents } from "@/lib/db/schema";
+import { getPage, getPageComponentPreview, getPagePreview, type RenderedPage } from "@/lib/queries/content";
 import { readPageVersionStrict } from "@/lib/versions";
 import { isBridgeId } from "@/lib/visual-editor/protocol";
 
@@ -37,6 +43,8 @@ export type PageForRender = {
   editor: { bridgeId: string } | null;
   /** Present only for an authorised comparison pane (Batch 16). */
   compare: { target: "published" | { versionId: number } } | null;
+  /** Present only for a reusable component's own preview (Batch 17). */
+  componentPreview?: { componentId: number; name: string } | null;
 };
 
 const flag = (value: string | string[] | undefined): boolean => value === "1" || value === "true";
@@ -53,6 +61,9 @@ export async function resolvePageForRender(
   searchParams?: Record<string, string | string[] | undefined>,
 ): Promise<PageForRender> {
   if (searchParams?.compare !== undefined) return resolveCompare(slug, searchParams.compare);
+  if (searchParams?.component !== undefined) {
+    return resolveComponentPreview(slug, searchParams.component, searchParams.rev);
+  }
 
   const wants = flag(searchParams?.preview);
   if (!wants) return { page: await getPage(slug), isPreview: false, editor: null, compare: null };
@@ -115,5 +126,76 @@ async function resolveCompare(slug: string, raw: string | string[] | undefined):
     isPreview: false,
     editor: null,
     compare: { target: { versionId } },
+  };
+}
+
+/** A positive id, or a revision — digits only, never anything else. */
+const COMPONENT_ID = /^[1-9][0-9]{0,9}$/;
+const REVISION = /^(?:0|[1-9][0-9]{0,9})$/;
+
+/**
+ * A reusable component's own preview on one page (Batch 17): what publishing
+ * the component's draft would do to this page, before it does it.
+ *
+ * The page is drawn as its preview draws it, with one difference — this
+ * component's *draft* stands in for its published content, and every other
+ * component stays as published. The rules, in order:
+ *
+ *   · **The session decides.** Without `content.view` this is an ordinary
+ *     visit: the live page, nothing pending.
+ *   · **Two integers.** The component id and the draft revision being
+ *     previewed. Anything else in either is not a page.
+ *   · **The revision must be current.** A preview link built from a draft
+ *     that has since been saved again, published or discarded is refused,
+ *     rather than quietly showing something other than what its link named.
+ *   · **The page must use the component** — in its live content or its
+ *     pending content — checked against the section rows. A component cannot
+ *     be previewed on a page it has nothing to do with.
+ *
+ * It writes nothing, and the middleware marks every such response private,
+ * uncacheable and not indexable.
+ */
+async function resolveComponentPreview(
+  slug: string,
+  rawId: string | string[] | undefined,
+  rawRevision: string | string[] | undefined,
+): Promise<PageForRender> {
+  const session = await getSession();
+  if (!reuseAllowed(session?.permissions, "view")) {
+    return { page: await getPage(slug), isPreview: false, editor: null, compare: null };
+  }
+  const nothing: PageForRender = { page: null, isPreview: false, editor: null, compare: null };
+  if (typeof rawId !== "string" || typeof rawRevision !== "string") return nothing;
+  if (!COMPONENT_ID.test(rawId) || !REVISION.test(rawRevision)) return nothing;
+  const componentId = Number(rawId);
+
+  const [component] = await db
+    .select({ name: reusableComponents.name, revision: reusableComponents.revision })
+    .from(reusableComponents)
+    .where(eq(reusableComponents.id, componentId))
+    .limit(1);
+  if (!component || component.revision !== Number(rawRevision)) return nothing;
+
+  const page = await getPageComponentPreview(slug, componentId);
+  if (!page) return nothing;
+  const [uses] = await db
+    .select({ id: pageSections.id })
+    .from(pageSections)
+    .where(
+      and(
+        eq(pageSections.pageId, page.id),
+        HAS_REFERENCE,
+        or(refersTo(pageSections.published, componentId), refersTo(pageSections.draft, componentId)),
+      ),
+    )
+    .limit(1);
+  if (!uses) return nothing;
+
+  return {
+    page,
+    isPreview: true,
+    editor: null,
+    compare: null,
+    componentPreview: { componentId, name: component.name },
   };
 }

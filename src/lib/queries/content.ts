@@ -9,6 +9,8 @@ import { composePreview, composePublished, type CompositionRow } from "@/lib/cms
 import type { MotionPreset } from "@/lib/cms/motion";
 import type { MotionDocument } from "@/lib/cms/motion-doc";
 import type { StyleDocument } from "@/lib/cms/styles";
+import type { InstanceView } from "@/lib/cms/reuse/reference";
+import { resolveSections } from "@/lib/cms/reuse/resolve";
 import { readDraftStructure } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
 import { pageSections, pages, seoMetadata } from "@/lib/db/schema";
@@ -36,6 +38,12 @@ export type RenderedSection = {
   isDraftOnly: boolean;
   /** The visibility this section would have once published. */
   visible: boolean;
+  /**
+   * What the editor is told about the reusable components this section links
+   * to (Batch 17). Preview and canvas only: the live page's values arrive
+   * already resolved and carry nothing about where they came from.
+   */
+  reuse?: InstanceView[];
 };
 
 export type RenderedPage = {
@@ -62,7 +70,11 @@ export type RenderedPage = {
  * shows the page as it stands rather than blanking it, while a genuinely empty
  * one still means "publishing this leaves no sections".
  */
-async function loadPage(slug: string, preview: boolean): Promise<RenderedPage | null> {
+async function loadPage(
+  slug: string,
+  preview: boolean,
+  options: { draftOf?: number } = {},
+): Promise<RenderedPage | null> {
   const [page] = await db.select().from(pages).where(eq(pages.slug, slug)).limit(1);
   if (!page) return null;
 
@@ -95,15 +107,23 @@ async function loadPage(slug: string, preview: boolean): Promise<RenderedPage | 
     isDraftOnly: row.isDraftOnly,
   }));
 
+  const composed = preview
+    ? composePreview(composable, readDraftStructure(page.draftStructure))
+    : composePublished(composable);
+
   return {
     id: page.id,
     slug: page.slug,
     titleEn: page.titleEn,
     titleAr: page.titleAr,
     isPublished: page.isPublished,
-    sections: preview
-      ? composePreview(composable, readDraftStructure(page.draftStructure))
-      : composePublished(composable),
+    /**
+     * Linked content filled in (Batch 17) — the component's *published*
+     * content on the live page and in a page's preview alike, so an
+     * unpublished component edit never shows on a page before it is
+     * published. Only a component's own preview (`draftOf`) draws its draft.
+     */
+    sections: await resolveSections(db, composed, { views: preview, draftOf: options.draftOf }),
   };
 }
 
@@ -120,6 +140,15 @@ export const getPage = unstable_cache(
  * a preview that lags behind the editor is worse than no preview.
  */
 export const getPagePreview = (slug: string) => loadPage(slug, true);
+
+/**
+ * A reusable component's own preview on one page (Batch 17): the page's
+ * preview, with that one component's draft in place of its published content
+ * and every other component as published. Never cached, never public — see
+ * `resolveComponentPreview` for who may ask.
+ */
+export const getPageComponentPreview = (slug: string, componentId: number) =>
+  loadPage(slug, true, { draftOf: componentId });
 
 export const getPublishedPages = unstable_cache(
   async () =>

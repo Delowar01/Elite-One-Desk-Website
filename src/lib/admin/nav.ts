@@ -44,6 +44,9 @@ export const ADMIN_NAV: AdminNavGroup[] = [
         icon: "sparkle",
         permission: { all: ["content.view", "visual_editor.view"] },
       },
+      // Batch 17: content shared by several pages. Read with the permission
+      // page content is read with — it is page content, not a site setting.
+      { href: "/admin/components", label: "Reusable components", icon: "layers", permission: "content.view" },
       { href: "/admin/categories", label: "Service categories", icon: "layers", permission: "services.manage" },
       { href: "/admin/services", label: "Services", icon: "briefcase", permission: "services.manage" },
       { href: "/admin/packages/destinations", label: "Destinations", icon: "mapPin", permission: "packages.manage" },

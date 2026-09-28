@@ -23,7 +23,7 @@ export default async function HomePage({ params, searchParams }: Params) {
   const { lang } = await params;
   if (!isLocale(lang)) notFound();
 
-  const [{ page, isPreview, editor, compare }, ctx, organization] = await Promise.all([
+  const [{ page, isPreview, editor, compare, componentPreview }, ctx, organization] = await Promise.all([
     resolvePageForRender("home", await searchParams),
     buildBlockContext(lang),
     organizationJsonLd(lang),
@@ -35,7 +35,7 @@ export default async function HomePage({ params, searchParams }: Params) {
       {/* The Visual Editor's own chrome already says where the admin is, and
           the banner would sit inside the canvas pretending to be part of the
           page. Every other preview keeps it. */}
-      {isPreview && !editor ? <PreviewBanner /> : null}
+      {isPreview && !editor ? <PreviewBanner component={componentPreview?.name ?? null} /> : null}
       {/* The homepage stacks thirteen sections, so it sets a tighter vertical
           rhythm than the rest of the site — see `.home-rhythm` in globals.css.
           A wrapper rather than a change to the tokens, so no other page moves. */}

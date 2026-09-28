@@ -4,6 +4,7 @@ import { CompareView, type CompareState } from "@/components/admin/compare-view"
 import { requirePermissions } from "@/lib/auth/guard";
 import { getPageDraftSummary, RESTORE_BLOCKED, restoreBlockers } from "@/lib/cms/publish-service";
 import { validatePageSnapshot, type PageSnapshot } from "@/lib/cms/snapshot";
+import { loadComponentSources } from "@/lib/cms/reuse/store";
 import { db } from "@/lib/db";
 import { pages } from "@/lib/db/schema";
 import { localeOrDefault } from "@/lib/page-path";
@@ -13,7 +14,7 @@ import {
   listPageVersions,
   readPageVersionStrict,
 } from "@/lib/versions";
-import { diffSnapshots, dynamicSourcesOf } from "@/lib/visual-editor/compare";
+import { diffSnapshots, dynamicSourcesOf, hasReuse, reusedIds } from "@/lib/visual-editor/compare";
 import { deviceOrDefault } from "@/lib/visual-editor/viewport";
 
 export const metadata = { title: "Compare versions" };
@@ -122,6 +123,10 @@ export default async function ComparePage({
 
   const rightSnapshot = pair.right ? pair.right.snapshot : published;
   const summary = await getPageDraftSummary(page.id);
+  // Reusable components are reported by name (Batch 17) — read here, for the
+  // components these two states link to and no others.
+  const sources = await loadComponentSources(db, reusedIds(pair.left.snapshot, rightSnapshot));
+  const names = new Map([...sources].map(([id, source]) => [id, source.name]));
   const canRestore = session.permissions.has("content.manage");
 
   const state: CompareState = {
@@ -136,8 +141,9 @@ export default async function ComparePage({
       actorName: row.actorName,
       createdAt: row.createdAt.toISOString(),
     })),
-    diff: diffSnapshots(pair.left.snapshot, rightSnapshot),
+    diff: diffSnapshots(pair.left.snapshot, rightSnapshot, names),
     dynamic: dynamicSourcesOf(pair.left.snapshot, rightSnapshot),
+    reuse: hasReuse(pair.left.snapshot, rightSnapshot),
     locale,
     device,
     restore: canRestore

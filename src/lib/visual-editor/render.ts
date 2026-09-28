@@ -28,7 +28,17 @@ export type EditorNodeKind = "section" | "field" | "item" | "slot";
 export type EditorRender = {
   sectionId: number;
   blockType: string;
+  /**
+   * Which of this section's fields come from a reusable component (Batch 17),
+   * by field name, and whether the edition on screen overrides it. Only the
+   * editor's canvas is told; it is how the canvas can mark linked content
+   * without knowing anything about components.
+   */
+  reuse?: ReuseMarks;
 } | null;
+
+/** Field name → the slot it is linked through, and whether this edition overrides it. */
+export type ReuseMarks = Record<string, { slot: string; state: "inherited" | "override" }>;
 
 /** The attributes themselves. One namespace, so a sweep for `data-eod-` finds all of them. */
 export type EditorAttrs = {
@@ -49,6 +59,15 @@ export type EditorAttrs = {
    * text, which has a sanitizer and an editor of its own.
    */
   "data-eod-edit"?: "text" | "multiline";
+  /**
+   * The node shows content from a reusable component (Batch 17): the slot it
+   * is linked through (`block` on a whole-section instance's root). Editor
+   * canvas only — a hint for the canvas and for tests. The shell, which holds
+   * the section's reference, is what decides whether typing is allowed.
+   */
+  "data-eod-reuse"?: string;
+  /** `inherited` — the component's text; `override` — this page's own, for this edition. */
+  "data-eod-reuse-state"?: "inherited" | "override";
 };
 
 const NONE: EditorAttrs = {};
@@ -102,9 +121,17 @@ export function editorNodeAttrs(
   if (spec.kind === "section") {
     attrs["data-eod-section"] = String(editor.sectionId);
     attrs["data-eod-block"] = editor.blockType;
+    if (editor.reuse && Object.values(editor.reuse).some((mark) => mark.slot === "block")) {
+      attrs["data-eod-reuse"] = "block";
+    }
   } else {
     const edit = directEditAt(editor.blockType, formatNodePath(path));
     if (edit) attrs["data-eod-edit"] = edit.multiline ? "multiline" : "text";
+    const mark = path.length === 1 && path[0]!.kind === "field" ? editor.reuse?.[path[0]!.name] : undefined;
+    if (mark) {
+      attrs["data-eod-reuse"] = mark.slot;
+      attrs["data-eod-reuse-state"] = mark.state;
+    }
   }
   return attrs;
 }

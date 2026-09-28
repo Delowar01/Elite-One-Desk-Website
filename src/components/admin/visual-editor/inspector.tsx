@@ -13,6 +13,7 @@ import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/prot
 
 import { ContentBody } from "./content-inspector";
 import { MotionInspector, type ReplayControl } from "./motion-inspector";
+import type { ReuseControls } from "./reuse-panel";
 import { StyleInspector } from "./style-inspector";
 
 export type EditDomain = "content" | "style" | "motion";
@@ -117,6 +118,7 @@ export function InspectorPanel({
   onClear,
   onSelect,
   replay,
+  reuse,
 }: {
   node: EditorNodeMeta | null;
   sections: EditorSectionMeta[];
@@ -141,6 +143,8 @@ export function InspectorPanel({
   onSelect: (address: string) => void;
   /** Replay, for the Motion tab (Batch 15b). Plays on the canvas and saves nothing. */
   replay: ReplayControl;
+  /** Reusable components, for the Content tab (Batch 17). */
+  reuse?: ReuseControls;
 }) {
   const section = node ? sections.find((row) => row.sectionId === node.sectionId) : undefined;
   const described = node ? describeAddress(node.blockType, node.relativePath, node.text) : null;
@@ -241,6 +245,7 @@ export function InspectorPanel({
                       locale={locale}
                       canManage={canManage}
                       onValues={onValues}
+                      reuse={reuse}
                     />
                   ) : (
                     <p className="text-[0.76rem] leading-relaxed text-muted">

@@ -588,6 +588,24 @@ window: announce it, stop the service, take a backup, migrate, deploy, verify,
 and be ready to restore from `/var/backups/elite-one-desk` rather than from the
 rollback runtime.
 
+### Reusable components and rollback (migration `0005`)
+
+`0005` only adds: the `reusable_components` and
+`reusable_component_versions` tables, and a partial index on `page_sections`
+that holds only rows carrying a reusable-component reference. No existing
+column changes meaning, so the release before it reads and writes the schema
+unchanged.
+
+A section linked to a reusable component carries the link inside its own
+content, under the reserved `_reuse` key, beside a copy of the component's
+content in its ordinary fields. After a rollback the older release ignores the
+key and draws those ordinary fields — the content as it was when the section
+was linked, with this page's overrides — so a linked call to action never
+disappears. Saving such a section in the older release drops the key, as its
+validator drops every key it does not declare: the section then becomes a
+detached copy of what it showed. Nothing else depends on the new tables, and a
+later forward deploy finds them as they were left.
+
 ## 10. After the first deployment
 
 1. Sign in at `https://eliteonedesk.com/admin` with the owner account.

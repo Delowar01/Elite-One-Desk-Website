@@ -1,5 +1,6 @@
 import { effectiveMotion, motionOf, type MotionPreset } from "./motion";
 import { readMotionDocument, type MotionDocument } from "./motion-doc";
+import { stripReuse } from "./reuse/reference";
 import type { PageSnapshot } from "./snapshot";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 import { type DraftStructure } from "./structure";
@@ -273,7 +274,14 @@ export function composeSnapshot(snapshot: PageSnapshot): ComposedSection[] {
         id,
         blockType: section.blockType,
         animation: motionOf(section.animation),
-        values: section.published,
+        /**
+         * The snapshot already holds what visitors saw — linked content was
+         * written into the section's own fields when the restore point was
+         * taken, with the version it was (Batch 17) — so drawing it exactly is
+         * drawing those fields. The reference itself is taken off: it is the
+         * page's history, not something to render.
+         */
+        values: stripReuse(section.published),
         styles: section.styles,
         motion: section.motion ?? null,
         isDraft: false,

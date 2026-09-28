@@ -13,6 +13,7 @@ import {
   DYNAMIC_DISCLAIMER,
   GLOBAL_DISCLAIMER,
   MEDIA_DISCLAIMER,
+  REUSE_DISCLAIMER,
   type PageDiff,
   type SectionDiff,
   type ValueChange,
@@ -35,6 +36,8 @@ export type CompareState =
       versions: CompareVersion[];
       diff: PageDiff;
       dynamic: { blockType: string; name: string; source: string }[];
+      /** Either state links to a reusable component (Batch 17). */
+      reuse?: boolean;
       locale: Locale;
       device: DeviceKey;
       /** Present only for somebody who may restore; `blocked` says why they cannot now. */
@@ -312,6 +315,7 @@ function Comparison({ state }: { state: Extract<CompareState, { ok: true }> }) {
             </span>
           </p>
         ) : null}
+        {state.reuse ? <p data-disclaimer="reuse">{REUSE_DISCLAIMER}</p> : null}
         <p data-disclaimer="media">{MEDIA_DISCLAIMER}</p>
         {state.restore?.blocked ? <p>{state.restore.blocked}</p> : null}
         {restoring.message ? (
@@ -407,6 +411,7 @@ function countsLine(diff: PageDiff): string {
     counts.content ? `${counts.content} with content changes` : null,
     counts.style ? `${counts.style} with style changes` : null,
     counts.motion ? `${counts.motion} with motion changes` : null,
+    counts.reuse ? `${counts.reuse} with reusable-component changes` : null,
   ].filter(Boolean);
   const sections = `${counts.unchanged} unchanged`;
   return parts.length ? `${parts.join(" · ")} · ${sections}` : `No differences · ${sections}`;
@@ -424,6 +429,7 @@ function badges(entry: SectionDiff): string[] {
   if (entry.content.length) out.push(`Content ${entry.content.length}`);
   if (entry.style.length) out.push(`Style ${entry.style.length}`);
   if (entry.motion.length) out.push(`Motion ${entry.motion.length}`);
+  if (entry.reuse.length) out.push(`Reusable ${entry.reuse.length}`);
   if (entry.status === "unchanged") out.push("Unchanged");
   return out;
 }
@@ -457,6 +463,7 @@ function SectionEntry({ entry, onShow }: { entry: SectionDiff; onShow: (sectionI
           <Changes title="Content" changes={entry.content} />
           <Changes title="Style" changes={entry.style} />
           <Changes title="Motion" changes={entry.motion} />
+          <Changes title="Reusable components" changes={entry.reuse} />
           {entry.sectionId !== null && visibleSomewhere && !hiddenBoth ? (
             <button type="button" onClick={() => onShow(entry.sectionId)} className="admin-btn admin-btn-sm self-start">
               Show in the panes

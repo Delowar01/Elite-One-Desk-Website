@@ -6,6 +6,7 @@ import {
   type MotionBranch,
   type MotionDocument,
 } from "@/lib/cms/motion-doc";
+import { overrideLabel, readReuse, slotDef } from "@/lib/cms/reuse/reference";
 import type { PageSnapshot, SnapshotSection } from "@/lib/cms/snapshot";
 import { SPACING_STEPS, type StyleDocument, type StyleTokens } from "@/lib/cms/styles";
 
@@ -79,6 +80,13 @@ export type SectionDiff = {
   content: ValueChange[];
   style: ValueChange[];
   motion: ValueChange[];
+  /**
+   * Reusable-component references (Batch 17): linked, detached, relinked, the
+   * component's published version the page showed, and overrides switched on
+   * or off — by component name. What the linked content *said* is in
+   * `content`, because a snapshot keeps the words visitors saw.
+   */
+  reuse: ValueChange[];
 };
 
 export type PageDiff = {
@@ -91,6 +99,7 @@ export type PageDiff = {
     content: number;
     style: number;
     motion: number;
+    reuse: number;
     unchanged: number;
   };
 };
@@ -368,6 +377,71 @@ export function motionChanges(before: SnapshotSection, after: SnapshotSection): 
 }
 
 /* -------------------------------------------------------------------------- */
+/* Reusable components                                                        */
+/* -------------------------------------------------------------------------- */
+
+/** A component by name — never by id, and honestly when it has gone. */
+const componentName = (id: number, names: ReadonlyMap<number, string>): string => {
+  const name = names.get(id);
+  return name ? `“${name}”` : "a reusable component that no longer exists";
+};
+
+/**
+ * What changed about a section's reusable-component references between two
+ * states: a slot linked (from local content), detached (to local content),
+ * linked to a different component, the component's published version the page
+ * showed, and overrides switched on or off. Names, not ids.
+ */
+export function reuseChanges(
+  blockType: string,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  names: ReadonlyMap<number, string> = new Map(),
+): ValueChange[] {
+  const was = readReuse(before, blockType, { pins: true });
+  const now = readReuse(after, blockType, { pins: true });
+  const out: ValueChange[] = [];
+  for (const slot of [...new Set([...Object.keys(was), ...Object.keys(now)])].sort()) {
+    const label = slotDef(blockType, slot)?.label ?? slot;
+    const a = was[slot];
+    const b = now[slot];
+    if (!a && b) {
+      out.push({ label: `${label} → reusable component`, before: "Local content", after: `Linked to ${componentName(b.c, names)}` });
+      continue;
+    }
+    if (a && !b) {
+      out.push({ label: `${label} → reusable component`, before: `Linked to ${componentName(a.c, names)}`, after: "Detached — local content" });
+      continue;
+    }
+    if (!a || !b) continue;
+    if (a.c !== b.c) {
+      out.push({
+        label: `${label} → reusable component`,
+        before: `Linked to ${componentName(a.c, names)}`,
+        after: `Linked to ${componentName(b.c, names)}`,
+      });
+      continue;
+    }
+    if (a.v !== undefined && b.v !== undefined && a.v !== b.v) {
+      out.push({
+        label: `${label} → ${componentName(b.c, names)} · global change`,
+        before: `Version ${a.v}`,
+        after: `Version ${b.v}`,
+      });
+    }
+    const had = new Set(a.o ?? []);
+    const has = new Set(b.o ?? []);
+    for (const key of [...has].filter((entry) => !had.has(entry)).sort()) {
+      out.push({ label: `${label} → ${overrideLabel(blockType, slot, key)}`, before: "Inherited", after: "Override added on this page" });
+    }
+    for (const key of [...had].filter((entry) => !has.has(entry)).sort()) {
+      out.push({ label: `${label} → ${overrideLabel(blockType, slot, key)}`, before: "Override on this page", after: "Override reset — inherited" });
+    }
+  }
+  return out;
+}
+
+/* -------------------------------------------------------------------------- */
 /* The page                                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -390,7 +464,11 @@ const idOf = (section: SnapshotSection): number | null =>
  * order a person reads the page: the newer state's order, with anything that
  * is gone shown where it used to be.
  */
-export function diffSnapshots(before: PageSnapshot, after: PageSnapshot): PageDiff {
+export function diffSnapshots(
+  before: PageSnapshot,
+  after: PageSnapshot,
+  names: ReadonlyMap<number, string> = new Map(),
+): PageDiff {
   // Identity: an id that appears once on each side. A repeated or missing id
   // proves nothing, and the section is compared as added and removed.
   const counted = (snapshot: PageSnapshot) => {
@@ -434,6 +512,7 @@ export function diffSnapshots(before: PageSnapshot, after: PageSnapshot): PageDi
     content: [],
     style: [],
     motion: [],
+    reuse: [],
   });
 
   const emitRemovedBefore = (limit: number) => {
@@ -462,6 +541,7 @@ export function diffSnapshots(before: PageSnapshot, after: PageSnapshot): PageDi
         content: [],
         style: [],
         motion: [],
+        reuse: reuseChanges(section.blockType, {}, section.published, names),
       });
       return;
     }
@@ -483,15 +563,18 @@ export function diffSnapshots(before: PageSnapshot, after: PageSnapshot): PageDi
         content: [],
         style: [],
         motion: [],
+        reuse: reuseChanges(section.blockType, {}, section.published, names),
       });
       return;
     }
     const content = contentChanges(section.blockType, was.published, section.published);
     const style = styleChanges(section.blockType, was.styles, section.styles, section.published);
     const motion = motionChanges(was, section);
+    const reuse = reuseChanges(section.blockType, was.published, section.published, names);
     const moved = movedIds.has(id);
     const visibilityChanged = was.visible !== section.visible;
-    const changed = moved || visibilityChanged || content.length > 0 || style.length > 0 || motion.length > 0;
+    const changed =
+      moved || visibilityChanged || content.length > 0 || style.length > 0 || motion.length > 0 || reuse.length > 0;
     diffs.push({
       key: `section:${id}`,
       sectionId: id,
@@ -504,6 +587,7 @@ export function diffSnapshots(before: PageSnapshot, after: PageSnapshot): PageDi
       content,
       style,
       motion,
+      reuse,
     });
   });
   emitRemovedBefore(before.sections.length);
@@ -518,6 +602,7 @@ export function diffSnapshots(before: PageSnapshot, after: PageSnapshot): PageDi
     content: diffs.filter((entry) => entry.content.length > 0).length,
     style: diffs.filter((entry) => entry.style.length > 0).length,
     motion: diffs.filter((entry) => entry.motion.length > 0).length,
+    reuse: diffs.filter((entry) => entry.reuse.length > 0).length,
     unchanged: diffs.filter((entry) => entry.status === "unchanged").length,
   };
   return { sections: diffs, counts };
@@ -568,6 +653,35 @@ export function dynamicSourcesOf(...snapshots: PageSnapshot[]): { blockType: str
 /** Said on every comparison: the page's own content is versioned, the site around it is not. */
 export const GLOBAL_DISCLAIMER =
   "Global site elements use their current settings and are not part of this page version.";
+
+/**
+ * Said whenever a compared state links to a reusable component (Batch 17), and
+ * said as the distinction it is: site globals above are today's, but a
+ * version keeps what its linked sections showed — the component's content as
+ * it was published then, with the version number — so both panes are
+ * historical. Restoring brings the link back rather than a frozen copy.
+ */
+export const REUSE_DISCLAIMER =
+  "Reusable components are not site globals: this page version records which component version each " +
+  "linked section showed, and both panes show that content as it was published then. Restoring the " +
+  "version links those sections again, and they then show the component's current published content.";
+
+/** Whether any compared state links to a reusable component. */
+export const hasReuse = (...snapshots: PageSnapshot[]): boolean =>
+  snapshots.some((snapshot) =>
+    snapshot.sections.some((section) => Object.keys(readReuse(section.published, section.blockType)).length > 0),
+  );
+
+/** Every component id the compared states link to — for looking their names up. */
+export const reusedIds = (...snapshots: PageSnapshot[]): number[] => [
+  ...new Set(
+    snapshots.flatMap((snapshot) =>
+      snapshot.sections.flatMap((section) =>
+        Object.values(readReuse(section.published, section.blockType)).map((entry) => entry.c),
+      ),
+    ),
+  ),
+];
 
 /** Said whenever a compared state contains a block from `DYNAMIC_SOURCES`. */
 export const DYNAMIC_DISCLAIMER =

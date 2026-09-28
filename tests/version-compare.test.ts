@@ -111,6 +111,7 @@ describe("sections are matched by the row they came from, never by position", ()
       content: 0,
       style: 0,
       motion: 0,
+      reuse: 0,
       unchanged: 3,
     });
     assert.ok(diff.sections.every((entry) => entry.status === "unchanged"));

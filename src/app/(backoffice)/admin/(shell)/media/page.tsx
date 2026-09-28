@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import {
   media,
   pageSections,
+  reusableComponents,
   serviceCategories,
   services,
   testimonials,
@@ -52,6 +53,16 @@ export default async function MediaPage({
         union all select ${travelPackages.imageId} from ${travelPackages} where ${travelPackages.imageId} is not null
         union all select ${videos.thumbnailId} from ${videos} where ${videos.thumbnailId} is not null
         union all select ${testimonials.imageId} from ${testimonials} where ${testimonials.imageId} is not null
+        union all
+        select (e.value #>> '{}')::int
+          from ${reusableComponents},
+               lateral jsonb_each(coalesce(${reusableComponents.published}, '{}'::jsonb)) e
+         where jsonb_typeof(e.value) = 'number'
+        union all
+        select (e.value #>> '{}')::int
+          from ${reusableComponents},
+               lateral jsonb_each(coalesce(${reusableComponents.draft}, '{}'::jsonb)) e
+         where jsonb_typeof(e.value) = 'number'
       ) placements
       where image_id is not null
       group by image_id

@@ -23,6 +23,20 @@ import { emptyMotionDocument, isReadableMotionDocument } from "@/lib/cms/motion-
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { parseBlockPayload, validateBlockValues } from "@/lib/cms/validate";
+import {
+  detachSlot,
+  parseReuse,
+  readReuse,
+  slotDef,
+  withReuse,
+  type ReuseMap,
+} from "@/lib/cms/reuse/reference";
+import { REUSE_AUTHORITY } from "@/lib/cms/reuse/authority";
+import {
+  checkReferencesForSave,
+  componentValues,
+  referenceProblemMessage,
+} from "@/lib/cms/reuse/store";
 import { emptyValues } from "@/lib/cms/values";
 import {
   addStructureSection,
@@ -47,8 +61,8 @@ import {
 } from "@/lib/cms/publish-service";
 import { KEEP_PAGE_VERSIONS, listPageVersions, restoreVersionToDraft } from "@/lib/versions";
 import { db } from "@/lib/db";
-import { updateSectionGuarded } from "@/lib/db/revision";
-import { pageSections, pages } from "@/lib/db/schema";
+import { updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
+import { pageSections, pages, reusableComponents } from "@/lib/db/schema";
 import type {
   PageActionResult,
   PageHistoryView,
@@ -56,6 +70,7 @@ import type {
 } from "@/lib/visual-editor/publish";
 import type {
   VisualContentSaveResult,
+  VisualDetachResult,
   VisualMotionSaveResult,
   VisualSectionData,
   VisualSectionLoad,
@@ -126,7 +141,16 @@ function toData(row: typeof pageSections.$inferSelect, block: BlockDef): VisualS
     hasStyleDraft,
     hasMotionDraft,
     isDraftOnly: row.isDraftOnly,
-    values: validateBlockValues(block, { ...emptyValues(block), ...stored }),
+    /**
+     * The reusable-component reference (Batch 17) rides alongside: the panel
+     * edits it like any other content — linking, overriding and resetting are
+     * content edits in this buffer — and the save checks it against the
+     * database. Read tolerantly here; a save reads it strictly.
+     */
+    values: withReuse(
+      validateBlockValues(block, { ...emptyValues(block), ...stored }),
+      readReuse(stored, block.type),
+    ),
     // The draft document whole when there is one, empty included — an empty
     // style draft is a pending reset, not an absent one.
     styles: validateStyleDocument(hasStyleDraft ? row.draftStyles : row.styles),
@@ -178,6 +202,73 @@ async function ownedSection(
   return { ok: true, row, block };
 }
 
+/** The `_reuse` key of a submitted values payload, or `undefined` for none. */
+function submittedReuse(raw: string): unknown {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)._reuse
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The activity a save's reference changes deserve (Batch 17): a link made or
+ * removed, and an override switched on or off — discrete decisions, each one
+ * entry. Never the text typed into an override: that is the section's own
+ * draft, and a save of it is the `section.draft_saved` above.
+ */
+async function logReferenceChanges(
+  session: Awaited<ReturnType<typeof guardAction>>,
+  sectionId: number,
+  blockType: string,
+  blockName: string,
+  before: ReuseMap,
+  after: ReuseMap,
+): Promise<void> {
+  const slots = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const slot of slots) {
+    const was = before[slot];
+    const now = after[slot];
+    const where = `${slotDef(blockType, slot)?.label ?? slot} of a ${blockName} section (#${sectionId})`;
+    if (now && was?.c !== now.c) {
+      await logActivity(session, {
+        action: "reusable_component.instance_linked",
+        entityType: "reusable_component",
+        entityId: now.c,
+        summary: `Linked the ${where} in a page draft`,
+        metadata: { sectionId, slot },
+      });
+    }
+    if (was && was.c !== now?.c) {
+      await logActivity(session, {
+        action: "reusable_component.instance_unlinked",
+        entityType: "reusable_component",
+        entityId: was.c,
+        summary: `Unlinked the ${where} in a page draft`,
+        metadata: { sectionId, slot },
+      });
+    }
+    if (was && now && was.c === now.c) {
+      const a = new Set(was.o ?? []);
+      const b = new Set(now.o ?? []);
+      const added = [...b].filter((key) => !a.has(key));
+      const removed = [...a].filter((key) => !b.has(key));
+      if (added.length || removed.length) {
+        await logActivity(session, {
+          action: "reusable_component.override_changed",
+          entityType: "reusable_component",
+          entityId: now.c,
+          summary: `${added.length ? "Overrode" : "Reset"} ${added.length + removed.length} field(s) of the ${where}`,
+          metadata: { sectionId, slot, added, removed },
+        });
+      }
+    }
+  }
+}
+
 /**
  * Reads one section for the inspector.
  *
@@ -223,11 +314,24 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
     const found = await ownedSection(sectionId, pageId);
     if (!found.ok) return found;
 
-    const values = parseBlockPayload(String(form.get("values") ?? ""), found.block);
-    if (!values) return { ok: false, reason: "invalid", message: MESSAGES.invalid };
+    const raw = String(form.get("values") ?? "");
+    const declared = parseBlockPayload(raw, found.block);
+    if (!declared) return { ok: false, reason: "invalid", message: MESSAGES.invalid };
     if (!Number.isInteger(expected) || expected < 0) {
       return { ok: false, reason: "invalid", message: MESSAGES.invalid };
     }
+
+    /**
+     * The reusable-component reference (Batch 17), read strictly: a reference
+     * this build cannot read refuses the save rather than being dropped,
+     * because dropping it would unlink the section without anyone asking.
+     * The validator above rebuilt the declared fields and dropped it, as it
+     * drops every undeclared key; it is written back beside them.
+     */
+    const reuse = parseReuse(submittedReuse(raw), found.block.type);
+    if (!reuse.ok) return { ok: false, reason: "invalid", message: MESSAGES.invalid };
+    const values = withReuse(declared, reuse.map);
+    const before = readReuse(found.row.draft ?? found.row.published, found.block.type);
 
     /**
      * The whole write. `draft` and nothing else — the guard adds `revision`,
@@ -235,11 +339,41 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
      * cannot show a hidden section, and cannot disturb motion or styles.
      * Content, style and motion are three draft domains sharing one row and
      * one concurrency timeline; each save writes only its own column.
+     *
+     * A section that links to reusable components writes inside a
+     * transaction that first checks every component against the database —
+     * it exists, it is the kind the slot takes, it has been published, and it
+     * is not archived unless this section already linked it — holding them
+     * `FOR SHARE` until the write commits, so none can be deleted in between.
+     * The browser names ids; everything else is read here.
      */
-    const result = await updateSectionGuarded(sectionId, expected, {
-      draft: values,
-      updatedBy: session.user.id,
-    });
+    const written = Object.keys(reuse.map).length
+      ? await db.transaction(async (tx) => {
+          const problems = await checkReferencesForSave(tx, {
+            blockType: found.block.type,
+            map: reuse.map,
+            stored: [found.row.published, found.row.draft],
+          });
+          if (problems.length) {
+            return { kind: "refused" as const, message: referenceProblemMessage(problems[0]!) };
+          }
+          return {
+            kind: "written" as const,
+            result: await updateSectionGuardedIn(tx, sectionId, expected, {
+              draft: values,
+              updatedBy: session.user.id,
+            }),
+          };
+        })
+      : {
+          kind: "written" as const,
+          result: await updateSectionGuarded(sectionId, expected, {
+            draft: values,
+            updatedBy: session.user.id,
+          }),
+        };
+    if (written.kind === "refused") return { ok: false, reason: "invalid", message: written.message };
+    const result = written.result;
 
     if (!result.ok) {
       if (result.reason === "missing") {
@@ -263,6 +397,7 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
       entityId: sectionId,
       summary: `Saved a draft of the ${found.block.name} section in the Visual Editor`,
     });
+    await logReferenceChanges(session, sectionId, found.block.type, found.block.name, before, reuse.map);
 
     /**
      * The canvas reads drafts through `getPagePreview`, which is deliberately
@@ -295,6 +430,123 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
     if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };
     console.error("[visual-editor:save]", error);
     return { ok: false, reason: "invalid", message: "Something went wrong. The change was not saved." };
+  }
+}
+
+/**
+ * Detaches one reusable-component instance (Batch 17). Never publishes, and
+ * never touches the component.
+ *
+ * Resolved here, not in the browser: the covered fields take the content this
+ * page shows — the component's *current* published content with this page's
+ * overrides on top — read inside the transaction with the component held
+ * `FOR SHARE`, and the reference is removed. The section keeps its style,
+ * motion and place; its draft is what changes, so the page has something to
+ * publish and the page's Undo can take it back.
+ *
+ * Two guards. The section's revision, as for any content save. And the
+ * component's published version the canvas was drawn with: a component
+ * published since then would be baked in as content nobody here has seen,
+ * so that is refused by name and the canvas is reloaded instead. The section
+ * must be saved first — detaching reads the stored section, not the browser's.
+ */
+export async function detachVisualInstance(form: FormData): Promise<VisualDetachResult> {
+  try {
+    const session = await guardAction(REUSE_AUTHORITY.instances, form);
+
+    const sectionId = Number(form.get("sectionId"));
+    const pageId = Number(form.get("pageId"));
+    const expected = Number(form.get("expectedRevision"));
+    const expectedVersion = Number(form.get("expectedComponentVersion"));
+    const slot = String(form.get("slot") ?? "");
+
+    const found = await ownedSection(sectionId, pageId);
+    if (!found.ok) return found;
+    if (!Number.isInteger(expected) || expected < 0 || !Number.isInteger(expectedVersion) || expectedVersion < 0) {
+      return { ok: false, reason: "invalid", message: MESSAGES.invalid };
+    }
+    const stored = (found.row.draft ?? found.row.published) as Record<string, unknown>;
+    const ref = readReuse(stored, found.block.type)[slot];
+    if (!ref) {
+      return { ok: false, reason: "invalid", message: "That part of the section is not linked any more. Reload the canvas." };
+    }
+
+    const outcome = await db.transaction(async (tx) => {
+      const [component] = await tx
+        .select({
+          id: reusableComponents.id,
+          kind: reusableComponents.kind,
+          name: reusableComponents.name,
+          published: reusableComponents.published,
+          publishedVersion: reusableComponents.publishedVersion,
+        })
+        .from(reusableComponents)
+        .where(eq(reusableComponents.id, ref.c))
+        .limit(1)
+        .for("share");
+      if ((component?.publishedVersion ?? 0) !== expectedVersion) return { stale: true } as const;
+      const fits = component && component.kind === slotDef(found.block.type, slot)?.kind;
+      const detached = detachSlot(
+        found.block.type,
+        stored,
+        slot,
+        fits ? componentValues(component.kind, component.published) : null,
+      );
+      if (!detached) return { unreadable: true } as const;
+      // The detached content goes through the block validator like any other
+      // save; the references that remain on the section ride beside it.
+      const values = withReuse(
+        validateBlockValues(found.block, { ...emptyValues(found.block), ...detached }),
+        readReuse(detached, found.block.type),
+      );
+      const result = await updateSectionGuardedIn(tx, sectionId, expected, {
+        draft: values,
+        updatedBy: session.user.id,
+      });
+      return { result, values, name: component?.name ?? null } as const;
+    });
+
+    if ("stale" in outcome) {
+      return {
+        ok: false,
+        reason: "component_conflict",
+        message:
+          "The reusable component was published again since this page was loaded. Nothing was detached — " +
+          "reload the canvas to see its current content, then detach again.",
+      };
+    }
+    if ("unreadable" in outcome) return { ok: false, reason: "invalid", message: MESSAGES.invalid };
+    if (!outcome.result.ok) {
+      if (outcome.result.reason === "missing") return { ok: false, reason: "missing", message: MESSAGES.missing };
+      const fresh = await ownedSection(sectionId, pageId);
+      if (!fresh.ok) return fresh;
+      return { ok: false, reason: "conflict", message: MESSAGES.conflict, section: toData(fresh.row, fresh.block) };
+    }
+
+    await logActivity(session, {
+      action: "reusable_component.instance_detached",
+      entityType: "reusable_component",
+      entityId: ref.c,
+      summary:
+        `Detached the ${slotDef(found.block.type, slot)?.label.toLowerCase() ?? slot} of a ${found.block.name} ` +
+        `section (#${sectionId}) from ${outcome.name ? `“${outcome.name}”` : "a reusable component"} in a page draft`,
+      metadata: { sectionId, slot, version: expectedVersion },
+    });
+    revalidatePath("/admin/pages");
+
+    return {
+      ok: true,
+      section: {
+        ...toData(found.row, found.block),
+        revision: outcome.result.revision,
+        hasDraft: true,
+        values: outcome.values,
+      },
+    };
+  } catch (error) {
+    if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };
+    console.error("[visual-editor:detach]", error);
+    return { ok: false, reason: "invalid", message: "Something went wrong. Nothing was detached." };
   }
 }
 
@@ -579,6 +831,7 @@ async function runStructure(
     if (!result.ok) return structureFailure(result);
 
     await logActivity(session, result.log);
+    if (result.also) await logActivity(session, result.also);
 
     const [page] = await db.select({ slug: pages.slug }).from(pages).where(eq(pages.id, pageId)).limit(1);
     if (page) revalidatePath(`/admin/pages/${page.slug}`);
@@ -647,6 +900,11 @@ export async function setPageSectionVisibility(form: FormData): Promise<VisualSt
 
 export async function addPageSection(form: FormData): Promise<VisualStructureResult> {
   const after = Number(form.get("afterSectionId"));
+  // A reusable block (Batch 17) is the same operation with a component to
+  // link: an id, and nothing else from the request — its kind, status and
+  // content are read by the structure service.
+  const component = form.get("componentId");
+  const componentId = component === null || component === "" ? undefined : Number(component);
   return runStructure(
     form,
     (context) =>
@@ -654,6 +912,7 @@ export async function addPageSection(form: FormData): Promise<VisualStructureRes
         context,
         String(form.get("blockType") ?? ""),
         Number.isInteger(after) && after > 0 ? after : null,
+        componentId === undefined ? {} : { componentId },
       ),
     "add",
   );

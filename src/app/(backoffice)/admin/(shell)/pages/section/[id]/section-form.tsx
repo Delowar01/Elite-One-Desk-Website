@@ -45,6 +45,7 @@ export function SectionForm({
   block,
   media,
   previewHref,
+  linked,
 }: {
   csrf: string;
   section: {
@@ -70,8 +71,16 @@ export function SectionForm({
   block: BlockDef;
   media: MediaOption[];
   previewHref: string;
+  /**
+   * Fields a reusable component supplies (Batch 17), each with the line that
+   * says so. This form does not link, override or detach — the server carries
+   * the link and those fields' stored values through a save untouched — so it
+   * shows them as what they are rather than as inputs that would do nothing.
+   */
+  linked?: Record<string, string>;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
+  const inherited = linked ? { hidden: new Set(Object.keys(linked)), notes: linked } : {};
 
   /**
    * One server state, held as one value — the fix for a pairing this screen
@@ -255,7 +264,7 @@ export function SectionForm({
           this: the fields already hold what was typed, and rebuilding them
           would move the caret.
         */}
-        <BlockEditor key={screen.token} block={block} initial={screen.values} media={media} />
+        <BlockEditor key={screen.token} block={block} initial={screen.values} media={media} {...inherited} />
 
         <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
           <label className="admin-label" htmlFor="animation">

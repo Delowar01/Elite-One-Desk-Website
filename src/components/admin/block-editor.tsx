@@ -59,6 +59,9 @@ export function BlockEditor({
   name = "values",
   locale,
   focus = null,
+  hidden,
+  notes,
+  idPrefix = "field",
 }: {
   block: BlockDef;
   /** Uncontrolled mode: the starting values. */
@@ -72,6 +75,20 @@ export function BlockEditor({
   locale?: Locale;
   /** The node selected on the canvas, so its field can be pointed at. */
   focus?: FieldFocus;
+  /**
+   * Fields not to draw as inputs — the ones a reusable component supplies
+   * (Batch 17). Their values stay in the document untouched; they are simply
+   * not offered as this section's own, because they are not.
+   */
+  hidden?: ReadonlySet<string>;
+  /** A line drawn in place of a hidden field, saying where its content comes from. */
+  notes?: Readonly<Record<string, string>>;
+  /**
+   * Prefix for the inputs' ids, so two editors on one screen — a section's and
+   * a reusable component's — never share an id and never steal each other's
+   * labels.
+   */
+  idPrefix?: string;
 }) {
   const [internal, setInternal] = useState<Values>(initial ?? {});
   const controlled = Boolean(onChange);
@@ -87,17 +104,26 @@ export function BlockEditor({
     <>
       {controlled ? null : <input type="hidden" name={name} value={JSON.stringify(values)} />}
       <div className="space-y-5">
-        {block.fields.map((field) => (
-          <FieldRow
-            key={field.name}
-            field={field}
-            value={values[field.name]}
-            media={media}
-            locale={locale}
-            focus={focus?.field === field.name ? focus : null}
-            onChange={(next) => set(field.name, next)}
-          />
-        ))}
+        {block.fields.map((field) =>
+          hidden?.has(field.name) ? (
+            notes?.[field.name] ? (
+              <p key={field.name} className="text-[0.76rem] leading-relaxed text-muted" data-field-linked={field.name}>
+                <span className="font-medium text-body">{field.label}</span> — {notes[field.name]}
+              </p>
+            ) : null
+          ) : (
+            <FieldRow
+              key={field.name}
+              field={field}
+              value={values[field.name]}
+              media={media}
+              locale={locale}
+              focus={focus?.field === field.name ? focus : null}
+              onChange={(next) => set(field.name, next)}
+              idPrefix={idPrefix}
+            />
+          ),
+        )}
       </div>
     </>
   );
@@ -138,6 +164,7 @@ function FieldRow({
   locale,
   focus,
   onChange,
+  idPrefix = "field",
 }: {
   field: FieldDef;
   value: unknown;
@@ -145,8 +172,9 @@ function FieldRow({
   locale?: Locale;
   focus: FieldFocus;
   onChange: (next: unknown) => void;
+  idPrefix?: string;
 }) {
-  const id = `field-${field.name}`;
+  const id = `${idPrefix}-${field.name}`;
   const focused = Boolean(focus);
   const ref = useScrollIntoViewWhenFocused(focused);
 

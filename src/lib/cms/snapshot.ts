@@ -35,6 +35,7 @@ import {
   readMotionDocument,
   type MotionDocument,
 } from "./motion-doc";
+import { readReuse, withReuse } from "./reuse/reference";
 import { validateStyleDocument, type StyleDocument } from "./styles";
 import { validateBlockValues } from "./validate";
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
@@ -136,7 +137,18 @@ export function validatePageSnapshot(input: unknown): PageSnapshot {
       sourceSectionId: isId(row.sourceSectionId) ? row.sourceSectionId : 0,
       blockType,
       visible: row.visible === false ? false : true,
-      published: validateBlockValues(block, row.published),
+      /**
+       * The values through the block validator, and the reusable-component
+       * reference (Batch 17) through its own reader, pins included — the
+       * version a linked section was showing is history Version Compare
+       * reports. The validator drops the reference, as it drops every key it
+       * does not declare, so it is carried across separately rather than
+       * relaxing the one function that decides what content may be.
+       */
+      published: withReuse(
+        validateBlockValues(block, row.published),
+        readReuse(row.published, blockType, { pins: true }),
+      ),
       styles: validateStyleDocument(row.styles),
       // Normalised, not merely length-capped. A snapshot is replayed into
       // `draft_animation` by a restore, and `draft_animation` is rendered —

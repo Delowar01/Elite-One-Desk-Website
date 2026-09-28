@@ -20,8 +20,9 @@ import {
   type MotionTarget,
 } from "@/lib/cms/motion-doc";
 import { blockNode, withMotion } from "@/lib/cms/node";
+import { slotDef, type InstanceView } from "@/lib/cms/reuse/reference";
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
-import type { EditorRender } from "@/lib/visual-editor/render";
+import type { EditorRender, ReuseMarks } from "@/lib/visual-editor/render";
 
 import { MotionRuntime } from "./motion-runtime";
 import { SectionMotion, type SectionWrapperAttrs } from "./section-motion";
@@ -127,6 +128,24 @@ function fingerprint(value: unknown): string {
 }
 
 /**
+ * The canvas marks for a section's reusable-component links (Batch 17): each
+ * covered field, the slot it comes through, and whether the edition being
+ * drawn overrides it. Editor mode only — the caller never asks otherwise.
+ */
+function reuseMarksOf(blockType: string, instances: readonly InstanceView[], locale: Locale): ReuseMarks {
+  const marks: ReuseMarks = {};
+  for (const instance of instances) {
+    const slot = slotDef(blockType, instance.slot);
+    if (!slot) continue;
+    for (const field of slot.fields) {
+      const key = field.localised ? `${field.name}.${locale}` : field.name;
+      marks[field.name] = { slot: instance.slot, state: instance.overrides.includes(key) ? "override" : "inherited" };
+    }
+  }
+  return marks;
+}
+
+/**
  * `editorMode` is the one switch that turns the public renderer into a
  * selectable canvas, and it is passed in from the server rather than sniffed.
  *
@@ -199,8 +218,9 @@ export async function SectionRenderer({
         const Renderer = RENDERERS[section.blockType];
         if (!Renderer) return null;
 
+        const reuse = editorMode && section.reuse?.length ? reuseMarksOf(section.blockType, section.reuse, locale) : null;
         const editor: EditorRender = editorMode
-          ? { sectionId: section.id, blockType: section.blockType }
+          ? { sectionId: section.id, blockType: section.blockType, ...(reuse ? { reuse } : {}) }
           : null;
         const advancedMotion = motions[index] ?? null;
         // The wrapper is the section's `root` node: the thing Layers selects,

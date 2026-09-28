@@ -16,6 +16,7 @@ import { recordRestorePointIn } from "@/lib/versions";
 import { getBlock } from "./blocks";
 import { draftDomainsOf } from "./drafts";
 import { motionPromotion, type MotionColumns } from "./motion-write";
+import { checkReferencesForPublish, referenceProblemMessage } from "./reuse/store";
 import { validateStyleDocument } from "./styles";
 import {
   liveStructure,
@@ -229,7 +230,8 @@ export type PublishFailure =
   | "section_conflict"
   | "nothing"
   | "corrupt_structure"
-  | "invalid_motion";
+  | "invalid_motion"
+  | "reference";
 
 export type PublishCounts = {
   promoted: number;
@@ -264,11 +266,18 @@ export const PUBLISH_MESSAGES = {
   invalidMotion:
     "A section on this page has a motion draft that is no longer valid. Nothing was published — " +
     "open that section, choose an entrance and save it again, or discard its draft.",
+  reference:
+    "A section on this page is linked to a reusable component that cannot be published. Nothing " +
+    "was published.",
 } as const;
 
 /** Thrown inside the transaction so the abort rolls everything back by construction. */
 class PublishStopped extends Error {
-  constructor(readonly reason: PublishFailure) {
+  constructor(
+    readonly reason: PublishFailure,
+    /** A sentence more specific than the reason's own, when there is one. */
+    readonly detail?: string,
+  ) {
     super(reason);
     this.name = "PublishStopped";
   }
@@ -412,6 +421,28 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
 
       if (!writes.length && !doomed.length) throw new PublishStopped("nothing");
 
+      /**
+       * Every reusable-component reference this publication would put live
+       * (Batch 17) — a promoted draft, or a pending section becoming part of
+       * the page — must point at a component that exists, fits its slot and
+       * has been published. Checked here, after the refusals that cost
+       * nothing and before the restore point, with the components held
+       * `FOR SHARE` so none can be deleted before this commits. Publishing a
+       * page never publishes a component: a pending component draft stays
+       * pending, and the page shows the component's published content.
+       */
+      const going = writes.flatMap((write) => {
+        const values =
+          write.values.published !== undefined
+            ? write.values.published
+            : write.row.isDraftOnly
+              ? write.row.published
+              : undefined;
+        return values === undefined ? [] : [{ blockType: write.row.blockType, values }];
+      });
+      const problems = await checkReferencesForPublish(tx, going);
+      if (problems.length) throw new PublishStopped("reference", referenceProblemMessage(problems[0]!));
+
       /* --- the restore point, before a single promotion ----------------- */
       const { versionId } = await recordRestorePointIn(tx, {
         pageId,
@@ -470,7 +501,11 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
                 ? PUBLISH_MESSAGES.invalidMotion
                 : error.reason === "section_conflict"
                   ? PUBLISH_MESSAGES.sectionConflict
-                  : PUBLISH_MESSAGES.conflict;
+                  : error.reason === "reference"
+                    ? error.detail
+                      ? `${error.detail} Nothing was published.`
+                      : PUBLISH_MESSAGES.reference
+                    : PUBLISH_MESSAGES.conflict;
       return { ok: false, reason: error.reason, message };
     }
     throw error;

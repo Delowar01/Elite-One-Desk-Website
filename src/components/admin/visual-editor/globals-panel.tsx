@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
@@ -20,6 +21,9 @@ import {
 } from "@/app/(backoffice)/admin/(shell)/settings/actions";
 import { Icon } from "@/components/ui/icon";
 import type { ActionState } from "@/lib/admin/actions";
+import { kindDef } from "@/lib/cms/reuse/kinds";
+import { usageHeadline } from "@/lib/cms/reuse/usage-view";
+import type { ReuseCatalogEntry } from "@/lib/cms/reuse/view";
 import { SOCIAL_PLATFORMS, socialLabel } from "@/lib/social";
 import type { GlobalNavRow, GlobalsState } from "@/lib/visual-editor/globals";
 
@@ -807,6 +811,8 @@ export function GlobalsPanel({
   loading,
   onRefresh,
   onChanged,
+  reusable = null,
+  onOpenComponent,
 }: {
   open: boolean;
   onClose: () => void;
@@ -816,6 +822,14 @@ export function GlobalsPanel({
   onRefresh: () => void;
   /** Re-read the globals and reload the canvas. Never touches page drafts. */
   onChanged: () => Promise<void> | void;
+  /**
+   * Reusable components (Batch 17) — listed here because an editor looks for
+   * "global" things here, and told apart from the settings above because they
+   * are not the same kind of global: they are page content with a draft and
+   * an explicit Publish, not live settings.
+   */
+  reusable?: ReuseCatalogEntry[] | null;
+  onOpenComponent?: (id: number) => void;
 }) {
   /**
    * What each settings form last reported, one entry per domain, held here
@@ -1124,6 +1138,42 @@ export function GlobalsPanel({
 
               <SocialArea rows={settings.social} csrf={csrf} onChanged={onChanged} />
             </>
+          ) : null}
+
+          {reusable ? (
+            <Group title="Reusable components">
+              <p className="text-[0.74rem] leading-relaxed text-muted" data-globals-reusable-note>
+                Not site settings: reusable components are shared page content — a call to action or a whole
+                section used on several pages. Unlike the settings above, their edits are drafts until you
+                publish them, and publishing updates every page that links to them.
+              </p>
+              {reusable.filter((entry) => entry.status === "active").length ? (
+                <ul className="flex flex-col gap-1" data-globals-reusable>
+                  {reusable
+                    .filter((entry) => entry.status === "active")
+                    .map((entry) => (
+                      <li key={entry.id}>
+                        <button
+                          type="button"
+                          onClick={() => onOpenComponent?.(entry.id)}
+                          className="w-full rounded-[var(--radius-xs)] border border-[var(--admin-line)] px-2 py-1.5 text-start transition-colors hover:bg-[color-mix(in_oklab,var(--color-orange)_12%,transparent)]"
+                        >
+                          <span className="block truncate text-[0.78rem] font-medium text-strong">{entry.name}</span>
+                          <span className="block text-[0.66rem] text-muted">
+                            {kindDef(entry.kind)?.label ?? entry.kind} · {usageHeadline(entry.usage)}
+                            {entry.hasDraft ? " · draft pending" : ""}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                </ul>
+              ) : (
+                <p className="text-[0.74rem] text-muted">None yet. Use “Save as reusable…” on a section’s call to action.</p>
+              )}
+              <Link href="/admin/components" className="admin-btn admin-btn-sm self-start" target="_blank">
+                Manage reusable components
+              </Link>
+            </Group>
           ) : null}
         </div>
       </div>

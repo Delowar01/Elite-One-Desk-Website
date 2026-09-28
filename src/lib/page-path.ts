@@ -64,3 +64,16 @@ export function compareFramePath(
 /** The locale a stored value names, or English. Used to read URL state back. */
 export const localeOrDefault = (value: unknown): Locale =>
   value === "ar" || value === "en" ? value : DEFAULT_LOCALE;
+
+/**
+ * A reusable component's own preview on one page (Batch 17): the page's
+ * preview with that component's draft drawn in place of its published
+ * content. Two integers — the component and the draft revision being looked
+ * at — and nothing else: never the draft itself, never JSON. The server
+ * checks the session, that the revision is still the component's, and that
+ * the page really uses the component, on every request.
+ */
+export function componentPreviewPath(slug: string, locale: Locale, componentId: number, revision: number): string {
+  const params = new URLSearchParams({ component: String(componentId), rev: String(revision) });
+  return `${localisedPagePath(slug, locale)}?${params}`;
+}

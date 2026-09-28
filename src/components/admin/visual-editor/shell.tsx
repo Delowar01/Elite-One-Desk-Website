@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   addPageSection,
+  detachVisualInstance,
   discardPageFromEditor,
   discardPageLayout,
   duplicatePageSection,
@@ -23,12 +24,21 @@ import {
   saveVisualSectionStyles,
   setPageSectionVisibility,
 } from "@/app/(backoffice)/admin/visual-editor/actions";
+import {
+  createReusableFromSection,
+  loadReusableCatalog,
+} from "@/app/(backoffice)/admin/(shell)/components/actions";
+import { ReuseEditor } from "@/components/admin/reuse/reuse-editor";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { GlobalsPanel } from "@/components/admin/visual-editor/globals-panel";
 import { Icon } from "@/components/ui/icon";
 import type { BlockDef } from "@/lib/cms/blocks";
 import type { MotionPreset } from "@/lib/cms/motion";
 import type { MotionDocument } from "@/lib/cms/motion-doc";
+import { kindNoun } from "@/lib/cms/reuse/kinds";
+import { directEditDecision, linkSlot, readReuse, slotDef } from "@/lib/cms/reuse/reference";
+import { usageHeadline } from "@/lib/cms/reuse/usage-view";
+import type { ReuseCatalogEntry } from "@/lib/cms/reuse/view";
 import type { StyleDocument } from "@/lib/cms/styles";
 import { removedSections, type PageStructure } from "@/lib/cms/structure";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
@@ -88,6 +98,7 @@ import { isTextTarget, shortcutFor, type ShortcutCommand } from "@/lib/visual-ed
 import { withDomainValue } from "@/lib/visual-editor/buffer-state";
 import { LayersPanel, type StructuralOps } from "./layers";
 import { PagePanel } from "./page-panel";
+import type { ReuseControls, ReuseNotice } from "./reuse-panel";
 
 export type EditablePage = {
   id: number;
@@ -254,6 +265,21 @@ export function VisualEditorShell({
   const [tab, setTab] = useState<EditDomain>("content");
   const [loadingId, setLoadingId] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  /**
+   * Reusable components (Batch 17): every component with its usage, as the
+   * server last said. For showing names, inherited text and "Used on" — never
+   * for deciding a save, which the server checks for itself.
+   */
+  const [catalog, setCatalog] = useState<ReuseCatalogEntry[] | null>(null);
+  /** The direct-edit refusal being shown: this text is linked and not overridden here. */
+  const [reuseNotice, setReuseNotice] = useState<ReuseNotice | null>(null);
+  /** A detach or a save-as is on its way to the server. */
+  const [reuseBusy, setReuseBusy] = useState(false);
+  const [reuseMessage, setReuseMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  /** The component editor drawer, and where it opened. */
+  const [componentDrawer, setComponentDrawer] = useState<{ id: number; focus: "edit" | "usage" } | null>(null);
+  /** The catalogue re-read, reachable from the save queue that is declared above it. */
+  const refreshCatalogRef = useRef<() => void>(() => {});
   /** Sections already asked for, so a re-render does not ask again. */
   /**
    * Loads that have been started and not yet answered, by section.
@@ -504,6 +530,12 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!page) return;
     const params = new URLSearchParams({ page: page.slug, lang: locale, device });
+    // Only when it changes. Every save that revalidates hands this effect a new
+    // `page` object with the same slug, and Next.js turns each `replaceState`
+    // into a router action that preempts the server action in flight and forces
+    // a refresh of the whole screen — which can lose the layout's own reload and
+    // leave the layout actions with nothing to act on.
+    if (window.location.search === `?${params}`) return;
     window.history.replaceState(null, "", `?${params}`);
   }, [page, locale, device]);
 
@@ -842,6 +874,25 @@ export function VisualEditorShell({
       if (buffer.status === "conflict") return;
       if (!directEditAt(buffer.data.blockType, relative)) return;
 
+      /**
+       * Linked content is never typed into (Batch 17).
+       *
+       * A field a reusable component supplies holds, in this section, only a
+       * fallback copy — typing into it would change nothing anybody sees, and
+       * the component itself is edited in exactly one place, its own editor.
+       * So a linked field with no override in this edition does not begin a
+       * session at all: the Inspector opens on it and says where the text
+       * comes from, with the two honest ways forward — edit the global
+       * component, or override it on this page. An overridden field is the
+       * page's own, and edits exactly like any other field.
+       */
+      const decision = directEditDecision(buffer.data.blockType, buffer.values, relative, localeAtRequest);
+      if (!decision.ok) {
+        setTab("content");
+        setReuseNotice({ sectionId, slot: decision.slot, key: decision.key });
+        return;
+      }
+
       const text = textAt(buffer.values, buffer.data.blockType, relative, localeAtRequest);
       if (text === null) return;
 
@@ -997,10 +1048,22 @@ export function VisualEditorShell({
     [canManageContent, closeHistoryGroup, recordChange, scheduleAutosave, writeBuffers],
   );
 
+  /**
+   * One content edit to a section's buffer, recorded in the page's history.
+   *
+   * `label` names an action the panel took rather than a value somebody typed
+   * — linking, overriding or resetting a reusable component (Batch 17) — so
+   * Undo says what it would take back. Those changes never group with typing:
+   * each is several values at once, or a reference, and `groupOf` keeps both
+   * out of any group. `target` is for the one caller that finishes after an
+   * await — Save as reusable — by which time another section may be selected:
+   * the edit belongs to the section it was made for, not the one on screen.
+   */
   const onValues = useCallback(
-    (values: Record<string, unknown>) => {
-      if (activeId === null || !canManageContent) return;
-      const held = buffersRef.current[activeId];
+    (values: Record<string, unknown>, label?: string, target?: number) => {
+      const sectionId = target ?? activeId;
+      if (sectionId === null || !canManageContent) return;
+      const held = buffersRef.current[sectionId];
       if (held) {
         // Recorded before the write, from the buffer as it stands: the action is
         // the difference between what the section held and what it will hold.
@@ -1008,17 +1071,18 @@ export function VisualEditorShell({
         if (changes.length) {
           recordChange(
             held.data.pageId,
-            { domain: "content", sectionId: activeId, blockType: held.data.blockType, changes },
-            describeContent(held.data.blockType, changes, values, locale),
+            { domain: "content", sectionId, blockType: held.data.blockType, changes },
+            label ?? describeContent(held.data.blockType, changes, values, locale),
           );
         }
       }
+      if (label) setReuseMessage(null);
       writeBuffers((prev) => {
-        const entry = prev[activeId];
+        const entry = prev[sectionId];
         if (!entry) return prev;
         return {
           ...prev,
-          [activeId]: {
+          [sectionId]: {
             ...entry,
             values,
             contentDirty: !sameValues(values, entry.data.values),
@@ -1031,7 +1095,7 @@ export function VisualEditorShell({
           },
         };
       });
-      scheduleAutosave(activeId);
+      scheduleAutosave(sectionId);
     },
     [activeId, canManageContent, locale, recordChange, scheduleAutosave, writeBuffers],
   );
@@ -1294,6 +1358,14 @@ export function VisualEditorShell({
             return "error";
           }
           accepted = { revision: answer.section.revision, section: answer.section };
+          // A save that linked, unlinked or re-overrode a reusable component
+          // changes "Used on" for it: the counts are read again (Batch 17).
+          if (
+            canonical(readReuse(entry.data.values, entry.data.blockType)) !==
+            canonical(readReuse(answer.section.values, entry.data.blockType))
+          ) {
+            refreshCatalogRef.current();
+          }
         } else if (domain === "style") {
           const answer = await saveVisualSectionStyles(form);
           if (!answer.ok) {
@@ -1459,6 +1531,251 @@ export function VisualEditorShell({
 
   drainRef.current = (sectionId: number) => void drainSection(sectionId);
 
+  /* ------------------------------------------------------------------ */
+  /* Reusable components (Batch 17)                                      */
+  /* ------------------------------------------------------------------ */
+
+  const refreshCatalog = useCallback(async () => {
+    const next = await loadReusableCatalog();
+    if (next) setCatalog(next);
+  }, []);
+  refreshCatalogRef.current = () => void refreshCatalog();
+  useEffect(() => {
+    void refreshCatalog();
+  }, [refreshCatalog]);
+
+  // A notice about one section's linked text says nothing about another's.
+  useEffect(() => {
+    setReuseNotice((current) => (current && current.sectionId !== activeId ? null : current));
+    setReuseMessage(null);
+  }, [activeId]);
+
+  /**
+   * Waits until a section has nothing unsaved and nothing in flight — for the
+   * two operations the server performs on the section as it is *stored*,
+   * detaching and saving as reusable. Either one reading a row the browser is
+   * ahead of would act on something other than what the editor sees.
+   */
+  const settleSection = useCallback(
+    async (sectionId: number): Promise<SectionBuffer | null> => {
+      const pending = autosaveTimers.current.get(sectionId);
+      if (pending) {
+        window.clearTimeout(pending);
+        autosaveTimers.current.delete(sectionId);
+      }
+      await drainSection(sectionId);
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const entry = buffersRef.current[sectionId];
+        if (!entry) return null;
+        if (!draining.current.has(sectionId) && entry.saving === null) return entry;
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      }
+      return buffersRef.current[sectionId] ?? null;
+    },
+    [drainSection],
+  );
+
+  /** The canvas drawn again with the selection kept — after a write it cannot see. */
+  const redrawKeeping = useCallback((sectionId: number) => {
+    const address = selectedRef.current?.address ?? null;
+    restoreTo.current = address ? { address, fallback: `section:${sectionId}` } : null;
+    freshCanvas();
+    if (address) setRestoreToken((n) => n + 1);
+  }, []);
+
+  /**
+   * Detaches one instance: resolved by the server from the component's current
+   * published content, entered into this page's history as one action — so
+   * Undo puts the link back, and the ordinary save carries it — and the canvas
+   * redrawn. The component is not touched.
+   */
+  const detachInstance = useCallback(
+    async (slot: string, componentId: number, version: number) => {
+      if (activeId === null || !canManageContent) return;
+      const sectionId = activeId;
+      setReuseBusy(true);
+      setReuseMessage(null);
+      try {
+        const entry = await settleSection(sectionId);
+        if (!entry || isDirty(entry) || entry.status === "conflict") {
+          setReuseMessage({ ok: false, text: "Save or reload this section first — detaching works on what is saved." });
+          return;
+        }
+        const form = new FormData();
+        form.set("_csrf", csrf);
+        form.set("sectionId", String(sectionId));
+        form.set("pageId", String(entry.data.pageId));
+        form.set("expectedRevision", String(entry.data.revision));
+        form.set("slot", slot);
+        form.set("expectedComponentVersion", String(version));
+        const answer = await detachVisualInstance(form);
+        if (!answer.ok) {
+          if (answer.reason === "conflict") {
+            writeBuffers((prev) => {
+              const live = prev[sectionId];
+              if (!live) return prev;
+              return {
+                ...prev,
+                [sectionId]: { ...live, status: "conflict", statusDomain: "content", message: answer.message, latest: answer.section },
+              };
+            });
+            resetHistory(entry.data.pageId, HISTORY_RESET.section);
+          }
+          if (answer.reason === "component_conflict") {
+            await refreshCatalog();
+            redrawKeeping(sectionId);
+          }
+          setReuseMessage({ ok: false, text: answer.message });
+          return;
+        }
+        const name = catalog?.find((candidate) => candidate.id === componentId)?.name;
+        const label = slotDef(entry.data.blockType, slot)?.label.toLowerCase() ?? "section";
+        const changes = diffContent(entry.data.blockType, entry.values, answer.section.values);
+        if (changes.length) {
+          recordChange(
+            entry.data.pageId,
+            { domain: "content", sectionId, blockType: entry.data.blockType, changes },
+            `Detach ${label} from “${name ?? "reusable component"}”`,
+          );
+        }
+        writeBuffers((prev) => {
+          const live = prev[sectionId];
+          if (!live) return prev;
+          return {
+            ...prev,
+            [sectionId]: {
+              ...live,
+              data: {
+                ...answer.section,
+                styles: live.data.styles,
+                hasStyleDraft: live.data.hasStyleDraft,
+                motion: live.data.motion,
+                motionDocument: live.data.motionDocument,
+                legacyEntrance: live.data.legacyEntrance,
+                hasMotionDraft: live.data.hasMotionDraft,
+              },
+              values: answer.section.values,
+              contentDirty: false,
+              status: "saved",
+              statusDomain: "content",
+              message: undefined,
+            },
+          };
+        });
+        setReuseMessage({
+          ok: true,
+          text: `Detached. This page keeps the content as its own; “${name ?? "the component"}” is unchanged.`,
+        });
+        void refreshCatalog();
+        redrawKeeping(sectionId);
+      } finally {
+        setReuseBusy(false);
+      }
+    },
+    [activeId, canManageContent, catalog, csrf, recordChange, redrawKeeping, refreshCatalog, resetHistory, settleSection, writeBuffers],
+  );
+
+  /**
+   * "Save as reusable CTA / component": the server makes the component from
+   * the section as stored; with `publish`, its first version is published —
+   * nothing links to it yet, so no visitor sees any change — and this slot is
+   * then linked to it as an ordinary content edit, which Undo can take back.
+   */
+  const saveAsReusable = useCallback(
+    async (slot: string, name: string, publish: boolean) => {
+      if (activeId === null || !canManageContent) return;
+      const sectionId = activeId;
+      setReuseBusy(true);
+      setReuseMessage(null);
+      try {
+        const entry = await settleSection(sectionId);
+        if (!entry || isDirty(entry) || entry.status === "conflict") {
+          setReuseMessage({ ok: false, text: "Save or reload this section first — the component is made from what is saved." });
+          return;
+        }
+        const form = new FormData();
+        form.set("_csrf", csrf);
+        form.set("sectionId", String(sectionId));
+        form.set("pageId", String(entry.data.pageId));
+        form.set("slot", slot);
+        form.set("name", name);
+        form.set("publish", publish ? "1" : "0");
+        const answer = await createReusableFromSection(form);
+        if (!answer.ok || !answer.component) {
+          setReuseMessage({ ok: false, text: answer.message });
+          return;
+        }
+        const component = answer.component;
+        await refreshCatalog();
+        const noun = kindNoun(component.kind);
+        if (publish && component.published) {
+          const current = buffersRef.current[sectionId];
+          const next = current
+            ? linkSlot(current.data.blockType, current.values, slot, {
+                id: component.id,
+                kind: component.kind,
+                values: component.published,
+              })
+            : null;
+          const label = slotDef(entry.data.blockType, slot)?.label.toLowerCase() ?? "section";
+          if (next) onValues(next, `Link ${label} to the new reusable ${noun} “${component.name}”`, sectionId);
+          setReuseMessage({
+            ok: true,
+            text: `“${component.name}” was created and published, and this is linked to it. Nothing on the site changed.`,
+          });
+        } else {
+          setReuseMessage({
+            ok: true,
+            text: `“${component.name}” was created as a draft. Publish it from its editor before linking anything to it.`,
+          });
+        }
+      } finally {
+        setReuseBusy(false);
+      }
+    },
+    [activeId, canManageContent, csrf, onValues, refreshCatalog, settleSection],
+  );
+
+  /**
+   * What a section links to, for the Layers badge: the buffer when this editor
+   * has the section loaded — it is what the canvas will show once saved — and
+   * the server's layout otherwise.
+   */
+  const reuseOf = useCallback(
+    (sectionId: number): { slot: string; name: string; fields: string[] }[] => {
+      const held = buffersRef.current[sectionId];
+      const row = structure?.sections.find((entry) => entry.sectionId === sectionId);
+      const blockType = held?.data.blockType ?? row?.blockType;
+      if (!blockType) return [];
+      const links = held
+        ? Object.entries(readReuse(held.values, blockType)).map(([slot, ref]) => ({ slot, componentId: ref.c }))
+        : (row?.reuse ?? []);
+      return links.map((link) => ({
+        slot: link.slot,
+        name: catalog?.find((entry) => entry.id === link.componentId)?.name ?? "reusable component",
+        fields: slotDef(blockType, link.slot)?.fields.map((field) => field.name) ?? [],
+      }));
+    },
+    // `buffers` so the badge follows a link made in this session before it saves.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [buffers, catalog, structure],
+  );
+
+  const reuseControls: ReuseControls = useMemo(
+    () => ({
+      catalog,
+      notice: reuseNotice,
+      busy: reuseBusy,
+      message: reuseMessage,
+      onInstance: (values, label) => onValues(values, label),
+      onDetach: (slot, componentId, version) => void detachInstance(slot, componentId, version),
+      onSaveAs: (slot, name, publish) => void saveAsReusable(slot, name, publish),
+      onOpen: (id, focus) => setComponentDrawer({ id, focus }),
+      onDismissNotice: () => setReuseNotice(null),
+    }),
+    [catalog, detachInstance, onValues, reuseBusy, reuseMessage, reuseNotice, saveAsReusable],
+  );
+
   /** "Save now": the same queue, without waiting for the debounce. */
   const save = useCallback(() => {
     if (activeId === null) return;
@@ -1529,6 +1846,9 @@ export function VisualEditorShell({
         return result;
       }
       if (result.structure) setStructure(result.structure);
+      // Adding, duplicating, removing, restoring and discarding sections all
+      // change "Used on" for any reusable component they link to (Batch 17).
+      refreshCatalogRef.current();
 
       if (history && result.structure) {
         const sectionId =
@@ -1609,12 +1929,13 @@ export function VisualEditorShell({
 
   const ops: StructuralOps = useMemo(
     () => ({
-      onAdd: (blockType, afterSectionId) =>
+      onAdd: (blockType, afterSectionId, componentId) =>
         void runStructural(
           addPageSection,
           (form) => {
             form.set("blockType", blockType);
             if (afterSectionId) form.set("afterSectionId", String(afterSectionId));
+            if (componentId) form.set("componentId", String(componentId));
           },
           "new",
           { op: "add", sectionId: null },
@@ -2034,6 +2355,9 @@ export function VisualEditorShell({
        * cleared before anything is re-read, and the editor is told why.
        */
       resetHistory(pageId, historyNotice);
+      // Publishing, discarding and restoring change which pages use which
+      // reusable components, live and in draft (Batch 17).
+      refreshCatalogRef.current();
       for (const [id, timer] of autosaveTimers.current) {
         const entry = buffersRef.current[Number(id)];
         if (!entry || entry.data.pageId === pageId) {
@@ -2576,6 +2900,15 @@ export function VisualEditorShell({
           onSelect={ask}
           onToggleLock={toggleLock}
           onEditText={requestDirectEdit}
+          reuseOf={reuseOf}
+          reusableBlocks={(catalog ?? [])
+            .filter((entry) => entry.status === "active" && entry.published && entry.kind.startsWith("block:"))
+            .map((entry) => ({
+              id: entry.id,
+              name: entry.name,
+              blockType: entry.kind.slice("block:".length),
+              usage: usageHeadline(entry.usage),
+            }))}
         />
 
         <section
@@ -2628,7 +2961,57 @@ export function VisualEditorShell({
             loading={globalsLoading}
             onRefresh={() => void refreshGlobals()}
             onChanged={afterGlobalChange}
+            reusable={catalog}
+            onOpenComponent={(id) => setComponentDrawer({ id, focus: "edit" })}
           />
+
+          {componentDrawer ? (
+            <aside
+              className="absolute inset-y-0 end-0 z-30 flex w-[26rem] flex-col border-s border-[var(--admin-line)] bg-[var(--admin-shell)] shadow-2xl"
+              aria-label="Reusable component"
+              data-reuse-drawer={componentDrawer.id}
+            >
+              <header className="flex shrink-0 items-center gap-2 border-b border-[var(--admin-line)] px-3.5 py-2.5">
+                <h2 className="flex-1 truncate text-[0.82rem] font-semibold text-strong">Reusable component</h2>
+                <Link href={`/admin/components/${componentDrawer.id}`} className="admin-btn admin-btn-sm" target="_blank">
+                  Open full screen
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => setComponentDrawer(null)}
+                  className="admin-btn admin-btn-sm"
+                  aria-label="Close"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </header>
+              <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
+                <ReuseEditor
+                  key={componentDrawer.id}
+                  componentId={componentDrawer.id}
+                  csrf={csrf}
+                  canManage={canManageContent}
+                  media={media}
+                  locale={locale}
+                  focus={componentDrawer.focus}
+                  onChanged={(_view, event) => {
+                    /**
+                     * A component edit is the component's, never this page's:
+                     * nothing here touches a buffer, the layout or the page's
+                     * Undo. A publication changes what linked sections show,
+                     * so the counts are re-read and the canvas is redrawn with
+                     * the selection kept — and the history stays exactly as
+                     * it was, because nothing in it has become untrue.
+                     */
+                    void refreshCatalog();
+                    if (event === "published" && activeId !== null) redrawKeeping(activeId);
+                    else if (event === "published") freshCanvas();
+                    if (event === "deleted") setComponentDrawer(null);
+                  }}
+                />
+              </div>
+            </aside>
+          ) : null}
 
           <p className="mt-2.5 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 text-[0.72rem] text-muted">
             <span>
@@ -2667,6 +3050,7 @@ export function VisualEditorShell({
           onClear={() => ask(null)}
           onSelect={ask}
           replay={{ ready: canvas.status === "ready", status: replayStatus, onReplay: requestReplay }}
+          reuse={reuseControls}
         />
       </div>
     </div>

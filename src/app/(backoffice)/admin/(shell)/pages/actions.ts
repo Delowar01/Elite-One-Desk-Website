@@ -44,6 +44,8 @@ import { readVisibility } from "@/lib/cms/structure";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { emptyValues } from "@/lib/cms/values";
 import { parseBlockPayload } from "@/lib/cms/validate";
+import { readReuse, slotDef, withReuse } from "@/lib/cms/reuse/reference";
+import { checkReferencesForPublish, referenceProblemMessage } from "@/lib/cms/reuse/store";
 import { db } from "@/lib/db";
 import { lockPageForWrite, updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
@@ -451,6 +453,14 @@ class SectionPublishRace extends Error {
   }
 }
 
+/** A publication refused because of what a reusable-component reference points at (Batch 17). */
+class SectionPublishReference extends Error {
+  constructor(readonly detail: string) {
+    super("reference");
+    this.name = "SectionPublishReference";
+  }
+}
+
 /**
  * One section published, with the page's restore point, in one transaction.
  *
@@ -482,15 +492,28 @@ async function publishSectionIn(input: {
   label: string;
   userId: number;
   actorName: string;
-}): Promise<{ ok: true; revision: number } | { ok: false; reason: "conflict" | "missing" }> {
+}): Promise<
+  | { ok: true; revision: number }
+  | { ok: false; reason: "conflict" | "missing" }
+  | { ok: false; reason: "reference"; message: string }
+> {
   try {
     return await db.transaction(async (tx) => {
       // Page first, section rows next — the order `lockPageForWrite` defines
       // and every page-wide operation uses.
       const locked = await lockPageForWrite(tx, input.pageId);
       if (!locked) throw new SectionPublishRace("missing");
-      if (!locked.rows.some((row) => row.id === input.sectionId)) {
-        throw new SectionPublishRace("missing");
+      const target = locked.rows.find((row) => row.id === input.sectionId);
+      if (!target) throw new SectionPublishRace("missing");
+
+      // Content going live must not link to a component that is missing,
+      // unfit or unpublished — the same check a page publication makes, with
+      // the components held until this commits (Batch 17).
+      if (input.values.published !== undefined) {
+        const problems = await checkReferencesForPublish(tx, [
+          { blockType: target.blockType, values: input.values.published },
+        ]);
+        if (problems.length) throw new SectionPublishReference(referenceProblemMessage(problems[0]!));
       }
 
       await recordRestorePointIn(tx, {
@@ -522,6 +545,9 @@ async function publishSectionIn(input: {
      * the action's own error handler.
      */
     if (error instanceof SectionPublishRace) return { ok: false as const, reason: error.reason };
+    if (error instanceof SectionPublishReference) {
+      return { ok: false as const, reason: "reference" as const, message: error.detail };
+    }
     throw error;
   }
 }
@@ -571,8 +597,27 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
   // The same registry validator either way. Publishing is a destination, not a
   // shortcut: nothing reaches `published` that would not have been allowed into
   // `draft`.
-  const values = parseBlockPayload(String(form.get("values") ?? ""), block);
-  if (!values) return fail(CONFLICT.unreadable);
+  const parsed = parseBlockPayload(String(form.get("values") ?? ""), block);
+  if (!parsed) return fail(CONFLICT.unreadable);
+
+  /**
+   * Reusable components (Batch 17). This form cannot link, override or detach
+   * — the Visual Editor and the Reusable components screen do that — so the
+   * reference is carried from the stored row and never read from the
+   * submission, and every field a link covers keeps its stored value. The
+   * form shows those fields read-only; this is what makes that true for a
+   * submission that was not built by the form, and what stops a save here
+   * from unlinking a section by leaving the reference out.
+   */
+  const stored = (section.draft ?? section.published) as Record<string, unknown>;
+  const links = readReuse(stored, block.type);
+  const kept: Record<string, unknown> = { ...parsed };
+  for (const slotName of Object.keys(links)) {
+    for (const field of slotDef(block.type, slotName)?.fields ?? []) {
+      if (field.name in stored) kept[field.name] = stored[field.name];
+    }
+  }
+  const values = withReuse(kept, links);
 
   /**
    * Does this request have an opinion about motion at all?
@@ -677,6 +722,7 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
     : await updateSectionGuarded(id, expected, { ...written, updatedBy: session.user.id });
   if (!result.ok) {
     if (result.reason === "missing") return fail(CONFLICT.gone);
+    if (result.reason === "reference") return fail("message" in result ? result.message : CONFLICT.publish);
     return fail(publish ? CONFLICT.publish : CONFLICT.save);
   }
 
@@ -762,7 +808,10 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
       userId: session.user.id,
       actorName: session.user.name,
     });
-    if (!result.ok) return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.publish);
+    if (!result.ok) {
+      if (result.reason === "reference") return fail(result.message);
+      return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.publish);
+    }
 
     const page = await pageOf(id);
     await logActivity(session, {

@@ -4,7 +4,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { updatePageGuarded, updatePageGuardedIn } from "@/lib/db/revision";
-import { pageSections, pages } from "@/lib/db/schema";
+import { pageSections, pages, reusableComponents } from "@/lib/db/schema";
 
 import { blocksForPage, getBlock, type BlockDef } from "./blocks";
 import { withFreshItemIds, remapMotionItemIds, remapStyleItemIds } from "./duplicate";
@@ -26,6 +26,8 @@ import {
 export type { PageStructure, PageStructureSection };
 import { validateBlockValues } from "./validate";
 import { emptyValues, text } from "./values";
+import { BLOCK_SLOT, linkSlot, readReuse, referencedIds, withReuse } from "./reuse/reference";
+import { componentValues, lockComponents, referenceProblemMessage } from "./reuse/store";
 
 /**
  * Every structural change a page can have, in one place.
@@ -66,7 +68,21 @@ export type StructureLog = {
 };
 
 export type StructureResult =
-  | { ok: true; revision: number; sectionId?: number; log: StructureLog; message: string }
+  | {
+      ok: true;
+      revision: number;
+      sectionId?: number;
+      log: StructureLog;
+      /** A second entry the operation deserves — a new section linked to a reusable component (Batch 17). */
+      also?: {
+        action: string;
+        entityType: string;
+        entityId: number;
+        summary: string;
+        metadata?: Record<string, unknown>;
+      };
+      message: string;
+    }
   | { ok: false; reason: StructureFailure; message: string };
 
 export const STRUCTURE_MESSAGES = {
@@ -181,6 +197,10 @@ export async function getPageStructure(pageId: number): Promise<PageStructure | 
       isDraftOnly: row.isDraftOnly,
       publishedPosition: row.position,
       publishedVisible: row.isPublished,
+      reuse: Object.entries(readReuse(row.draft ?? row.published, row.blockType)).map(([slot, ref]) => ({
+        slot,
+        componentId: ref.c,
+      })),
     })),
   };
 }
@@ -344,6 +364,7 @@ export async function addStructureSection(
   context: Context,
   blockType: string,
   afterSectionId: number | null,
+  options: { componentId?: number } = {},
 ): Promise<StructureResult> {
   const opened = await open(context);
   if (!opened.ok) return opened.result;
@@ -354,13 +375,67 @@ export async function addStructureSection(
   if (afterSectionId !== null && !opened.structure.sections.some((e) => e.sectionId === afterSectionId)) {
     return fail("not_a_member", STRUCTURE_MESSAGES.notAMember);
   }
+  const componentId = options.componentId;
+  if (componentId !== undefined && (!Number.isInteger(componentId) || componentId <= 0)) {
+    return fail("invalid", STRUCTURE_MESSAGES.unreadable);
+  }
 
-  const values = emptyValues(block);
+  let values = emptyValues(block);
   let created = 0;
   let revision = 0;
   let conflict: "conflict" | "missing" | null = null;
+  let refused: string | null = null;
+  let linkedName: string | null = null;
 
   await db.transaction(async (tx) => {
+    /**
+     * A reusable block (Batch 17): the new section is an instance of the
+     * component from the moment it exists — one structural action, so one
+     * Undo takes it away. The component is read here, held `FOR SHARE`, and
+     * must be a published, active component of this block's kind; its
+     * published content becomes the section's fallback copy. Nothing about it
+     * is taken from the request but its id.
+     */
+    if (componentId !== undefined) {
+      const [component] = await tx
+        .select({
+          kind: reusableComponents.kind,
+          name: reusableComponents.name,
+          status: reusableComponents.status,
+          published: reusableComponents.published,
+          publishedVersion: reusableComponents.publishedVersion,
+        })
+        .from(reusableComponents)
+        .where(eq(reusableComponents.id, componentId))
+        .limit(1)
+        .for("share");
+      const reason = !component
+        ? ("missing" as const)
+        : component.kind !== `block:${blockType}`
+          ? ("kind" as const)
+          : component.publishedVersion < 1
+            ? ("unpublished" as const)
+            : component.status === "archived"
+              ? ("archived" as const)
+              : null;
+      const published = component ? componentValues(component.kind, component.published) : null;
+      const linked =
+        !reason && published
+          ? linkSlot(blockType, values, BLOCK_SLOT, { id: componentId, kind: component!.kind, values: published })
+          : null;
+      if (!linked) {
+        refused = referenceProblemMessage({
+          componentId,
+          slot: BLOCK_SLOT,
+          reason: reason ?? "kind",
+          name: component?.name ?? null,
+        });
+        tx.rollback();
+      }
+      values = linked!;
+      linkedName = component!.name;
+    }
+
     const [row] = await tx
       .insert(pageSections)
       .values({
@@ -396,22 +471,39 @@ export async function addStructureSection(
     revision = guard.ok ? guard.revision : 0;
   }).catch((error) => {
     // `tx.rollback()` throws by design; anything else is a real failure.
-    if (!conflict) throw error;
+    if (!conflict && !refused) throw error;
   });
 
+  if (refused) return fail("invalid", refused);
   if (conflict) return guardFailure(conflict);
 
   return {
     ok: true,
     revision,
     sectionId: created,
-    message: `${block.name} added to the layout draft. Preview the page before publishing the layout.`,
+    message: linkedName
+      ? `${block.name} linked to “${linkedName}” added to the layout draft. Preview the page before publishing the layout.`
+      : `${block.name} added to the layout draft. Preview the page before publishing the layout.`,
     log: {
       action: "section.layout_added",
       entityType: "section",
       entityId: created,
-      summary: `Added a ${block.name} section to the layout draft for “${opened.page.slug}”`,
+      summary: linkedName
+        ? `Added a ${block.name} section linked to “${linkedName}” to the layout draft for “${opened.page.slug}”`
+        : `Added a ${block.name} section to the layout draft for “${opened.page.slug}”`,
     },
+    ...(linkedName && componentId !== undefined
+      ? {
+          also: {
+            action: "reusable_component.instance_linked",
+            // The entity is the component the new section links to.
+            entityType: "reusable_component",
+            entityId: componentId,
+            summary: `Linked a new ${block.name} section on “${opened.page.slug}” in a layout draft`,
+            metadata: { sectionId: created, slot: BLOCK_SLOT },
+          },
+        }
+      : {}),
   };
 }
 
@@ -446,7 +538,15 @@ export async function duplicateStructureSection(
 
   const seen = (source.draft ?? source.published) as Record<string, unknown>;
   const { values: renamed, ids } = withFreshItemIds({ ...emptyValues(block), ...seen });
-  const copiedValues = validateBlockValues(block, renamed);
+  /**
+   * A copy of a linked section is another instance of the SAME component
+   * (Batch 17): the reference and its overrides are carried across, so the
+   * copy follows the component exactly as the original does, and "Used on"
+   * counts one more. The validator drops the reference like any undeclared
+   * key, so it is carried beside it rather than through it.
+   */
+  const links = readReuse(seen, block.type);
+  const copiedValues = withReuse(validateBlockValues(block, renamed), links);
   const copiedStyles = remapStyleItemIds(
     validateStyleDocument(source.draftStyles !== null ? source.draftStyles : source.styles),
     ids,
@@ -465,8 +565,24 @@ export async function duplicateStructureSection(
   let created = 0;
   let revision = 0;
   let conflict: "conflict" | "missing" | null = null;
+  let refused: string | null = null;
 
   await db.transaction(async (tx) => {
+    /**
+     * The components the copy will refer to, held `FOR SHARE` until this
+     * commits (Batch 17) — so a component cannot be deleted between the
+     * original being read and the copy being written. One that has already
+     * gone refuses the copy rather than writing a reference to nothing.
+     */
+    const needed = referencedIds(copiedValues, block.type);
+    if (needed.length) {
+      const found = await lockComponents(tx, needed);
+      const gone = needed.find((id) => !found.has(id));
+      if (gone !== undefined) {
+        refused = referenceProblemMessage({ componentId: gone, slot: "", reason: "missing", name: null });
+        tx.rollback();
+      }
+    }
     const [row] = await tx
       .insert(pageSections)
       .values({
@@ -511,9 +627,10 @@ export async function duplicateStructureSection(
     }
     revision = guard.ok ? guard.revision : 0;
   }).catch((error) => {
-    if (!conflict) throw error;
+    if (!conflict && !refused) throw error;
   });
 
+  if (refused) return fail("invalid", refused);
   if (conflict) return guardFailure(conflict);
 
   return {
