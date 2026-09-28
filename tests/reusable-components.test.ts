@@ -35,6 +35,7 @@ import {
   detachSlot,
   directEditDecision,
   effectiveSlotValues,
+  hasSeparateLinks,
   linkSlot,
   parseReuse,
   pinReuse,
@@ -46,6 +47,7 @@ import {
   slotsOf,
   stripReuse,
   unpinReuse,
+  WHOLE_BLOCK_REFUSAL,
   withReuse,
   type ComponentSource,
 } from "@/lib/cms/reuse/reference";
@@ -301,9 +303,16 @@ describe("15–24 · an instance inherits, overrides sparsely, and detaches to w
     assert.deepEqual(readReuse(linked, "final-cta"), { block: { c: 7 } });
     const drawn = resolveReuse("final-cta", linked, lookup({ id: 7, kind: "block:final-cta", values: panel, version: 1 })).values;
     assert.deepEqual(stripReuse(drawn), panel);
-    // The whole-block link supersedes a CTA link it covers.
+    // A whole-block link is never laid over a CTA linked on its own: that
+    // would drop the CTA's link without anyone asking (Batch 17 review). The
+    // CTA is detached first.
     const withCta = linkSlot("final-cta", finalCta(), "primaryCta", { id: 12, kind: "cta", values: global.values! })!;
-    assert.deepEqual(readReuse(linkSlot("final-cta", withCta, BLOCK_SLOT, { id: 7, kind: "block:final-cta", values: panel }), "final-cta"), { block: { c: 7 } });
+    assert.equal(linkSlot("final-cta", withCta, BLOCK_SLOT, { id: 7, kind: "block:final-cta", values: panel }), null);
+    assert.equal(hasSeparateLinks("final-cta", withCta), true);
+    assert.equal(hasSeparateLinks("final-cta", finalCta()), false);
+    assert.equal(hasSeparateLinks("final-cta", linked), false, "a whole-block link is not a separate one");
+    const detachedCta = detachSlot("final-cta", withCta, "primaryCta", global.values)!;
+    assert.deepEqual(readReuse(linkSlot("final-cta", detachedCta, BLOCK_SLOT, { id: 7, kind: "block:final-cta", values: panel }), "final-cta"), { block: { c: 7 } });
     assert.equal(linkSlot("final-cta", linked, "primaryCta", { id: 12, kind: "cta", values: global.values! }), null);
     // Only typed text is overridable; a switch, a picture and rich text are not.
     assert.deepEqual(slotDef("image-text", BLOCK_SLOT)!.overridable, [
@@ -595,6 +604,31 @@ describe("43–45 · the canvas never types into a component, and Layers says wh
     assert.match(panel, /`Reset override of \$\{what\}`/);
     const editor = source("src/components/admin/reuse/reuse-editor.tsx");
     assert.doesNotMatch(editor, /recordChange|writeHistory|diffContent/);
+  });
+});
+
+describe("28–29 · making something reusable publishes nothing by default, and never bakes in a stale CTA", () => {
+  const panel = source("src/components/admin/visual-editor/reuse-panel.tsx");
+  const saveAs = panel.slice(panel.indexOf("function SaveAsForm("));
+
+  test("Save as reusable starts on “Create a draft only”; publishing is a deliberate second choice", () => {
+    assert.match(saveAs, /const \[publish, setPublish\] = useState\(false\);/);
+    const draft = saveAs.indexOf("Create a draft only");
+    const publish = saveAs.indexOf("Create, publish and link");
+    assert.ok(draft > 0 && publish > draft, "the draft option is the first, and the one selected");
+    assert.match(saveAs, /checked=\{!publish\}[\s\S]*?data-reuse-save-mode="draft"/);
+    assert.match(saveAs, /checked=\{publish\}[\s\S]*?data-reuse-save-mode="publish"/);
+    // The button names what it will do, so publishing is never accepted unread.
+    assert.match(saveAs, /\{publish \? "Create, publish and link" : `Create \$\{noun\} draft`\}/);
+  });
+
+  test("the whole section is refused while a CTA in it is linked on its own — in the panel and on both server paths", () => {
+    assert.equal(WHOLE_BLOCK_REFUSAL, "Detach the reusable CTA links in this section before making the whole section reusable.");
+    assert.match(panel, /blocked=\{slot\.slot === BLOCK_SLOT && hasSeparateLinks\(blockType, values\) \? WHOLE_BLOCK_REFUSAL : null\}/);
+    const create = source("src/app/(backoffice)/admin/(shell)/components/actions.ts");
+    assert.match(create, /if \(slotName === BLOCK_SLOT && hasSeparateLinks\(row\.blockType, stored\)\) \{\s*return \{ ok: false, reason: "invalid", message: WHOLE_BLOCK_REFUSAL \};/);
+    const save = source("src/app/(backoffice)/admin/visual-editor/actions.ts");
+    assert.match(save, /if \(reuse\.map\[BLOCK_SLOT\] && hasSeparateLinks\(found\.block\.type, found\.row\.draft \?\? found\.row\.published\)\) \{\s*return \{ ok: false, reason: "invalid", message: WHOLE_BLOCK_REFUSAL \};/);
   });
 });
 

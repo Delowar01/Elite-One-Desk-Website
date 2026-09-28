@@ -113,6 +113,9 @@ export async function lockComponents(on: Executor, ids: readonly number[]) {
   return new Map(rows.map((row) => [row.id, row]));
 }
 
+/** One existing reference, as the pair an archived component may stay in. */
+const heldKey = (slot: string, componentId: number) => `${slot}:${componentId}`;
+
 /**
  * What a section save may store — checked against the database, never against
  * what the browser claims.
@@ -121,9 +124,14 @@ export async function lockComponents(on: Executor, ids: readonly number[]) {
  * whether it was ever published are read here. A reference must point at a
  * component that exists, whose kind fits the slot, and which has been
  * published — a page must never be linked to content no visitor could be
- * shown. An archived component is accepted only where this section already
- * referred to it: archiving stops new links, and must not stop an editor from
- * saving a section that was linked before.
+ * shown.
+ *
+ * An archived component is accepted only in a slot that already refers to it
+ * — in this section's published content or its draft, the same slot and the
+ * same component. Archiving stops new links, and must not stop an editor from
+ * saving a section that was linked before; but the same section is no
+ * exception to "new": the component may not be linked into a second slot of
+ * it, nor moved from one slot to another.
  */
 export async function checkReferencesForSave(
   on: Executor,
@@ -131,9 +139,9 @@ export async function checkReferencesForSave(
 ): Promise<ReferenceProblem[]> {
   const slots = Object.entries(input.map);
   if (!slots.length) return [];
-  const held = new Set<number>();
+  const held = new Set<string>();
   for (const values of input.stored) {
-    for (const entry of Object.values(readReuse(values, input.blockType))) held.add(entry.c);
+    for (const [slot, entry] of Object.entries(readReuse(values, input.blockType))) held.add(heldKey(slot, entry.c));
   }
   const found = await lockComponents(
     on,
@@ -146,7 +154,7 @@ export async function checkReferencesForSave(
     if (!row) problems.push({ componentId: entry.c, slot, reason: "missing", name: null });
     else if (row.kind !== expected) problems.push({ componentId: entry.c, slot, reason: "kind", name: row.name });
     else if (row.publishedVersion < 1) problems.push({ componentId: entry.c, slot, reason: "unpublished", name: row.name });
-    else if (row.status === "archived" && !held.has(entry.c)) {
+    else if (row.status === "archived" && !held.has(heldKey(slot, entry.c))) {
       problems.push({ componentId: entry.c, slot, reason: "archived", name: row.name });
     }
   }

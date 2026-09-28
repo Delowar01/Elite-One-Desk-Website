@@ -10,7 +10,14 @@ import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
 import { REUSE_AUTHORITY, reuseAllowed } from "@/lib/cms/reuse/authority";
 import { kindDef, kindNoun } from "@/lib/cms/reuse/kinds";
-import { readReuse, slotContent, slotDef } from "@/lib/cms/reuse/reference";
+import {
+  BLOCK_SLOT,
+  hasSeparateLinks,
+  readReuse,
+  slotContent,
+  slotDef,
+  WHOLE_BLOCK_REFUSAL,
+} from "@/lib/cms/reuse/reference";
 import {
   createComponent,
   deleteComponent,
@@ -227,6 +234,11 @@ export async function createReusableFromSection(form: FormData): Promise<ReuseAc
     const stored = (row.draft ?? row.published) as Record<string, unknown>;
     if (readReuse(stored, row.blockType)[slotName] || readReuse(stored, row.blockType).block) {
       return { ok: false, reason: "invalid", message: "That is already linked to a reusable component." };
+    }
+    // Its linked call to action holds only a kept copy; the component would be
+    // made from stale words (see `hasSeparateLinks`).
+    if (slotName === BLOCK_SLOT && hasSeparateLinks(row.blockType, stored)) {
+      return { ok: false, reason: "invalid", message: WHOLE_BLOCK_REFUSAL };
     }
     const result = await createComponent({
       kind: slot.kind,

@@ -427,13 +427,32 @@ export function pinReuse(
 /* Instance edits — pure, shared by the editor and the server                 */
 /* -------------------------------------------------------------------------- */
 
+/** Said wherever the whole section is refused for a call to action linked on its own. */
+export const WHOLE_BLOCK_REFUSAL =
+  "Detach the reusable CTA links in this section before making the whole section reusable.";
+
+/**
+ * Whether a call to action in this section is linked on its own — which rules
+ * out making the whole section reusable, or linking it to a reusable block.
+ *
+ * That CTA's fields hold only the copy kept when it was linked, while the page
+ * shows the component's current version: a whole-section component made from
+ * them would bake the stale copy in, and a whole-section link laid over them
+ * would drop the CTA's link without anyone asking. Reusable components do not
+ * nest, so the CTA link is detached first — detaching writes what the page
+ * shows into those fields.
+ */
+export const hasSeparateLinks = (blockType: string, values: unknown): boolean =>
+  Object.keys(readReuse(values, blockType)).some((slot) => slot !== BLOCK_SLOT);
+
 /**
  * Links one slot to a component.
  *
  * The covered fields take a copy of the component's published content as their
  * fallback, and every override is cleared: a fresh link inherits everything.
- * Linking the whole block takes over any call-to-action links it covers.
- * `null` when the slot does not exist or the kind does not fit it.
+ * `null` when the slot does not exist or the kind does not fit it — and for
+ * the whole block while a call to action in it is linked on its own
+ * (`hasSeparateLinks`), rather than dropping that link.
  */
 export function linkSlot(
   blockType: string,
@@ -445,6 +464,7 @@ export function linkSlot(
   if (!slot || slot.kind !== component.kind || !isId(component.id)) return null;
   const map = readReuse(values, blockType);
   if (slotName !== BLOCK_SLOT && map[BLOCK_SLOT]) return null;
+  if (slotName === BLOCK_SLOT && hasSeparateLinks(blockType, values)) return null;
   const next: ReuseMap = slotName === BLOCK_SLOT ? {} : { ...map };
   next[slotName] = { c: component.id };
   const copied = effectiveSlotValues(slot, values, component.values, []);

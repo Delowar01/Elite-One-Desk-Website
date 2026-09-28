@@ -7,11 +7,13 @@ import { kindDef } from "@/lib/cms/reuse/kinds";
 import {
   BLOCK_SLOT,
   effectiveSlotValues,
+  hasSeparateLinks,
   linkSlot,
   overrideLabel,
   readReuse,
   setOverride,
   slotsOf,
+  WHOLE_BLOCK_REFUSAL,
   type SlotDef,
   type SlotRef,
 } from "@/lib/cms/reuse/reference";
@@ -140,6 +142,7 @@ export function ReusePanel({
             canManage={canManage}
             focused={focused}
             controls={controls}
+            blocked={slot.slot === BLOCK_SLOT && hasSeparateLinks(blockType, values) ? WHOLE_BLOCK_REFUSAL : null}
           />
         );
       })}
@@ -393,6 +396,7 @@ function UnlinkedSlot({
   canManage,
   focused,
   controls,
+  blocked,
 }: {
   blockType: string;
   slot: SlotDef;
@@ -400,11 +404,30 @@ function UnlinkedSlot({
   canManage: boolean;
   focused: boolean;
   controls: ReuseControls;
+  /** Why this slot cannot be linked or saved as reusable right now, if it cannot. */
+  blocked: string | null;
 }) {
   const [mode, setMode] = useState<null | "link" | "save">(null);
   const cta = slot.kind === "cta";
   const noun = cta ? "CTA" : "component";
   if (!canManage) return null;
+  if (blocked) {
+    return (
+      <div
+        className="rounded-[var(--radius-xs)] border border-dashed border-[var(--admin-line)] p-2"
+        data-reuse-slot={slot.slot}
+        data-reuse-unlinked
+        style={focused ? { borderColor: "var(--color-orange)" } : undefined}
+      >
+        <p className="text-[0.72rem] text-muted">
+          <span className="font-medium text-body">{slot.label}</span> — this page’s own content
+        </p>
+        <p className="mt-1.5 text-[0.72rem] leading-relaxed text-muted" role="note" data-reuse-blocked>
+          {blocked}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -570,7 +593,8 @@ function SaveAsForm({
   onCancel: () => void;
 }) {
   const [name, setName] = useState("");
-  const [publish, setPublish] = useState(true);
+  // Draft first: publishing is a deliberate second choice, never the default.
+  const [publish, setPublish] = useState(false);
   return (
     <form
       className="mt-2 flex flex-col gap-1.5"
@@ -594,7 +618,28 @@ function SaveAsForm({
       <fieldset className="flex flex-col gap-1 border-0 p-0">
         <legend className="sr-only">How to create it</legend>
         <label className="flex items-start gap-2 text-[0.74rem]">
-          <input type="radio" name="reuse-publish" checked={publish} onChange={() => setPublish(true)} className="mt-0.5" />
+          <input
+            type="radio"
+            name="reuse-publish"
+            checked={!publish}
+            onChange={() => setPublish(false)}
+            className="mt-0.5"
+            data-reuse-save-mode="draft"
+          />
+          <span>
+            <span className="block font-medium text-strong">Create a draft only</span>
+            <span className="block text-muted">Nothing is linked. Publish it from its own editor first.</span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 text-[0.74rem]">
+          <input
+            type="radio"
+            name="reuse-publish"
+            checked={publish}
+            onChange={() => setPublish(true)}
+            className="mt-0.5"
+            data-reuse-save-mode="publish"
+          />
           <span>
             <span className="block font-medium text-strong">Create, publish and link</span>
             <span className="block text-muted">
@@ -603,17 +648,15 @@ function SaveAsForm({
             </span>
           </span>
         </label>
-        <label className="flex items-start gap-2 text-[0.74rem]">
-          <input type="radio" name="reuse-publish" checked={!publish} onChange={() => setPublish(false)} className="mt-0.5" />
-          <span>
-            <span className="block font-medium text-strong">Create a draft only</span>
-            <span className="block text-muted">Nothing is linked. Publish it from its own editor first.</span>
-          </span>
-        </label>
       </fieldset>
       <div className="flex gap-1.5">
-        <button type="submit" className="admin-btn admin-btn-sm admin-btn-primary" disabled={busy || !name.trim()}>
-          Save as reusable {noun}
+        <button
+          type="submit"
+          className="admin-btn admin-btn-sm admin-btn-primary"
+          disabled={busy || !name.trim()}
+          data-reuse-save-submit
+        >
+          {publish ? "Create, publish and link" : `Create ${noun} draft`}
         </button>
         <button type="button" className="admin-btn admin-btn-sm" onClick={onCancel}>
           Cancel

@@ -24,10 +24,13 @@ import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 import { validateStyleDocument } from "@/lib/cms/styles";
 import { parseBlockPayload, validateBlockValues } from "@/lib/cms/validate";
 import {
+  BLOCK_SLOT,
   detachSlot,
+  hasSeparateLinks,
   parseReuse,
   readReuse,
   slotDef,
+  WHOLE_BLOCK_REFUSAL,
   withReuse,
   type ReuseMap,
 } from "@/lib/cms/reuse/reference";
@@ -332,6 +335,12 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
     if (!reuse.ok) return { ok: false, reason: "invalid", message: MESSAGES.invalid };
     const values = withReuse(declared, reuse.map);
     const before = readReuse(found.row.draft ?? found.row.published, found.block.type);
+    // A whole-section link laid over a call to action linked on its own would
+    // drop that link without anyone asking — refused before anything is
+    // written, so the revision does not move (see `hasSeparateLinks`).
+    if (reuse.map[BLOCK_SLOT] && hasSeparateLinks(found.block.type, found.row.draft ?? found.row.published)) {
+      return { ok: false, reason: "invalid", message: WHOLE_BLOCK_REFUSAL };
+    }
 
     /**
      * The whole write. `draft` and nothing else — the guard adds `revision`,

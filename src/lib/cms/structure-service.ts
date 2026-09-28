@@ -572,14 +572,25 @@ export async function duplicateStructureSection(
      * The components the copy will refer to, held `FOR SHARE` until this
      * commits (Batch 17) — so a component cannot be deleted between the
      * original being read and the copy being written. One that has already
-     * gone refuses the copy rather than writing a reference to nothing.
+     * gone refuses the copy rather than writing a reference to nothing, and so
+     * does an archived one: the copy is a new instance, and an archived
+     * component takes no new links.
      */
     const needed = referencedIds(copiedValues, block.type);
     if (needed.length) {
       const found = await lockComponents(tx, needed);
       const gone = needed.find((id) => !found.has(id));
+      const archived = needed.find((id) => found.get(id)?.status === "archived");
       if (gone !== undefined) {
         refused = referenceProblemMessage({ componentId: gone, slot: "", reason: "missing", name: null });
+        tx.rollback();
+      } else if (archived !== undefined) {
+        refused = referenceProblemMessage({
+          componentId: archived,
+          slot: "",
+          reason: "archived",
+          name: found.get(archived)?.name ?? null,
+        });
         tx.rollback();
       }
     }

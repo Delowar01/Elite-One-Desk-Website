@@ -21,7 +21,7 @@ import { connect, dropDatabase, type Sql } from "./helpers/pg";
 import { BUILD_HINT, isBuilt, startServer, type Server } from "./helpers/server";
 import { signIn, type TestSession } from "./helpers/session";
 
-import { linkSlot, readReuse, setOverride, withReuse } from "@/lib/cms/reuse/reference";
+import { linkSlot, readReuse, setOverride, stripReuse, WHOLE_BLOCK_REFUSAL, withReuse } from "@/lib/cms/reuse/reference";
 import type { ReuseActionResult, ReuseCatalogEntry, ReuseComponentView } from "@/lib/cms/reuse/view";
 import type { PageStructure } from "@/lib/cms/structure";
 import type { VisualDetachResult, VisualStructureResult } from "@/lib/visual-editor/content";
@@ -186,6 +186,21 @@ async function detach(section: SectionRow, slot: string, version: number, as: Te
       action: "detachVisualInstance",
       args: [data],
       cookie: as.cookie,
+    }),
+  );
+}
+
+/** A save through the classic section form (`/admin/pages/section/[id]`). */
+async function classicSave(section: SectionRow, values: Values) {
+  const data = form({ id: section.id, expectedRevision: section.revision, values: JSON.stringify(values) });
+  return answered(
+    await callAction<{ ok: boolean; message?: string }>({
+      origin: server.origin,
+      route: `/admin/pages/section/${section.id}`,
+      file: "app/(backoffice)/admin/(shell)/pages/actions.ts",
+      action: "saveSectionDraft",
+      args: [{ ok: false }, data],
+      cookie: owner.cookie,
     }),
   );
 }
@@ -818,6 +833,94 @@ describe("37–39 · archived components keep rendering; delete only what nothin
     await discardPage("home");
   });
 
+  test("37 · an archived component keeps only the slot that already held it — no second slot, no move, no copy", async () => {
+    const component = await createCta("Hero archived CTA", "Hero primary", "", "/hero-primary");
+    const hero = await sectionOf("home", "hero");
+    assert.equal((await link(hero, "primaryCta", component)).ok, true);
+    const archived = await componentAction("archiveReusable", {
+      id: component.id,
+      expectedRevision: (await componentRow(component.id))!.revision,
+      archived: "1",
+    });
+    assert.equal(archived.ok, true, JSON.stringify(archived));
+
+    // Ordinary content saved beside the link the section already has: accepted, every link as it was.
+    const linked = await row(hero.id);
+    const links = readReuse(current(linked), "hero");
+    assert.deepEqual(links.primaryCta, { c: component.id });
+    const ordinary = await saveContent(linked, { ...current(linked), headline: { en: "Still the hero", ar: "" } });
+    assert.equal(ordinary.ok, true, JSON.stringify(ordinary));
+    const saved = await row(hero.id);
+    assert.equal(saved.revision, linked.revision + 1);
+    assert.deepEqual(readReuse(saved.draft, "hero"), links);
+
+    // The same component in a second slot of the same section is a new link: refused, nothing written.
+    const second = await saveContent(saved, withReuse(current(saved), { ...links, secondaryCta: { c: component.id } }));
+    assert.equal(second.ok, false);
+    assert.match(String(second.message), /archived/);
+    const refused = await row(hero.id);
+    assert.equal(refused.revision, saved.revision, "a refused save moves no revision");
+    assert.deepEqual(readReuse(refused.draft, "hero"), links, "the existing references are unchanged");
+
+    // Moving it from its slot to another is a new link as well.
+    const { primaryCta: _primary, ...others } = links;
+    void _primary;
+    const moved = await saveContent(refused, withReuse(current(refused), { ...others, secondaryCta: { c: component.id } }));
+    assert.equal(moved.ok, false);
+    assert.match(String(moved.message), /archived/);
+    assert.equal((await row(hero.id)).revision, saved.revision);
+
+    // The classic section form never reads a reference from what it is sent, so it cannot add one.
+    const classic = await classicSave(refused, withReuse(current(refused), { ...links, secondaryCta: { c: component.id } }));
+    assert.equal(classic.ok, true, JSON.stringify(classic));
+    assert.deepEqual(readReuse((await row(hero.id)).draft, "hero"), links);
+
+    // A copy of the section would be a new instance: refused, and no row is written.
+    const sections = async () =>
+      (await sql<{ n: number }[]>`select count(*)::int as n from page_sections where page_id = ${hero.page_id}`)[0]!.n;
+    const before = await sections();
+    const copy = await structural("duplicatePageSection", "home", { sectionId: hero.id });
+    assert.equal(copy.ok, false);
+    assert.match(String(!copy.ok && copy.message), /archived/);
+    assert.equal(await sections(), before);
+    await discardPage("home");
+  });
+
+  test("37 · restoring page history is not a new link: an archived component returns to the slot the version had it in", async () => {
+    const component = await createCta("History archived CTA", "History words", "", "/history");
+    const section = await sectionOf("about", "final-cta");
+    assert.equal((await link(section, "primaryCta", component)).ok, true);
+    assert.equal((await publishPage("about")).ok, true);
+    const archived = await componentAction("archiveReusable", {
+      id: component.id,
+      expectedRevision: (await componentRow(component.id))!.revision,
+      archived: "1",
+    });
+    assert.equal(archived.ok, true, JSON.stringify(archived));
+
+    // Detach and publish: the restore point taken before that publication records the link.
+    assert.equal((await detach(await row(section.id), "primaryCta", 1)).ok, true);
+    assert.equal((await publishPage("about")).ok, true);
+    const [version] = await sql<{ id: number; snapshot: { sections: { sourceSectionId: number; published: Values }[] } }[]>`
+      select id, snapshot from page_versions where page_id = ${section.page_id} order by id desc limit 1`;
+    const recorded = version!.snapshot.sections.find((entry) => entry.sourceSectionId === section.id)!;
+    assert.equal(readReuse(recorded.published, "final-cta", { pins: true }).primaryCta?.c, component.id);
+
+    // Restoring it brings the link back to the slot it was in — archiving stops new links, not history.
+    const restored = await editorAction<PageActionResult>("restoreVersionFromEditor", {
+      pageId: section.page_id,
+      expectedRevision: (await pageBySlug("about")).revision,
+      versionId: version!.id,
+    });
+    assert.equal(restored.ok, true, JSON.stringify(restored));
+    const back = await row(section.id);
+    assert.deepEqual(readReuse(back.draft, "final-cta").primaryCta, { c: component.id });
+    // The section saves as ever — its slot holds the component — and the page publishes it.
+    assert.equal((await saveContent(back, { ...current(back), title: { en: "Restored", ar: "" } })).ok, true);
+    assert.equal((await publishPage("about")).ok, true);
+    assert.equal(anchorWith(await live("/about"), "History words")?.href, "/history");
+  });
+
   test("an unused component is deleted; one a saved page version refers to is not", async () => {
     const unused = await createCta("Unused CTA", "x", "", "/x");
     const deleted = await componentAction("deleteReusable", { id: unused.id, expectedRevision: unused.revision });
@@ -1098,5 +1201,80 @@ describe("28–29 of the brief · save as reusable, and add a reusable section",
     })).value!;
     assert.deepEqual(structure.sections.find((entry) => entry.sectionId === created.id)?.reuse, [{ slot: "block", componentId: component!.id }], "45 · Layers learns the link from the layout");
     await structural("discardPageLayout", "terms");
+  });
+
+  test("a whole section is refused while its CTA is linked on its own; detached, it converts to exactly what the page shows", async () => {
+    const componentCount = async () => (await sql<{ n: number }[]>`select count(*)::int as n from reusable_components`)[0]!.n;
+
+    // 1–2 · CTA A, version 1, linked into a section that could be reused whole, and published.
+    const componentA = await createCta("Convert CTA", "Convert v1", "تحويل ١", "/convert-v1");
+    const section = await sectionOf("about", "image-text");
+    assert.equal((await link(section, "cta", componentA)).ok, true);
+    assert.equal((await publishPage("about")).ok, true);
+
+    // 3–4 · Version 2 differs. The page shows it; the section's own fields still hold version 1's kept copy.
+    await republish(componentA.id, { label: { en: "Convert v2", ar: "تحويل ٢" }, href: "/convert-v2" });
+    assert.equal(anchorWith(await live("/about"), "Convert v2")?.href, "/convert-v2", "the public page shows version 2");
+    assert.equal(anchorWith((await fetchPage("/about?preview=1", owner.cookie)).html, "Convert v2")?.href, "/convert-v2", "so does the page preview");
+    const stale = await row(section.id);
+    assert.equal((current(stale).ctaLabel as { en: string }).en, "Convert v1", "the kept copy is version 1's");
+
+    // 5–6 · Save the whole section as reusable: refused, and no component is made from the stale copy.
+    const before = await componentCount();
+    const converted = await componentAction("createReusableFromSection", {
+      sectionId: stale.id,
+      pageId: stale.page_id,
+      slot: "block",
+      name: "Stale panel",
+      publish: "0",
+    });
+    assert.equal(converted.ok, false);
+    assert.equal(!converted.ok && converted.message, WHOLE_BLOCK_REFUSAL);
+    assert.equal(await componentCount(), before);
+
+    // 7–8 · Link another reusable whole block over it: refused — in the panel's own link and on the server —
+    // rather than dropping the CTA link; nothing written, no revision moved.
+    const made = await componentAction("createReusableComponent", {
+      kind: "block:image-text",
+      name: "Other panel",
+      values: JSON.stringify({ ...stripReuse(current(stale)), title: { en: "Other", ar: "" }, ctaLabel: { en: "Other CTA", ar: "" }, ctaHref: "/other" }),
+      publish: "1",
+    });
+    assert.equal(made.ok, true, JSON.stringify(made));
+    const other = made.ok ? made.component! : null;
+    assert.equal(linkSlot("image-text", current(stale), "block", { id: other!.id, kind: other!.kind, values: other!.published! }), null);
+    const laid = await saveContent(stale, withReuse({ ...current(stale), ...other!.published }, { block: { c: other!.id } }));
+    assert.equal(laid.ok, false);
+    assert.equal(laid.message, WHOLE_BLOCK_REFUSAL);
+    const kept = await row(section.id);
+    assert.equal(kept.revision, stale.revision, "a refused save moves no revision");
+    assert.deepEqual(readReuse(current(kept), "image-text"), { cta: { c: componentA.id } }, "the CTA link is still there");
+
+    // 9 · Detach the CTA the ordinary way: the section keeps what the page shows — version 2.
+    const detached = await detach(kept, "cta", 2);
+    assert.equal(detached.ok, true, JSON.stringify(detached));
+    const own = await row(section.id);
+    assert.deepEqual(readReuse(current(own), "image-text"), {});
+    assert.deepEqual(current(own).ctaLabel, { en: "Convert v2", ar: "تحويل ٢" });
+
+    // 10 · Now the whole section converts — from exactly what the page shows — and linking it changes nothing visible.
+    const whole = await componentAction("createReusableFromSection", {
+      sectionId: own.id,
+      pageId: own.page_id,
+      slot: "block",
+      name: "Current panel",
+      publish: "1",
+    });
+    assert.equal(whole.ok, true, JSON.stringify(whole));
+    const panel = whole.ok ? whole.component! : null;
+    assert.equal(panel!.kind, "block:image-text");
+    assert.deepEqual(panel!.published!.ctaLabel, { en: "Convert v2", ar: "تحويل ٢" });
+    assert.equal(panel!.published!.ctaHref, "/convert-v2");
+    const shownBefore = anchorWith((await fetchPage("/about?preview=1", owner.cookie)).html, "Convert v2");
+    assert.equal((await link(own, "block", panel!)).ok, true);
+    const shownAfter = anchorWith((await fetchPage("/about?preview=1", owner.cookie)).html, "Convert v2");
+    assert.equal(shownAfter?.href, "/convert-v2");
+    assert.equal(shownAfter?.tag, shownBefore?.tag, "visually identical: the same link, word for word");
+    await discardPage("about");
   });
 });
