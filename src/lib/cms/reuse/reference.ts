@@ -238,6 +238,16 @@ function canonical(map: ReuseMap): ReuseMap {
   return out;
 }
 
+/**
+ * Whether two maps say the same thing — the same slots, linked to the same
+ * components, with the same overrides switched on, whatever order they were
+ * written in (Batch 18). A content save whose map differs from the stored one
+ * links, unlinks or re-overrides something, and that is a reusable-component
+ * decision as well as a content edit.
+ */
+export const sameReuse = (a: ReuseMap, b: ReuseMap): boolean =>
+  JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+
 /** Values with the map written in, or the key removed when there is nothing to write. */
 export function withReuse(values: Values, map: ReuseMap): Values {
   const out: Values = { ...values };

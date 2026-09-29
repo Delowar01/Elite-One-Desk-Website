@@ -31,7 +31,7 @@ export function PagePanel({
   title,
   summary,
   history,
-  canManage,
+  canPublishPage,
   busy,
   blockedReason,
   message,
@@ -46,7 +46,13 @@ export function PagePanel({
   title: string;
   summary: PageSummaryView | null;
   history: PageHistoryView | null;
-  canManage: boolean;
+  /**
+   * `content.publish` (Batch 18): publishing, discarding everything saved and
+   * restoring a version to draft. Independent of every editing capability —
+   * a publisher who may change nothing may still publish what is prepared,
+   * and an editor who may change everything may not publish without it.
+   */
+  canPublishPage: boolean;
   busy: boolean;
   /** Why publishing cannot start right now — local work, not server state. */
   blockedReason: string | null;
@@ -61,8 +67,8 @@ export function PagePanel({
 
   const pending = summary ? describePending(summary) : [];
   const removal = summary ? describeRemoval(summary) : null;
-  const canPublish = Boolean(canManage && summary?.publishable && !blockedReason && !busy);
-  const canDiscard = Boolean(canManage && summary?.discardable && !blockedReason && !busy);
+  const canPublish = Boolean(canPublishPage && summary?.publishable && !blockedReason && !busy);
+  const canDiscard = Boolean(canPublishPage && summary?.discardable && !blockedReason && !busy);
 
   return (
     <aside
@@ -127,7 +133,14 @@ export function PagePanel({
             </p>
           ) : null}
 
-          {canManage ? (
+          {canPublishPage ? null : (
+            <p className="text-[0.73rem] leading-relaxed text-muted" role="note" data-permission-note="content.publish">
+              You can review what is waiting, but your role does not allow publishing, discarding or restoring this
+              page.
+            </p>
+          )}
+
+          {canPublishPage ? (
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -166,7 +179,7 @@ export function PagePanel({
           </p>
           <PageHistory
             history={history}
-            canManage={canManage}
+            canManage={canPublishPage}
             busy={busy}
             blocked={
               blockedReason ??

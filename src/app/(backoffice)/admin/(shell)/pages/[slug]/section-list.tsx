@@ -60,7 +60,8 @@ export function SectionList({
   sections,
   removed,
   blocks,
-  canManage,
+  canStructure,
+  sectionLink,
 }: {
   csrf: string;
   pageId: number;
@@ -75,7 +76,10 @@ export function SectionList({
   sections: SectionRow[];
   removed: SectionRow[];
   blocks: BlockDef[];
-  canManage: boolean;
+  /** `content.structure` (Batch 18): every control on this list is a layout operation. */
+  canStructure: boolean;
+  /** What opening a section offers: its editor, or a read-only look at it. */
+  sectionLink: "Edit" | "View";
 }) {
   const [addState, addAction] = useActionState<ActionState, FormData>(addSection, EMPTY);
   const [reorderState, reorderAction] = useActionState<ActionState, FormData>(reorderSections, EMPTY);
@@ -115,7 +119,7 @@ export function SectionList({
           <h2>Sections</h2>
           <p className="text-[0.74rem] text-muted">
             {order.length} section{order.length === 1 ? "" : "s"} · top to bottom
-            {canManage ? " · drag a row, or use the arrows" : null}
+            {canStructure ? " · drag a row, or use the arrows" : null}
           </p>
         </div>
 
@@ -128,7 +132,7 @@ export function SectionList({
               The order, visibility and membership below are unpublished. The live page still shows
               the layout it had before these changes.
             </p>
-            {canManage ? (
+            {canStructure ? (
               <InlineAction
                 action={discardLayout}
                 hidden={{ _csrf: csrf, pageId, expectedRevision: pageRevision }}
@@ -173,7 +177,7 @@ export function SectionList({
             {order.map((section, index) => (
               <li
                 key={section.id}
-                draggable={canManage}
+                draggable={canStructure}
                 onDragStart={(event) => {
                   setDragging(index);
                   event.dataTransfer.effectAllowed = "move";
@@ -199,7 +203,7 @@ export function SectionList({
                 data-section-id={section.id}
                 className="flex flex-wrap items-start gap-3 px-4 py-3.5 transition-colors data-[dragging]:opacity-45 data-[over]:bg-[color-mix(in_oklab,var(--color-orange)_12%,transparent)]"
               >
-                {canManage ? (
+                {canStructure ? (
                   <span
                     aria-hidden
                     title="Drag to reorder"
@@ -227,8 +231,9 @@ export function SectionList({
                   </p>
                 </div>
 
-                {canManage ? (
-                  <div className="flex flex-wrap items-center gap-1">
+                <div className="flex flex-wrap items-center gap-1">
+                  {canStructure ? (
+                  <>
                     <Structural csrf={csrf} pageId={pageId} revision={pageRevision} id={section.id} direction="up">
                       <IconButton label="Move up" icon="chevronDown" rotate disabled={index === 0} />
                     </Structural>
@@ -279,14 +284,15 @@ export function SectionList({
                         <span className="sr-only">Remove from layout</span>
                       </ConfirmSubmit>
                     </InlineAction>
-                    <Link
-                      href={`/admin/pages/section/${section.id}`}
-                      className="admin-btn admin-btn-sm ms-1"
-                    >
-                      Edit
-                    </Link>
-                  </div>
-                ) : null}
+                  </>
+                  ) : null}
+                  <Link
+                    href={`/admin/pages/section/${section.id}`}
+                    className="admin-btn admin-btn-sm ms-1"
+                  >
+                    {sectionLink}
+                  </Link>
+                </div>
               </li>
             ))}
           </ul>
@@ -317,7 +323,7 @@ export function SectionList({
                     {section.summary || section.blockDescription}
                   </p>
                 </div>
-                {canManage ? (
+                {canStructure ? (
                   <InlineAction
                     action={restoreSection}
                     hidden={{ _csrf: csrf, pageId, id: section.id, expectedRevision: pageRevision }}
@@ -331,7 +337,14 @@ export function SectionList({
         </section>
       ) : null}
 
-      {canManage ? (
+      {!canStructure ? (
+        <p className="admin-card p-4 text-[0.8rem] text-muted" role="note" data-permission-note="content.structure">
+          You can view this layout, but your role does not allow adding, moving, hiding, removing or restoring
+          sections.
+        </p>
+      ) : null}
+
+      {canStructure ? (
         <section className="admin-card p-5">
           <h2 className="mb-1">Add a section</h2>
           <p className="mb-4 text-[0.8rem] text-muted">

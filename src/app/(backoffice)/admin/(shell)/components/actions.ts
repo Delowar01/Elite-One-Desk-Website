@@ -8,7 +8,8 @@ import { AccessError, guardAction } from "@/lib/auth/guard";
 import { getSession } from "@/lib/auth/session";
 import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
-import { REUSE_AUTHORITY, reuseAllowed } from "@/lib/cms/reuse/authority";
+import { COMPOUND, DENIED as CAPABILITY_DENIED } from "@/lib/auth/authority";
+import { REUSE_AUTHORITY, REUSE_DENIED, reuseAllowed } from "@/lib/cms/reuse/authority";
 import { kindDef, kindNoun } from "@/lib/cms/reuse/kinds";
 import {
   BLOCK_SLOT,
@@ -174,11 +175,12 @@ async function run(
 /** A new component from the management screen: a kind, a name and its first content. */
 export async function createReusableComponent(form: FormData): Promise<ReuseActionResult> {
   return run("create", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.edit, form);
+    // Publishing in the same step needs publishing too — asked for up front, so
+    // a refusal creates nothing rather than half of what was asked (Batch 18).
     const publish = form.get("publish") === "1";
-    if (publish && !reuseAllowed(session.permissions, "publish")) {
-      return { ok: false, reason: "denied", message: DENIED };
-    }
+    const session = publish
+      ? await guardAction(COMPOUND.createPublishedComponent, form, CAPABILITY_DENIED.createPublishedComponent)
+      : await guardAction(REUSE_AUTHORITY.edit, form, REUSE_DENIED.edit);
     const kind = String(form.get("kind") ?? "");
     const definition = kindDef(kind);
     const result = await createComponent({
@@ -215,11 +217,19 @@ export async function createReusableComponent(form: FormData): Promise<ReuseActi
  */
 export async function createReusableFromSection(form: FormData): Promise<ReuseActionResult> {
   return run("create-from-section", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.edit, form);
+    /**
+     * Every effect, checked before the first write (Batch 18). A draft reads
+     * the section and writes a component draft. "Create, publish and link"
+     * also publishes the component and then links this section to it — a page
+     * content change — so it needs editing page content and publishing
+     * components as well; asking for all of it here means a caller missing
+     * any one part gets a refusal, never a component that was made and
+     * published and then could not be linked.
+     */
     const publish = form.get("publish") === "1";
-    if (publish && !reuseAllowed(session.permissions, "publish")) {
-      return { ok: false, reason: "denied", message: DENIED };
-    }
+    const session = publish
+      ? await guardAction(COMPOUND.saveAsReusablePublished, form, CAPABILITY_DENIED.saveAsReusablePublished)
+      : await guardAction(COMPOUND.saveAsReusableDraft, form, CAPABILITY_DENIED.saveAsReusableDraft);
     const sectionId = idOf(form, "sectionId");
     const pageId = idOf(form, "pageId");
     const slotName = String(form.get("slot") ?? "");
@@ -268,7 +278,7 @@ export async function createReusableFromSection(form: FormData): Promise<ReuseAc
 
 export async function saveReusableDraft(form: FormData): Promise<ReuseActionResult> {
   return run("save", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.edit, form);
+    const session = await guardAction(REUSE_AUTHORITY.edit, form, REUSE_DENIED.edit);
     const id = idOf(form);
     const values = valuesOf(form);
     if (values === undefined) return { ok: false, reason: "invalid", message: "Those values could not be read." };
@@ -300,7 +310,7 @@ export async function saveReusableDraft(form: FormData): Promise<ReuseActionResu
 
 export async function discardReusableDraft(form: FormData): Promise<ReuseActionResult> {
   return run("discard", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.edit, form);
+    const session = await guardAction(REUSE_AUTHORITY.edit, form, REUSE_DENIED.edit);
     const id = idOf(form);
     const result = await discardComponentDraft({
       id,
@@ -332,7 +342,7 @@ export async function discardReusableDraft(form: FormData): Promise<ReuseActionR
  */
 export async function publishReusable(form: FormData): Promise<ReuseActionResult> {
   return run("publish", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.publish, form);
+    const session = await guardAction(REUSE_AUTHORITY.publish, form, REUSE_DENIED.publish);
     const id = idOf(form);
     const result = await publishComponent({
       id,
@@ -365,7 +375,7 @@ export async function publishReusable(form: FormData): Promise<ReuseActionResult
 /** An earlier version back as the DRAFT — reviewed, previewed and published like any other edit. */
 export async function restoreReusableVersion(form: FormData): Promise<ReuseActionResult> {
   return run("restore", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.restore, form);
+    const session = await guardAction(REUSE_AUTHORITY.restore, form, REUSE_DENIED.restore);
     const id = idOf(form);
     const result = await restoreComponentVersion({
       id,
@@ -392,7 +402,7 @@ export async function restoreReusableVersion(form: FormData): Promise<ReuseActio
 
 export async function renameReusable(form: FormData): Promise<ReuseActionResult> {
   return run("rename", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.edit, form);
+    const session = await guardAction(REUSE_AUTHORITY.edit, form, REUSE_DENIED.edit);
     const id = idOf(form);
     const result = await renameComponent({
       id,
@@ -414,7 +424,7 @@ export async function renameReusable(form: FormData): Promise<ReuseActionResult>
 
 export async function archiveReusable(form: FormData): Promise<ReuseActionResult> {
   return run("archive", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.lifecycle, form);
+    const session = await guardAction(REUSE_AUTHORITY.lifecycle, form, REUSE_DENIED.lifecycle);
     const id = idOf(form);
     const archived = form.get("archived") === "1";
     const result = await setComponentArchived({
@@ -444,7 +454,7 @@ export async function archiveReusable(form: FormData): Promise<ReuseActionResult
 /** Only a component nothing refers to — re-checked inside the delete itself. */
 export async function deleteReusable(form: FormData): Promise<ReuseActionResult> {
   return run("delete", async () => {
-    const session = await guardAction(REUSE_AUTHORITY.lifecycle, form);
+    const session = await guardAction(REUSE_AUTHORITY.lifecycle, form, REUSE_DENIED.lifecycle);
     const id = idOf(form);
     const result = await deleteComponent({ id, expectedRevision: revisionOf(form) });
     if (!result.ok) return failed(result, id);

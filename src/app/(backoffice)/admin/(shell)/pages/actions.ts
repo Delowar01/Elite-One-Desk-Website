@@ -16,7 +16,8 @@ import {
   type ActionState,
   type SectionSnapshot,
 } from "@/lib/admin/actions";
-import { guardAction } from "@/lib/auth/guard";
+import { AUTHORITY, COMPOUND, DENIED } from "@/lib/auth/authority";
+import { assertAllowed, guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { getBlock } from "@/lib/cms/blocks";
 import {
@@ -145,6 +146,21 @@ function expectedRevisionOf(form: FormData): number | null {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+/** Two stored values that say the same thing, whatever order their keys were written in. */
+function sameJson(a: unknown, b: unknown): boolean {
+  const canonical = (value: unknown): string =>
+    JSON.stringify(value ?? null, (_key, raw: unknown) =>
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? Object.fromEntries(
+            Object.keys(raw as Record<string, unknown>)
+              .sort()
+              .map((key) => [key, (raw as Record<string, unknown>)[key]]),
+          )
+        : raw,
+    );
+  return canonical(a) === canonical(b);
+}
+
 
 const refreshPage = (slug: string) => {
   revalidate(TAGS.pages);
@@ -245,7 +261,7 @@ async function sectionSnapshot(
 export async function createPage(_prev: ActionState, form: FormData): Promise<ActionState> {
   let slug = "";
   const result = await runAction("page-create", async () => {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(COMPOUND.createPage, form, DENIED.createPage);
     const titleEn = field(form, "titleEn", 190);
     slug = field(form, "slug", 120).toLowerCase();
 
@@ -295,12 +311,32 @@ export async function createPage(_prev: ActionState, form: FormData): Promise<Ac
   redirect(`/admin/pages/${slug}`);
 }
 
+/**
+ * Page settings: its titles and whether it is published at all — both live the
+ * moment they are saved, since neither has a draft (Batch 18).
+ *
+ * So the form is a publication, `content.publish`, and a changed title is also
+ * page content, `content.edit`: a custom page's title is its `<title>` on the
+ * live site, and a role allowed only to edit drafts must not be able to put
+ * words on the site through the one field that skips the draft. Decided
+ * against the stored row, before anything is written.
+ */
 export async function updatePage(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("page-update", async () => {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const id = Number(form.get("id"));
     const titleEn = field(form, "titleEn", 190);
     if (!titleEn) return fail("Give the page a title.", { titleEn: "Required." });
+
+    const [current] = await db
+      .select({ titleEn: pages.titleEn, titleAr: pages.titleAr })
+      .from(pages)
+      .where(eq(pages.id, id))
+      .limit(1);
+    if (!current) return fail("That page no longer exists.");
+    if (current.titleEn !== titleEn || current.titleAr !== field(form, "titleAr", 190)) {
+      assertAllowed(session, COMPOUND.renamePage, DENIED.renamePage);
+    }
 
     const [row] = await db
       .update(pages)
@@ -327,7 +363,7 @@ export async function updatePage(_prev: ActionState, form: FormData): Promise<Ac
 
 export async function deletePage(_prev: ActionState, form: FormData): Promise<ActionState> {
   const result = await runAction("page-delete", async () => {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(COMPOUND.deletePage, form, DENIED.deletePage);
     const id = Number(form.get("id"));
     const [row] = await db.select().from(pages).where(eq(pages.id, id)).limit(1);
     if (!row) return fail("That page no longer exists.");
@@ -582,7 +618,15 @@ async function pageOf(sectionId: number) {
  * and a second guard to lose.
  */
 async function writeSectionValues(form: FormData, publish: boolean): Promise<ActionState> {
-  const session = await guardAction("content.manage", form);
+  /**
+   * The same rules as the Visual Editor's, whichever screen sent it (Batch 18):
+   * saving these words is `content.edit`, and "Save and publish" is that and
+   * `content.publish` together. The entrance menu is motion, `content.motion`,
+   * checked below once it is known what the menu would change.
+   */
+  const session = publish
+    ? await guardAction(COMPOUND.saveAndPublish, form, DENIED.saveAndPublish)
+    : await guardAction(AUTHORITY.editContent, form, DENIED.editContent);
   const id = Number(form.get("id"));
 
   const [section] = await db.select().from(pageSections).where(eq(pageSections.id, id)).limit(1);
@@ -701,6 +745,26 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
           ? { animation: chosen, draftAnimation: null }
           : { draftAnimation: chosen === motionOf(section.animation) ? null : chosen };
 
+  /**
+   * Whether the entrance menu changes motion — and so needs `content.motion`
+   * (Batch 18), before anything is written.
+   *
+   * Saving a draft: when any motion column it writes would hold something
+   * other than it holds now — a new entrance, a withdrawn draft, a discarded
+   * unreadable one. Publishing: when the menu names an entrance other than the
+   * one this screen showed, because the rest of what that write does is put
+   * the pending motion live exactly as it stands, and that is the publication
+   * the button already needs `content.publish` for. A menu that is absent —
+   * which is what a disabled one sends — expresses no motion at all.
+   */
+  const row = section as unknown as Record<string, unknown>;
+  const motionEdited =
+    chosen !== null &&
+    (publish
+      ? chosen !== effectiveMotion(section.animation, section.draftAnimation)
+      : Object.entries(motion).some(([column, value]) => !sameJson(value, row[column])));
+  if (motionEdited) assertAllowed(session, AUTHORITY.editMotion, DENIED.editMotion);
+
   const written = {
     // Publishing content writes content. `is_published` is the live layout's
     // answer to a different question and is not this button's to change.
@@ -775,7 +839,7 @@ export async function saveSectionAndPublish(
  */
 export async function publishSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-publish", async () => {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const id = Number(form.get("id"));
     const expected = expectedRevisionOf(form);
     if (expected === null) return fail(CONFLICT.unreadable);
@@ -835,10 +899,14 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
  * worse: a discard deletes. A screen opened before somebody else saved would,
  * guarded on its own fresh read, cheerfully delete a draft it had never shown
  * anybody. The revision the browser saw is what decides.
+ *
+ * `content.publish` (Batch 18), like the page-wide discard: it throws away
+ * the section's pending content, styles and motion together, which is very
+ * often somebody else's work in a domain the caller may not even edit.
  */
 export async function discardDraft(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-discard", async () => {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const id = Number(form.get("id"));
     const expected = expectedRevisionOf(form);
     if (expected === null) return fail(CONFLICT.unreadable);
@@ -897,7 +965,7 @@ export async function discardDraft(_prev: ActionState, form: FormData): Promise<
  */
 export async function publishPage(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("page-publish", async () => {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const pageId = Number(form.get("pageId"));
     const expected = expectedRevisionOf(form);
     if (expected === null) return fail(CONFLICT.unreadable);
@@ -934,7 +1002,7 @@ export async function publishPage(_prev: ActionState, form: FormData): Promise<A
  */
 export async function discardPageDrafts(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("page-discard", async () => {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const pageId = Number(form.get("pageId"));
     const expected = expectedRevisionOf(form);
     if (expected === null) return fail(CONFLICT.unreadable);
@@ -974,7 +1042,7 @@ export async function discardPageDrafts(_prev: ActionState, form: FormData): Pro
  */
 export async function restorePageVersion(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("page-restore", async () => {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const pageId = Number(form.get("pageId"));
     const versionId = Number(form.get("versionId"));
 
@@ -1053,7 +1121,7 @@ async function runStructural(
   form: FormData,
   operate: (context: { pageId: number; expectedRevision: number; userId: number }) => Promise<StructureResult>,
 ): Promise<ActionState> {
-  const session = await guardAction("content.manage", form);
+  const session = await guardAction(AUTHORITY.editStructure, form, DENIED.editStructure);
   const pageId = Number(form.get("pageId"));
   const expected = expectedRevisionOf(form);
   if (expected === null) return fail(CONFLICT.unreadable);

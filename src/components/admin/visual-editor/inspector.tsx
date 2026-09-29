@@ -60,6 +60,27 @@ export type SectionBuffer = {
   message?: string;
   /** Present after a lost race: the version that won it, all three domains. */
   latest?: VisualSectionData;
+  /**
+   * A domain the server refused to save for this reader, and what it said
+   * (Batch 18) — a permission removed while the editor was open, or a change
+   * the role cannot make. The unsaved work stays exactly where it is, and the
+   * other domains go on saving; the refusal is cleared by a later successful
+   * save of that domain, or by discarding its changes.
+   */
+  denied?: Partial<Record<EditDomain, string>>;
+};
+
+/**
+ * What this reader may change, one answer per domain (Batch 18) — drawn from
+ * `lib/auth/authority.ts` by the shell, narrowed by anything the server has
+ * since refused. The actions check the same capabilities for themselves.
+ */
+export type InspectorAccess = {
+  content: boolean;
+  style: boolean;
+  /** Advanced style tokens — only ever with `style`. */
+  advancedStyle: boolean;
+  motion: boolean;
 };
 
 export const isDirty = (buffer: SectionBuffer | null | undefined): boolean =>
@@ -102,7 +123,7 @@ export function InspectorPanel({
   sections,
   locale,
   media,
-  canManage,
+  access,
   buffer,
   breakpoint,
   tab,
@@ -124,7 +145,7 @@ export function InspectorPanel({
   sections: EditorSectionMeta[];
   locale: Locale;
   media: MediaOption[];
-  canManage: boolean;
+  access: InspectorAccess;
   buffer: SectionBuffer | null;
   /** Which branch the Style tab edits — the device being previewed decides. */
   breakpoint: Breakpoint;
@@ -225,7 +246,7 @@ export function InspectorPanel({
 
             {loading ? <p className="text-[0.76rem] text-muted">Reading this section…</p> : null}
 
-            {!canManage ? <ReadOnlyNote /> : null}
+            {!access.content && !access.style && !access.motion ? <ReadOnlyNote /> : null}
 
             {buffer ? (
               <>
@@ -243,7 +264,7 @@ export function InspectorPanel({
                       buffer={buffer}
                       media={media}
                       locale={locale}
-                      canManage={canManage}
+                      canContent={access.content}
                       onValues={onValues}
                       reuse={reuse}
                     />
@@ -260,7 +281,8 @@ export function InspectorPanel({
                     values={buffer.values}
                     locale={locale}
                     breakpoint={breakpoint}
-                    canManage={canManage}
+                    canStyle={access.style}
+                    canAdvanced={access.style && access.advancedStyle}
                     onChange={onStyles}
                   />
                 ) : (
@@ -270,7 +292,7 @@ export function InspectorPanel({
                     legacy={buffer.data.legacyEntrance}
                     breakpoint={breakpoint}
                     locale={locale}
-                    canManage={canManage}
+                    canMotion={access.motion}
                     pending={buffer.motionDirty || buffer.saving === "motion"}
                     replay={replay}
                     onChange={onMotion}
@@ -280,7 +302,7 @@ export function InspectorPanel({
                 <SaveBar
                   domain={tab}
                   buffer={buffer}
-                  canManage={canManage}
+                  editable={access[tab]}
                   onSave={onSave}
                   onRevert={onRevert}
                 />
@@ -365,10 +387,8 @@ function Tabs({
 
 function ReadOnlyNote() {
   return (
-    <p className="admin-card p-3 text-[0.75rem] leading-relaxed text-muted">
-      You can look at every page here, but not change anything. Editing content and styles needs
-      the
-      <span className="text-strong"> Manage content </span> permission.
+    <p className="admin-card p-3 text-[0.75rem] leading-relaxed text-muted" role="note" data-permission-note="read-only">
+      You can look at every page here, but your role does not allow changing its content, styles or motion.
     </p>
   );
 }
@@ -427,18 +447,25 @@ const SAVE_LABEL: Record<EditDomain, { saved: string; unsaved: string }> = {
 function SaveBar({
   domain,
   buffer,
-  canManage,
+  editable,
   onSave,
   onRevert,
 }: {
   domain: EditDomain;
   buffer: SectionBuffer;
-  canManage: boolean;
+  /**
+   * Whether this reader may save the domain (Batch 18). Unsaved work in a
+   * domain that has stopped being theirs — a permission removed while the
+   * editor was open — is still shown, with its refusal and a way to discard
+   * it, rather than disappearing with the controls.
+   */
+  editable: boolean;
   onSave: () => void;
   onRevert: (domain: EditDomain) => void;
 }) {
-  if (!canManage) return null;
   const dirty = dirtyOf(buffer)[domain];
+  const denied = buffer.denied?.[domain];
+  if (!editable && !dirty) return null;
   const busy = buffer.saving === domain;
   // Another domain writing is still a reason not to start: one row, one
   // revision, and two requests in flight against it is a race this browser
@@ -465,7 +492,7 @@ function SaveBar({
         <button
           type="button"
           onClick={onSave}
-          disabled={!dirty || blocked}
+          disabled={!dirty || blocked || !editable}
           className="admin-btn admin-btn-sm admin-btn-primary"
         >
           {blocked ? "Saving…" : "Save now"}
@@ -489,7 +516,11 @@ function SaveBar({
                     : "No changes"}
         </span>
       </div>
-      {showsStatus && buffer.status === "error" && buffer.message ? (
+      {denied ? (
+        <p className="mt-1.5 text-[0.72rem]" style={{ color: "#ef8f8a" }} role="alert" data-save-denied={domain}>
+          {denied} Your unsaved changes are kept here until you discard them.
+        </p>
+      ) : showsStatus && buffer.status === "error" && buffer.message ? (
         <p className="mt-1.5 text-[0.72rem]" style={{ color: "#ef8f8a" }} role="alert">
           {buffer.message}
         </p>

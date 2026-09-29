@@ -21,7 +21,7 @@ import {
 } from "../src/lib/db/schema";
 import { backfillItemIds } from "../src/lib/cms/backfill";
 import { hashPassword, passwordProblem } from "../src/lib/auth/password";
-import { PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS } from "../src/lib/auth/permissions";
+import { INTRODUCED_FROM, PERMISSIONS, ROLE_DEFAULTS, ROLE_LABELS } from "../src/lib/auth/permissions";
 import { SETTINGS_DEFAULTS } from "../src/lib/settings-defaults";
 import { CATALOG, slugify } from "./seed/catalog";
 import { FAQS, HOME_SECTIONS, NAVIGATION, PAGE_SECTIONS } from "./seed/content";
@@ -67,10 +67,22 @@ import { LEGACY_NOTICE, taxonomyState, type TaxonomyState } from "./seed/state";
  * introduced, and leave it in the catalogue guarding something with nobody
  * holding it. Now either both land or neither does.
  *
- * The owner role is deliberately not special-cased here. Its protection is where
- * it has always been — the Roles screen refuses to narrow it — and inventing a
- * second owner-permission model in the seed would be a way for the two to
- * disagree.
+ * A third fact is read beforehand as of Batch 18 — `heldBefore`, what each role
+ * could already do — because some keys are not new abilities but an old one
+ * split into parts. `content.manage` became `content.edit`, `content.style`,
+ * `content.advanced_style`, `content.motion`, `content.structure`,
+ * `content.publish` and the component writes, and `content.view` gave the
+ * component reads. A key named in `INTRODUCED_FROM` is therefore introduced
+ * into an existing role by *derivation*: exactly the roles that held its source
+ * receive it, whatever their defaults say — so an owner's decision to take page
+ * editing away from a role, or to give it to one, carries through the split
+ * unchanged. It happens once, like every introduction: after this run the key
+ * is in the catalogue, and nothing in the seed grants it again.
+ *
+ * The owner role is not a derivation case. Its protection is where it has
+ * always been — the Roles screen refuses to narrow it — so it goes on receiving
+ * every introduced key through its defaults, which name all of them; deriving
+ * it could leave an owner without a key that no screen would let anybody add.
  */
 async function seedRolesAndPermissions() {
   await db.transaction(async (tx) => {
@@ -80,6 +92,15 @@ async function seedRolesAndPermissions() {
     const rolesBefore = new Set(
       (await tx.select({ key: roles.key }).from(roles)).map((row) => row.key as string),
     );
+    const heldBefore = new Map<string, Set<string>>();
+    for (const row of await tx
+      .select({ role: roles.key, key: permissionsTable.key })
+      .from(rolePermissions)
+      .innerJoin(roles, eq(roles.id, rolePermissions.roleId))
+      .innerJoin(permissionsTable, eq(permissionsTable.id, rolePermissions.permissionId))) {
+      if (!heldBefore.has(row.role)) heldBefore.set(row.role, new Set());
+      heldBefore.get(row.role)!.add(row.key);
+    }
 
     for (const permission of PERMISSIONS) {
       await tx
@@ -114,12 +135,19 @@ async function seedRolesAndPermissions() {
       /**
        * A role this run created is being initialised and gets its whole default
        * set. A role that was already here keeps every decision made about it and
-       * receives only the keys this run introduced — and only those its defaults
-       * name, so a permission added for admins does not arrive on the viewer.
+       * receives only the keys this run introduced — those its defaults name,
+       * so a permission added for admins does not arrive on the viewer; or, for
+       * a key that splits an older one, exactly when it held that older one.
        */
-      const wanted = rolesBefore.has(key)
-        ? grants.filter((grant) => introduced.has(grant))
-        : grants;
+      const held = heldBefore.get(key) ?? new Set<string>();
+      const wanted = !rolesBefore.has(key)
+        ? grants
+        : key === "owner"
+          ? grants.filter((grant) => introduced.has(grant))
+          : [...introduced].filter((introducedKey) => {
+              const source = INTRODUCED_FROM[introducedKey];
+              return source ? held.has(source) : grants.includes(introducedKey);
+            });
       if (!wanted.length) continue;
 
       const values = catalogue

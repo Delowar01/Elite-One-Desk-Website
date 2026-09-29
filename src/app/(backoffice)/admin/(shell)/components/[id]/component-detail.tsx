@@ -3,18 +3,18 @@
 import { useRouter } from "next/navigation";
 
 import type { MediaOption } from "@/components/admin/media-picker";
-import { ReuseEditor } from "@/components/admin/reuse/reuse-editor";
+import { ReuseEditor, type ReuseEditorCan } from "@/components/admin/reuse/reuse-editor";
 
 /** The full-page home of a component's editor — the same editor the Visual Editor's drawer shows. */
 export function ComponentDetail({
   id,
   csrf,
-  canManage,
+  can,
   media,
 }: {
   id: number;
   csrf: string;
-  canManage: boolean;
+  can: ReuseEditorCan;
   media: MediaOption[];
 }) {
   const router = useRouter();
@@ -22,7 +22,7 @@ export function ComponentDetail({
     <ReuseEditor
       componentId={id}
       csrf={csrf}
-      canManage={canManage}
+      can={can}
       media={media}
       locale="en"
       onChanged={(_view, event) => {

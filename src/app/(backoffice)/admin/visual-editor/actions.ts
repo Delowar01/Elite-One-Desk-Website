@@ -5,7 +5,9 @@ import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
 import { TAGS, revalidate } from "@/lib/cache";
-import { AccessError, guardAction } from "@/lib/auth/guard";
+import { AUTHORITY, COMPOUND, DENIED, may } from "@/lib/auth/authority";
+import { AccessError, assertAllowed, guardAction } from "@/lib/auth/guard";
+import type { PermissionRequirement } from "@/lib/auth/permissions";
 import { getSession } from "@/lib/auth/session";
 import {
   loadEditorGlobals as readEditorGlobals,
@@ -21,7 +23,7 @@ import {
 } from "@/lib/cms/motion-write";
 import { emptyMotionDocument, isReadableMotionDocument } from "@/lib/cms/motion-doc";
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
-import { validateStyleDocument } from "@/lib/cms/styles";
+import { advancedStylesDiffer, validateStyleDocument } from "@/lib/cms/styles";
 import { parseBlockPayload, validateBlockValues } from "@/lib/cms/validate";
 import {
   BLOCK_SLOT,
@@ -29,12 +31,13 @@ import {
   hasSeparateLinks,
   parseReuse,
   readReuse,
+  sameReuse,
   slotDef,
   WHOLE_BLOCK_REFUSAL,
   withReuse,
   type ReuseMap,
 } from "@/lib/cms/reuse/reference";
-import { REUSE_AUTHORITY } from "@/lib/cms/reuse/authority";
+import { REUSE_AUTHORITY, REUSE_DENIED } from "@/lib/cms/reuse/authority";
 import {
   checkReferencesForSave,
   componentValues,
@@ -109,7 +112,7 @@ import type {
  */
 
 const MESSAGES = {
-  denied: "You do not have permission to edit content.",
+  denied: DENIED.viewPages,
   missing: "That section no longer exists. Reload the canvas.",
   wrongPage: "That section belongs to a different page. Reload the canvas.",
   unknownBlock: "That section type is no longer available.",
@@ -277,7 +280,9 @@ async function logReferenceChanges(
  *
  * `content.view` — the same key the canvas itself needs — because this returns
  * nothing a viewer could not already read off the preview they are looking at.
- * Writing is a separate permission, checked separately, in the action below.
+ * Writing is a separate capability per domain, checked separately, in the
+ * actions below — so a role that may only restyle still sees the words it is
+ * styling, read-only.
  */
 export async function loadVisualSection(
   sectionId: number,
@@ -285,7 +290,7 @@ export async function loadVisualSection(
 ): Promise<VisualSectionLoad> {
   try {
     const session = await getSession();
-    if (!session?.permissions.has("content.view")) {
+    if (!may(session?.permissions, "viewPages")) {
       return { ok: false, reason: "denied", message: MESSAGES.denied };
     }
 
@@ -305,10 +310,14 @@ export async function loadVisualSection(
  * the rest of the admin uses — `guardAction` is the one door every admin
  * mutation goes through, and a visual editor that let itself in through a side
  * entrance would be the weakest lock on the site.
+ *
+ * Page content (Batch 18): `content.edit`, whatever surface sent it — the
+ * inspector, a direct edit on the canvas, an Undo, or a hand-made request.
+ * Nothing about the editor's own state is trusted to say otherwise.
  */
 export async function saveVisualSectionDraft(form: FormData): Promise<VisualContentSaveResult> {
   try {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.editContent, form, DENIED.editContent);
 
     const sectionId = Number(form.get("sectionId"));
     const pageId = Number(form.get("pageId"));
@@ -335,6 +344,17 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
     if (!reuse.ok) return { ok: false, reason: "invalid", message: MESSAGES.invalid };
     const values = withReuse(declared, reuse.map);
     const before = readReuse(found.row.draft ?? found.row.published, found.block.type);
+    /**
+     * A save that changes the section's references — links a component,
+     * unlinks one, switches an override on or off — is a reusable-component
+     * decision as well as a content edit (Batch 18): it needs being allowed to
+     * see the shared definitions it names. Compared with what is stored, so
+     * text typed into an existing override, or any save that leaves the
+     * references as they were, is ordinary page content.
+     */
+    if (!sameReuse(before, reuse.map)) {
+      assertAllowed(session, REUSE_AUTHORITY.instances, REUSE_DENIED.instances);
+    }
     // A whole-section link laid over a call to action linked on its own would
     // drop that link without anyone asking — refused before anything is
     // written, so the revision does not move (see `hasSeparateLinks`).
@@ -461,7 +481,7 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
  */
 export async function detachVisualInstance(form: FormData): Promise<VisualDetachResult> {
   try {
-    const session = await guardAction(REUSE_AUTHORITY.instances, form);
+    const session = await guardAction(REUSE_AUTHORITY.instances, form, REUSE_DENIED.instances);
 
     const sectionId = Number(form.get("sectionId"));
     const pageId = Number(form.get("pageId"));
@@ -575,10 +595,21 @@ export async function detachVisualInstance(form: FormData): Promise<VisualDetach
  * section is `{ v: 1, nodes: {} }` — a real draft meaning "publishing me
  * removes every override". Storing `null` for that would be storing "there is
  * nothing pending", and publishing would then leave the overrides in place.
+ *
+ * Two capabilities, one document (Batch 18). `content.style` for any style
+ * save; and `content.advanced_style` as well whenever the document would
+ * change an advanced token (`ADVANCED_STYLE_TOKENS`) anywhere — added,
+ * removed, reset or altered, on any node, at any width — compared with the
+ * section's current style baseline: its style draft when it has one, its
+ * published styles when it does not. That is the document the panel was
+ * editing and the one this write replaces, so a role without the advanced
+ * capability can change a colour while every width, layout and glow already
+ * there rides through untouched, and cannot move any of them — by a control,
+ * by an Undo, or by a hand-made document.
  */
 export async function saveVisualSectionStyles(form: FormData): Promise<VisualStyleSaveResult> {
   try {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.editStyle, form, DENIED.editStyle);
 
     const sectionId = Number(form.get("sectionId"));
     const pageId = Number(form.get("pageId"));
@@ -605,6 +636,10 @@ export async function saveVisualSectionStyles(form: FormData): Promise<VisualSty
      * filtered.
      */
     const styles = validateStyleDocument(submitted);
+    const baseline = found.row.draftStyles !== null ? found.row.draftStyles : found.row.styles;
+    if (advancedStylesDiffer(baseline, styles)) {
+      assertAllowed(session, AUTHORITY.editAdvancedStyle, DENIED.editAdvancedStyle);
+    }
 
     const result = await updateSectionGuarded(sectionId, expected, {
       draftStyles: styles,
@@ -654,8 +689,8 @@ export async function saveVisualSectionStyles(form: FormData): Promise<VisualSty
  * Saves one section's entrance as a draft. Never publishes.
  *
  * The third of three identical shapes, and the sameness is the point: same
- * door (`guardAction`, so the session's CSRF token and `content.manage` are
- * both checked), same ownership check against the row rather than against what
+ * door (`guardAction`, so the session's CSRF token and the domain's own
+ * capability are both checked), same ownership check against the row rather than against what
  * was asked, same revision guard, same one-column write, same conflict answer
  * carrying the version that won. A domain that let itself in a different way
  * would be the weakest lock on the site, and a domain that guarded itself
@@ -673,10 +708,14 @@ export async function saveVisualSectionStyles(form: FormData): Promise<VisualSty
  * outside the vocabulary is a stale or tampered request, and storing a guess
  * for it would report success while leaving the section moving in a way nobody
  * chose.
+ *
+ * `content.motion` (Batch 18) — the legacy entrance and the whole document
+ * alike, every breakpoint. Replay is not here and needs nothing: it plays what
+ * the canvas already shows and writes nothing.
  */
 export async function saveVisualSectionMotion(form: FormData): Promise<VisualMotionSaveResult> {
   try {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.editMotion, form, DENIED.editMotion);
 
     const sectionId = Number(form.get("sectionId"));
     const pageId = Number(form.get("pageId"));
@@ -826,13 +865,23 @@ const expectedPageRevision = (form: FormData): number => {
   return Number.isInteger(value) && value >= 0 ? value : -1;
 };
 
+/**
+ * `content.structure` for every layout operation (Batch 18), Undo and Redo of
+ * one included — they arrive here as the same requests. An operation with a
+ * further effect names the larger requirement itself: a reusable section added
+ * to the layout also links page content to a shared definition.
+ */
 async function runStructure(
   form: FormData,
   operate: (context: { pageId: number; expectedRevision: number; userId: number }) => Promise<StructureResult>,
   label: string,
+  requirement: { need: PermissionRequirement; denied: string } = {
+    need: AUTHORITY.editStructure,
+    denied: DENIED.editStructure,
+  },
 ): Promise<VisualStructureResult> {
   try {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(requirement.need, form, requirement.denied);
     const pageId = Number(form.get("pageId"));
     const expectedRevision = expectedPageRevision(form);
 
@@ -871,7 +920,7 @@ async function runStructure(
 export async function loadPageStructure(pageId: number): Promise<PageStructure | null> {
   try {
     const session = await getSession();
-    if (!session?.permissions.has("content.view")) return null;
+    if (!may(session?.permissions, "viewPages")) return null;
     return await getPageStructure(pageId);
   } catch (error) {
     console.error("[visual-editor:structure]", error);
@@ -924,6 +973,9 @@ export async function addPageSection(form: FormData): Promise<VisualStructureRes
         componentId === undefined ? {} : { componentId },
       ),
     "add",
+    componentId === undefined
+      ? undefined
+      : { need: COMPOUND.addReusableSection, denied: DENIED.addReusableSection },
   );
 }
 
@@ -996,7 +1048,7 @@ export async function discardPageLayout(form: FormData): Promise<VisualStructure
 export async function loadPageSummary(pageId: number): Promise<PageSummaryView | null> {
   try {
     const session = await getSession();
-    if (!session?.permissions.has("content.view")) return null;
+    if (!may(session?.permissions, "viewPages")) return null;
     return await getPageDraftSummary(pageId);
   } catch (error) {
     console.error("[visual-editor:summary]", error);
@@ -1008,7 +1060,7 @@ export async function loadPageSummary(pageId: number): Promise<PageSummaryView |
 export async function loadPageHistory(pageId: number): Promise<PageHistoryView | null> {
   try {
     const session = await getSession();
-    if (!session?.permissions.has("content.view")) return null;
+    if (!may(session?.permissions, "viewPages")) return null;
     if (!Number.isInteger(pageId) || pageId <= 0) return null;
     const versions = await listPageVersions(pageId, KEEP_PAGE_VERSIONS);
     return {
@@ -1040,7 +1092,7 @@ async function pageSlug(pageId: number): Promise<string | null> {
 
 export async function publishPageFromEditor(form: FormData): Promise<PageActionResult> {
   try {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const pageId = Number(form.get("pageId"));
     const expectedRevision = expectedPageRevision(form);
 
@@ -1084,7 +1136,7 @@ export async function publishPageFromEditor(form: FormData): Promise<PageActionR
 
 export async function discardPageFromEditor(form: FormData): Promise<PageActionResult> {
   try {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const pageId = Number(form.get("pageId"));
     const expectedRevision = expectedPageRevision(form);
 
@@ -1111,7 +1163,7 @@ export async function discardPageFromEditor(form: FormData): Promise<PageActionR
 
 export async function restoreVersionFromEditor(form: FormData): Promise<PageActionResult> {
   try {
-    const session = await guardAction("content.manage", form);
+    const session = await guardAction(AUTHORITY.publish, form, DENIED.publish);
     const pageId = Number(form.get("pageId"));
     const versionId = Number(form.get("versionId"));
 

@@ -2,9 +2,10 @@ import "server-only";
 
 import { and, eq, or } from "drizzle-orm";
 
+import { COMPOUND } from "@/lib/auth/authority";
+import { satisfies } from "@/lib/auth/permissions";
 import { getSession } from "@/lib/auth/session";
 import { composeSnapshot } from "@/lib/cms/composition";
-import { reuseAllowed } from "@/lib/cms/reuse/authority";
 import { HAS_REFERENCE, refersTo } from "@/lib/cms/reuse/store";
 import { db } from "@/lib/db";
 import { pageSections, reusableComponents } from "@/lib/db/schema";
@@ -141,8 +142,8 @@ const REVISION = /^(?:0|[1-9][0-9]{0,9})$/;
  * component's *draft* stands in for its published content, and every other
  * component stays as published. The rules, in order:
  *
- *   · **The session decides.** Without `content.view` this is an ordinary
- *     visit: the live page, nothing pending.
+ *   · **The session decides.** Without `content.view` and `components.view`
+ *     this is an ordinary visit: the live page, nothing pending.
  *   · **Two integers.** The component id and the draft revision being
  *     previewed. Anything else in either is not a page.
  *   · **The revision must be current.** A preview link built from a draft
@@ -161,7 +162,9 @@ async function resolveComponentPreview(
   rawRevision: string | string[] | undefined,
 ): Promise<PageForRender> {
   const session = await getSession();
-  if (!reuseAllowed(session?.permissions, "view")) {
+  // The page's drafts and the component's draft together (Batch 18): seeing
+  // pages and seeing reusable components, both.
+  if (!session || !satisfies(session.permissions, COMPOUND.previewComponent)) {
     return { page: await getPage(slug), isPreview: false, editor: null, compare: null };
   }
   const nothing: PageForRender = { page: null, isPreview: false, editor: null, compare: null };

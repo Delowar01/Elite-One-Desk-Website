@@ -4,7 +4,9 @@ import { asc, eq } from "drizzle-orm";
 
 import { AdminPageHeader } from "@/components/admin/page-header";
 import { Icon } from "@/components/ui/icon";
+import { COMPOUND, capabilitiesOf } from "@/lib/auth/authority";
 import { requirePermission } from "@/lib/auth/guard";
+import { satisfies } from "@/lib/auth/permissions";
 import { blocksForPage, getBlock } from "@/lib/cms/blocks";
 import { text } from "@/lib/cms/values";
 import { draftKindOf } from "@/lib/cms/drafts";
@@ -29,7 +31,8 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 export default async function PageEditor({ params }: { params: Promise<{ slug: string }> }) {
   const session = await requirePermission("content.view");
   const { slug } = await params;
-  const canManage = session.permissions.has("content.manage");
+  // One answer per control (Batch 18); each action behind them checks the same.
+  const can = capabilitiesOf(session.permissions);
 
   const [page] = await db.select().from(pages).where(eq(pages.slug, slug)).limit(1);
   if (!page) notFound();
@@ -136,14 +139,16 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
           sections={sections}
           removed={removed}
           blocks={blocksForPage(page.slug)}
-          canManage={canManage}
+          canStructure={can.editStructure}
+          sectionLink={can.editContent || can.editMotion ? "Edit" : "View"}
         />
 
         <div className="space-y-5">
           {/*
             Visible to anybody who can view the page: what is waiting, and what
-            has been published before. The controls inside are `canManage`'s.
-            Page Settings below stays an editor's screen.
+            has been published before. The controls inside are the publisher's.
+            Page Settings below is a publication too: the published switch and
+            the titles are live the moment they are saved.
           */}
           {summary ? (
             <PageChanges
@@ -151,16 +156,18 @@ export default async function PageEditor({ params }: { params: Promise<{ slug: s
               pageId={page.id}
               summary={summary}
               history={history}
-              canManage={canManage}
+              canPublish={can.publish}
             />
           ) : null}
-          {canManage ? (
-            <>
-              <PageSettingsForm csrf={session.csrfToken} page={page} />
-              {page.kind === "custom" ? (
-                <DeletePageForm csrf={session.csrfToken} id={page.id} title={page.titleEn} />
-              ) : null}
-            </>
+          {can.publish ? (
+            <PageSettingsForm
+              csrf={session.csrfToken}
+              page={page}
+              canEditTitles={satisfies(session.permissions, COMPOUND.renamePage)}
+            />
+          ) : null}
+          {page.kind === "custom" && satisfies(session.permissions, COMPOUND.deletePage) ? (
+            <DeletePageForm csrf={session.csrfToken} id={page.id} title={page.titleEn} />
           ) : null}
         </div>
       </div>

@@ -37,7 +37,7 @@ export function PageChanges({
   pageId,
   summary,
   history,
-  canManage,
+  canPublish,
 }: {
   csrf: string;
   pageId: number;
@@ -51,9 +51,10 @@ export function PageChanges({
    * not on the screen that is actually *about* pages — the same permission
    * answering two different ways depending on which door somebody came
    * through. It renders for everyone who can view; the controls are what this
-   * flag removes.
+   * flag removes — `content.publish` (Batch 18), since publishing, discarding
+   * everything saved and restoring a version are all page-wide acts.
    */
-  canManage: boolean;
+  canPublish: boolean;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [tone, setTone] = useState<"ok" | "error">("ok");
@@ -108,8 +109,14 @@ export function PageChanges({
         </p>
       ) : null}
 
+      {!canPublish && (summary.publishable || summary.discardable) ? (
+        <p className="text-[0.74rem] leading-relaxed text-muted" role="note" data-permission-note="content.publish">
+          You can see what is waiting, but your role does not allow publishing, discarding or restoring this page.
+        </p>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
-        {canManage && summary.publishable ? (
+        {canPublish && summary.publishable ? (
           <InlineAction
             action={publishPage}
             hidden={{ _csrf: csrf, pageId, expectedRevision: summary.revision }}
@@ -129,7 +136,7 @@ export function PageChanges({
             </ConfirmSubmit>
           </InlineAction>
         ) : null}
-        {canManage && summary.discardable ? (
+        {canPublish && summary.discardable ? (
           <InlineAction
             action={discardPageDrafts}
             hidden={{ _csrf: csrf, pageId, expectedRevision: summary.revision }}
@@ -175,7 +182,7 @@ export function PageChanges({
             }
             onRestore={() => undefined}
           />
-          {canManage && !summary.discardable && history?.versions.length ? (
+          {canPublish && !summary.discardable && history?.versions.length ? (
             <div className="mt-2 flex flex-col gap-1.5">
               {history.versions.map((version) => (
                 <InlineAction

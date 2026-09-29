@@ -29,6 +29,12 @@ import {
   loadReusableCatalog,
 } from "@/app/(backoffice)/admin/(shell)/components/actions";
 import { ReuseEditor } from "@/components/admin/reuse/reuse-editor";
+import {
+  CAPABILITY_WORDS,
+  deniedCapability,
+  type Capabilities,
+  type Capability,
+} from "@/lib/auth/authority";
 import type { MediaOption } from "@/components/admin/media-picker";
 import { GlobalsPanel } from "@/components/admin/visual-editor/globals-panel";
 import { Icon } from "@/components/ui/icon";
@@ -36,10 +42,10 @@ import type { BlockDef } from "@/lib/cms/blocks";
 import type { MotionPreset } from "@/lib/cms/motion";
 import type { MotionDocument } from "@/lib/cms/motion-doc";
 import { kindNoun } from "@/lib/cms/reuse/kinds";
-import { directEditDecision, linkSlot, readReuse, slotDef } from "@/lib/cms/reuse/reference";
+import { directEditDecision, linkSlot, readReuse, sameReuse, slotDef } from "@/lib/cms/reuse/reference";
 import { usageHeadline } from "@/lib/cms/reuse/usage-view";
 import type { ReuseCatalogEntry } from "@/lib/cms/reuse/view";
-import type { StyleDocument } from "@/lib/cms/styles";
+import { advancedStylesDiffer, type StyleDocument } from "@/lib/cms/styles";
 import { removedSections, type PageStructure } from "@/lib/cms/structure";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
 import { previewPagePath } from "@/lib/page-path";
@@ -179,10 +185,17 @@ const sameValues = (a: unknown, b: unknown) => canonical(a) === canonical(b);
  * instead, because a layout draft belongs to the page rather than to any one
  * section. Nothing here publishes anything.
  */
+/** The capability each of the three edit domains needs (Batch 18). */
+const DOMAIN_CAPABILITY: Record<EditDomain, Capability> = {
+  content: "editContent",
+  style: "editStyle",
+  motion: "editMotion",
+};
+
 export function VisualEditorShell({
   pages,
   initial,
-  canManageContent,
+  can,
   canManageNavigation,
   canManageSettings,
   csrf,
@@ -192,12 +205,13 @@ export function VisualEditorShell({
   pages: EditablePage[];
   initial: { slug: string; locale: Locale; device: DeviceKey };
   /**
-   * `content.manage` — may edit and publish page content, styles, motion and
-   * layout. Deliberately one capability per domain rather than one boolean for
-   * the editor: navigation and site settings are granted separately, and a
-   * single flag would have handed all three to whoever held any one of them.
+   * What this session may do to page content, one answer per capability
+   * (Batch 18, `lib/auth/authority.ts`): content, standard and advanced style,
+   * motion, layout, publishing, and the reusable-component four. They are
+   * granted separately, so no control here stands in for another — and every
+   * one of them is checked again by the action it calls.
    */
-  canManageContent: boolean;
+  can: Capabilities;
   /** `navigation.manage` — may edit the header and footer menus. */
   canManageNavigation: boolean;
   /** `settings.manage` — may edit brand, contact, WhatsApp, disclaimers, features, social. */
@@ -414,6 +428,51 @@ export function VisualEditorShell({
   );
 
   /* ------------------------------------------------------------------ */
+  /* What this session may change (Batch 18)                             */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Capabilities the server has refused since the editor opened.
+   *
+   * `can` is what the session held when the page was drawn. A permission
+   * removed while the editor is open is not known here until the server says
+   * so — every action reads the grants afresh — and when it does, that
+   * capability stops being offered for the rest of the session: its controls
+   * lock, its unsaved work stays where it is with the refusal beside it, and
+   * the other domains carry on. Nothing is ever *granted* from here; a
+   * capability can only be taken away, and a reload reads the truth again.
+   */
+  const [revoked, setRevoked] = useState<ReadonlySet<Capability>>(() => new Set());
+  const revokedRef = useRef<ReadonlySet<Capability>>(new Set());
+
+  /** For decisions made in callbacks: the grant as drawn, minus any refusal since. */
+  const allowed = useCallback(
+    (capability: Capability): boolean => can[capability] && !revokedRef.current.has(capability),
+    [can],
+  );
+  /** For drawing: the same answer, from state, so a refusal redraws the controls. */
+  const may = (capability: Capability): boolean => can[capability] && !revoked.has(capability);
+
+  /** A refusal the server gave: stop offering what it was about, if it names one thing. */
+  const noteRefusal = useCallback(
+    (message: string | undefined) => {
+      const capability = deniedCapability(message);
+      if (!capability || revokedRef.current.has(capability)) return;
+      const next = new Set(revokedRef.current);
+      next.add(capability);
+      revokedRef.current = next;
+      setRevoked(next);
+      // A direct edit already under way is content; it cannot carry on.
+      if (capability === "editContent" && editSession.current) {
+        const session = editSession.current;
+        editSession.current = null;
+        setEditRequest({ kind: "cancel", token: session.token });
+      }
+    },
+    [],
+  );
+
+  /* ------------------------------------------------------------------ */
   /* Undo and Redo (Batch 16)                                            */
   /* ------------------------------------------------------------------ */
 
@@ -499,7 +558,8 @@ export function VisualEditorShell({
    */
   const scheduleAutosave = useCallback(
     (sectionId: number) => {
-      if (!canManageContent) return;
+      // Nothing this session may save: no timer to arm.
+      if (!EDIT_DOMAINS.some((domain) => allowed(DOMAIN_CAPABILITY[domain]))) return;
       const existing = autosaveTimers.current.get(sectionId);
       if (existing) window.clearTimeout(existing);
       autosaveTimers.current.set(
@@ -510,7 +570,7 @@ export function VisualEditorShell({
         }, AUTOSAVE_DELAY_MS),
       );
     },
-    [canManageContent],
+    [allowed],
   );
   const activeId = selected?.sectionId ?? null;
   const buffer = activeId === null ? null : buffers[activeId] ?? null;
@@ -842,7 +902,14 @@ export function VisualEditorShell({
       editSession.current = null;
       if (previous) setEditRequest({ kind: "cancel", token: previous.token });
 
-      if (!canManageContent) return;
+      /**
+       * No content capability, no session (Batch 18). The canvas is never told
+       * to begin, so the text never becomes editable: a viewer, a stylist or a
+       * motion editor double-clicking a heading gets a selection and nothing
+       * more. The server refuses the save regardless — this is what keeps the
+       * canvas from *looking* writable to somebody it would refuse.
+       */
+      if (!allowed("editContent")) return;
       // A locked node is protected from the *pointer*; reaching it deliberately
       // from Layers is still editing, and the canvas refuses the gesture on its
       // own side. Nothing more is needed here.
@@ -915,7 +982,7 @@ export function VisualEditorShell({
       };
       setEditRequest({ kind: "begin", address, token, text });
     },
-    [canManageContent, ensureSectionBuffer],
+    [allowed, ensureSectionBuffer],
   );
 
 
@@ -942,7 +1009,9 @@ export function VisualEditorShell({
    */
   const onCanvasEdit = useCallback(
     (edit: { address: string; token: number; phase: "input" | "commit" | "cancel"; text: string }) => {
-      if (!canManageContent) return;
+      // A message from the canvas is not a permission: without the content
+      // capability it changes nothing, however it arrived (Batch 18).
+      if (!allowed("editContent")) return;
       /**
        * Does this message still belong to the editor it has arrived in?
        *
@@ -1045,7 +1114,7 @@ export function VisualEditorShell({
        */
       if (edit.phase !== "cancel") scheduleAutosave(verdict.sectionId);
     },
-    [canManageContent, closeHistoryGroup, recordChange, scheduleAutosave, writeBuffers],
+    [allowed, closeHistoryGroup, recordChange, scheduleAutosave, writeBuffers],
   );
 
   /**
@@ -1062,7 +1131,7 @@ export function VisualEditorShell({
   const onValues = useCallback(
     (values: Record<string, unknown>, label?: string, target?: number) => {
       const sectionId = target ?? activeId;
-      if (sectionId === null || !canManageContent) return;
+      if (sectionId === null || !allowed("editContent")) return;
       const held = buffersRef.current[sectionId];
       if (held) {
         // Recorded before the write, from the buffer as it stands: the action is
@@ -1097,13 +1166,16 @@ export function VisualEditorShell({
       });
       scheduleAutosave(sectionId);
     },
-    [activeId, canManageContent, locale, recordChange, scheduleAutosave, writeBuffers],
+    [activeId, allowed, locale, recordChange, scheduleAutosave, writeBuffers],
   );
 
   const onStyles = useCallback(
     (styles: StyleDocument) => {
-      if (activeId === null || !canManageContent) return;
+      if (activeId === null || !allowed("editStyle")) return;
       const held = buffersRef.current[activeId];
+      // The locked controls cannot send one, and the server would refuse it:
+      // an advanced token moved without the capability is not taken in.
+      if (held && !allowed("editAdvancedStyle") && advancedStylesDiffer(held.styles, styles)) return;
       if (held) {
         recordChange(
           held.data.pageId,
@@ -1128,7 +1200,7 @@ export function VisualEditorShell({
       });
       scheduleAutosave(activeId);
     },
-    [activeId, canManageContent, locale, recordChange, scheduleAutosave, writeBuffers],
+    [activeId, allowed, locale, recordChange, scheduleAutosave, writeBuffers],
   );
 
   /**
@@ -1144,7 +1216,7 @@ export function VisualEditorShell({
    */
   const onMotion = useCallback(
     (motion: MotionDocument) => {
-      if (activeId === null || !canManageContent) return;
+      if (activeId === null || !allowed("editMotion")) return;
       const held = buffersRef.current[activeId];
       if (held) {
         recordChange(
@@ -1170,7 +1242,7 @@ export function VisualEditorShell({
       });
       scheduleAutosave(activeId);
     },
-    [activeId, canManageContent, locale, recordChange, scheduleAutosave, writeBuffers],
+    [activeId, allowed, locale, recordChange, scheduleAutosave, writeBuffers],
   );
 
   /**
@@ -1242,9 +1314,12 @@ export function VisualEditorShell({
             : domain === "style"
               ? { styles: entry.data.styles, styleDirty: false }
               : { motion: entry.data.motionDocument, motionDirty: false };
+        // Discarding the work a refusal was about takes the refusal with it.
+        const denied = { ...entry.denied };
+        delete denied[domain];
         return {
           ...prev,
-          [activeId]: { ...entry, ...reset, status: "idle", statusDomain: null, message: undefined },
+          [activeId]: { ...entry, ...reset, denied, status: "idle", statusDomain: null, message: undefined },
         };
       });
     },
@@ -1311,10 +1386,12 @@ export function VisualEditorShell({
    * own last save produced rather than conflicting with themselves.
    */
   const runSave = useCallback(
-    async (sectionId: number, domain: EditDomain): Promise<"ok" | "conflict" | "error"> => {
+    async (sectionId: number, domain: EditDomain): Promise<"ok" | "conflict" | "error" | "denied"> => {
       const entry = buffersRef.current[sectionId];
-      if (!entry || entry.saving !== null || !canManageContent) return "error";
+      if (!entry || entry.saving !== null) return "error";
       if (!dirtyOf(entry)[domain]) return "ok";
+      // Not this session's to save any more (Batch 18): kept, never sent.
+      if (!allowed(DOMAIN_CAPABILITY[domain])) return "denied";
 
       const sent = canonical(
         domain === "content" ? entry.values : domain === "style" ? entry.styles : entry.motion,
@@ -1339,6 +1416,32 @@ export function VisualEditorShell({
           if (!live) return prev;
           return { ...prev, [sectionId]: { ...live, saving: null, statusDomain: domain, ...patch } };
         });
+      /**
+       * A refusal on the grounds of permission (Batch 18): the work stays in
+       * the buffer, unsaved and marked with what the server said, and the
+       * capability stops being offered. The queue then goes on to the section's
+       * other domains — a colour must not wait on a sentence the role may no
+       * longer save.
+       */
+      const refused = (message: string): "denied" => {
+        writeBuffers((prev) => {
+          const live = prev[sectionId];
+          if (!live) return prev;
+          return {
+            ...prev,
+            [sectionId]: {
+              ...live,
+              saving: null,
+              status: "error",
+              statusDomain: domain,
+              message,
+              denied: { ...live.denied, [domain]: message },
+            },
+          };
+        });
+        noteRefusal(message);
+        return "denied";
+      };
 
       let accepted: {
         revision: number;
@@ -1354,6 +1457,7 @@ export function VisualEditorShell({
               settle({ status: "conflict", message: answer.message, latest: answer.section });
               return "conflict";
             }
+            if (answer.reason === "denied") return refused(answer.message);
             settle({ status: "error", message: answer.message });
             return "error";
           }
@@ -1373,6 +1477,7 @@ export function VisualEditorShell({
               settle({ status: "conflict", message: answer.message, latest: answer.section });
               return "conflict";
             }
+            if (answer.reason === "denied") return refused(answer.message);
             settle({ status: "error", message: answer.message });
             return "error";
           }
@@ -1384,6 +1489,7 @@ export function VisualEditorShell({
               settle({ status: "conflict", message: answer.message, latest: answer.section });
               return "conflict";
             }
+            if (answer.reason === "denied") return refused(answer.message);
             settle({ status: "error", message: answer.message });
             return "error";
           }
@@ -1446,6 +1552,9 @@ export function VisualEditorShell({
             : domain === "style"
               ? { styles: movedOn ? live.styles : data.styles, styleDirty: movedOn }
               : { motion: movedOn ? live.motion : data.motionDocument, motionDirty: movedOn };
+        // A domain that saved is no longer refused.
+        const denied = { ...live.denied };
+        delete denied[domain];
 
         return {
           ...prev,
@@ -1453,6 +1562,7 @@ export function VisualEditorShell({
             ...live,
             data,
             ...domainState,
+            denied,
             saving: null,
             status: movedOn ? ("idle" as const) : ("saved" as const),
             statusDomain: domain,
@@ -1462,7 +1572,7 @@ export function VisualEditorShell({
       });
       return "ok";
     },
-    [canManageContent, csrf, writeBuffers],
+    [allowed, csrf, noteRefusal, writeBuffers],
   );
 
   /**
@@ -1489,9 +1599,11 @@ export function VisualEditorShell({
    */
   const drainSection = useCallback(
     async (sectionId: number) => {
-      if (!canManageContent || draining.current.has(sectionId)) return;
+      if (draining.current.has(sectionId)) return;
       draining.current.add(sectionId);
       let wrote = false;
+      // Domains refused in this pass: skipped, so the others still save (Batch 18).
+      const skipped = new Set<EditDomain>();
       try {
         for (;;) {
           const entry = buffersRef.current[sectionId];
@@ -1499,9 +1611,13 @@ export function VisualEditorShell({
           // A section already in conflict is not autosaved again at all.
           if (entry.status === "conflict") break;
           const dirty = dirtyOf(entry);
-          const domain = EDIT_DOMAINS.find((key) => dirty[key]);
+          const domain = EDIT_DOMAINS.find((key) => dirty[key] && !skipped.has(key));
           if (!domain) break;
           const result = await runSave(sectionId, domain);
+          if (result === "denied") {
+            skipped.add(domain);
+            continue;
+          }
           if (result !== "ok") {
             // The section moved elsewhere. Its history was built against the
             // version that lost, and nothing in it may be replayed over the
@@ -1526,7 +1642,7 @@ export function VisualEditorShell({
       freshCanvas();
       if (address) setRestoreToken((n) => n + 1);
     },
-    [canManageContent, resetHistory, runSave],
+    [resetHistory, runSave],
   );
 
   drainRef.current = (sectionId: number) => void drainSection(sectionId);
@@ -1591,7 +1707,8 @@ export function VisualEditorShell({
    */
   const detachInstance = useCallback(
     async (slot: string, componentId: number, version: number) => {
-      if (activeId === null || !canManageContent) return;
+      // Page content plus seeing the definition it copies (Batch 18).
+      if (activeId === null || !allowed("editContent") || !allowed("viewComponents")) return;
       const sectionId = activeId;
       setReuseBusy(true);
       setReuseMessage(null);
@@ -1625,6 +1742,7 @@ export function VisualEditorShell({
             await refreshCatalog();
             redrawKeeping(sectionId);
           }
+          if (answer.reason === "denied") noteRefusal(answer.message);
           setReuseMessage({ ok: false, text: answer.message });
           return;
         }
@@ -1672,7 +1790,7 @@ export function VisualEditorShell({
         setReuseBusy(false);
       }
     },
-    [activeId, canManageContent, catalog, csrf, recordChange, redrawKeeping, refreshCatalog, resetHistory, settleSection, writeBuffers],
+    [activeId, allowed, catalog, csrf, noteRefusal, recordChange, redrawKeeping, refreshCatalog, resetHistory, settleSection, writeBuffers],
   );
 
   /**
@@ -1683,7 +1801,14 @@ export function VisualEditorShell({
    */
   const saveAsReusable = useCallback(
     async (slot: string, name: string, publish: boolean) => {
-      if (activeId === null || !canManageContent) return;
+      /**
+       * Every effect of what was chosen (Batch 18): a draft needs reading the
+       * section and editing components; "Create, publish and link" also needs
+       * publishing components and editing page content, for the link. The
+       * server asks for exactly the same before it creates anything.
+       */
+      if (activeId === null || !allowed("viewPages") || !allowed("editComponents")) return;
+      if (publish && (!allowed("publishComponents") || !allowed("editContent"))) return;
       const sectionId = activeId;
       setReuseBusy(true);
       setReuseMessage(null);
@@ -1702,6 +1827,7 @@ export function VisualEditorShell({
         form.set("publish", publish ? "1" : "0");
         const answer = await createReusableFromSection(form);
         if (!answer.ok || !answer.component) {
+          if (!answer.ok && answer.reason === "denied") noteRefusal(answer.message);
           setReuseMessage({ ok: false, text: answer.message });
           return;
         }
@@ -1733,7 +1859,7 @@ export function VisualEditorShell({
         setReuseBusy(false);
       }
     },
-    [activeId, canManageContent, csrf, onValues, refreshCatalog, settleSection],
+    [activeId, allowed, csrf, noteRefusal, onValues, refreshCatalog, settleSection],
   );
 
   /**
@@ -1761,8 +1887,20 @@ export function VisualEditorShell({
     [buffers, catalog, structure],
   );
 
+  /** What the reusable-component panel may offer (Batch 18) — each control its own capability. */
+  const reuseAccess = useMemo(() => {
+    const has = (capability: Capability) => can[capability] && !revoked.has(capability);
+    return {
+      typeOverride: has("editContent"),
+      instances: has("editContent") && has("viewComponents"),
+      saveDraft: has("viewPages") && has("editComponents"),
+      savePublished: has("viewPages") && has("editContent") && has("editComponents") && has("publishComponents"),
+      open: has("viewComponents"),
+    };
+  }, [can, revoked]);
   const reuseControls: ReuseControls = useMemo(
     () => ({
+      access: reuseAccess,
       catalog,
       notice: reuseNotice,
       busy: reuseBusy,
@@ -1773,7 +1911,7 @@ export function VisualEditorShell({
       onOpen: (id, focus) => setComponentDrawer({ id, focus }),
       onDismissNotice: () => setReuseNotice(null),
     }),
-    [catalog, detachInstance, onValues, reuseBusy, reuseMessage, reuseNotice, saveAsReusable],
+    [catalog, detachInstance, onValues, reuseAccess, reuseBusy, reuseMessage, reuseNotice, saveAsReusable],
   );
 
   /** "Save now": the same queue, without waiting for the debounce. */
@@ -1821,7 +1959,7 @@ export function VisualEditorShell({
        */
       history: { op: StructureOp; sectionId: number | null; visible?: boolean } | null,
     ): Promise<VisualStructureResult | null> => {
-      if (!canManageContent || !page || !structure || structureBusy) return null;
+      if (!allowed("editStructure") || !page || !structure || structureBusy) return null;
       setStructureBusy(true);
       setStructureFailure(null);
       closeHistoryGroup();
@@ -1843,6 +1981,7 @@ export function VisualEditorShell({
         // the history, and the content ones are no safer for sitting beside
         // them: the page's history goes, and the editor is told why.
         if (result.reason === "conflict") resetHistory(page.id, HISTORY_RESET.layout);
+        if (result.reason === "denied") noteRefusal(result.message);
         return result;
       }
       if (result.structure) setStructure(result.structure);
@@ -1879,7 +2018,7 @@ export function VisualEditorShell({
       if (wanted) setRestoreToken((n) => n + 1);
       return result;
     },
-    [canManageContent, closeHistoryGroup, csrf, page, recordChange, resetHistory, structure, structureBusy],
+    [allowed, closeHistoryGroup, csrf, noteRefusal, page, recordChange, resetHistory, structure, structureBusy],
   );
 
   /**
@@ -2092,7 +2231,7 @@ export function VisualEditorShell({
    */
   const stepHistory = useCallback(
     async (direction: "undo" | "redo") => {
-      if (!page || !canManageContent || historyBusy || structureBusy || pageBusy) return;
+      if (!page || historyBusy || structureBusy || pageBusy) return;
       if (editSession.current) {
         setHistoryNotice("Finish typing on the canvas first — press Enter — then Undo takes the whole edit back.");
         return;
@@ -2104,7 +2243,29 @@ export function VisualEditorShell({
       const { entry } = taken;
       const change = entry.change;
 
+      /**
+       * Undo is not a way round a permission (Batch 18).
+       *
+       * Each step is replayed only if this session may make that change *now*
+       * — the step's own domain, plus advanced styling for a style step that
+       * moves an advanced token and component viewing for a content step that
+       * links or unlinks one. A step that is not allowed is not taken: it stays
+       * exactly where it is in the history, nothing is changed, and the toolbar
+       * says why. The server checks the same again when the replay saves, so a
+       * permission removed a moment ago is refused there too.
+       */
+      const refuse = (capability: Capability) => {
+        setHistoryNotice(
+          `${direction === "undo" ? "Undo" : "Redo"} cannot take this step: your role does not allow ` +
+            `${CAPABILITY_WORDS[capability]}. It stays in the history, and nothing was changed.`,
+        );
+      };
+
       if (change.domain === "structure") {
+        if (!allowed("editStructure")) {
+          refuse("editStructure");
+          return;
+        }
         if (!structure) return;
         const step = structureStep(change, direction, structure.structure);
         if (!step) {
@@ -2141,14 +2302,33 @@ export function VisualEditorShell({
         return;
       }
       if (change.domain === "content") {
+        if (!allowed("editContent")) {
+          refuse("editContent");
+          return;
+        }
         const values = applyContent(buffer.values, change.changes, direction);
         if (!values) {
           resetHistory(pageId, HISTORY_RESET.section);
           return;
         }
+        const blockType = buffer.data.blockType;
+        if (!sameReuse(readReuse(buffer.values, blockType), readReuse(values, blockType)) && !allowed("viewComponents")) {
+          refuse("viewComponents");
+          return;
+        }
         setDomainValue(change.sectionId, "content", values);
       } else {
-        setDomainValue(change.sectionId, change.domain, direction === "undo" ? change.before : change.after);
+        const capability = DOMAIN_CAPABILITY[change.domain];
+        if (!allowed(capability)) {
+          refuse(capability);
+          return;
+        }
+        const target = direction === "undo" ? change.before : change.after;
+        if (change.domain === "style" && !allowed("editAdvancedStyle") && advancedStylesDiffer(buffer.styles, target)) {
+          refuse("editAdvancedStyle");
+          return;
+        }
+        setDomainValue(change.sectionId, change.domain, target);
       }
       writeHistory(pageId, taken.history);
       setHistoryNotice(null);
@@ -2170,7 +2350,7 @@ export function VisualEditorShell({
       }
     },
     [
-      canManageContent,
+      allowed,
       historyBusy,
       historyOf,
       page,
@@ -2274,8 +2454,9 @@ export function VisualEditorShell({
    * page missing the sentence somebody is in the middle of typing — and the
    * autosave that would have carried it is a second away.
    */
+  const mayPublish = may("publish");
   const publishBlocked = useMemo(() => {
-    if (!canManageContent) return null;
+    if (!mayPublish) return null;
     if (pageLocal.conflicted) {
       return "A section on this page has a conflict. Reload the latest version of it first.";
     }
@@ -2283,7 +2464,7 @@ export function VisualEditorShell({
     if (pageLocal.dirty) return "Saving drafts…";
     if (structureBusy) return "Finishing a layout change…";
     return null;
-  }, [canManageContent, pageLocal, structureBusy]);
+  }, [mayPublish, pageLocal, structureBusy]);
 
   const refreshPageState = useCallback(async () => {
     if (!page) return;
@@ -2471,7 +2652,7 @@ export function VisualEditorShell({
       /** What the toolbar says about the session's history once this succeeds. */
       historyNotice: string,
     ) => {
-      if (!page || !canManageContent || pageBusy) return;
+      if (!page || !allowed("publish") || pageBusy) return;
       setPageBusy(true);
       setPageMessage(null);
       setPageError(null);
@@ -2494,6 +2675,7 @@ export function VisualEditorShell({
       if (!answer.ok) {
         setPageBusy(false);
         setPageError(answer.message);
+        noteRefusal(answer.message);
         // The refusal may well be "you are out of date", so re-read rather than
         // leave the panel quoting the numbers that were just rejected.
         await refreshPageState();
@@ -2504,7 +2686,7 @@ export function VisualEditorShell({
       setPageBusy(false);
       setPageMessage(answer.message);
     },
-    [afterPageAction, canManageContent, csrf, page, pageBusy, refreshPageState, structure, summary],
+    [afterPageAction, allowed, csrf, noteRefusal, page, pageBusy, refreshPageState, structure, summary],
   );
 
   const publishPage = useCallback(() => {
@@ -2620,7 +2802,18 @@ export function VisualEditorShell({
   );
   const nextUndo = pageHistory.undo[pageHistory.undo.length - 1] ?? null;
   const nextRedo = pageHistory.redo[pageHistory.redo.length - 1] ?? null;
-  const historyIdle = canManageContent && !historyBusy && !structureBusy && !pageBusy;
+  const historyIdle = !historyBusy && !structureBusy && !pageBusy;
+  /**
+   * Nothing here this session may change — the toolbar says so in words. A
+   * claim about the whole editor, so it is made only when it is true of all of
+   * it: no page capability, no reusable draft made from a section, and no
+   * Globals drawer. A navigation manager who may not touch a page is not read
+   * only here; Globals is theirs.
+   */
+  const readOnly =
+    !canManageNavigation &&
+    !canManageSettings &&
+    !(["editContent", "editStyle", "editMotion", "editStructure", "publish", "editComponents"] as const).some(may);
 
   if (!page) {
     return (
@@ -2651,10 +2844,11 @@ export function VisualEditorShell({
           </Link>
           <span className="hidden items-center gap-2 sm:flex">
             <span className="text-[0.82rem] font-semibold tracking-tight text-strong">Visual Editor</span>
-            {!canManageContent ? (
+            {readOnly ? (
               <span
                 className="rounded-full border border-[var(--admin-line)] px-2 py-0.5 text-[0.66rem] font-semibold uppercase tracking-wide text-muted"
-                title="You can look at every page here, but not change anything."
+                title="You can look at every page here, but your role does not allow changing anything."
+                data-permission-badge="read-only"
               >
                 Read only
               </span>
@@ -2891,7 +3085,9 @@ export function VisualEditorShell({
           valuesOf={valuesOf}
           dirtyIds={dirtyIds}
           ready={ready}
-          canManage={canManageContent}
+          canStructure={may("editStructure")}
+          canEditText={may("editContent")}
+          canAddReusable={may("editStructure") && may("editContent") && may("viewComponents")}
           busy={structureBusy}
           failure={structureFailure}
           onReloadLayout={reloadLayout}
@@ -2942,7 +3138,7 @@ export function VisualEditorShell({
             title={page.title}
             summary={summary}
             history={history}
-            canManage={canManageContent}
+            canPublishPage={may("publish")}
             busy={pageBusy}
             blockedReason={publishBlocked}
             message={pageMessage}
@@ -2990,7 +3186,11 @@ export function VisualEditorShell({
                   key={componentDrawer.id}
                   componentId={componentDrawer.id}
                   csrf={csrf}
-                  canManage={canManageContent}
+                  can={{
+                    edit: may("editComponents"),
+                    publish: may("publishComponents"),
+                    lifecycle: may("componentLifecycle"),
+                  }}
                   media={media}
                   locale={locale}
                   focus={componentDrawer.focus}
@@ -3034,7 +3234,12 @@ export function VisualEditorShell({
           sections={sections}
           locale={locale}
           media={media}
-          canManage={canManageContent}
+          access={{
+            content: may("editContent"),
+            style: may("editStyle"),
+            advancedStyle: may("editAdvancedStyle"),
+            motion: may("editMotion"),
+          }}
           buffer={buffer}
           breakpoint={DEVICE_BREAKPOINT[device]}
           tab={tab}

@@ -380,6 +380,76 @@ const TOKENS: Record<keyof StyleTokens, Check> = {
 
 export const STYLE_TOKEN_KEYS = Object.keys(TOKENS) as (keyof StyleTokens)[];
 
+/**
+ * The advanced half of the vocabulary — who may change it is decided here
+ * (Batch 18), because both halves live in one document.
+ *
+ * Exactly the layout tokens Batch 14 added: an element's own size, its layout
+ * mode and flow, what it clips, and its glow. These are the controls that can
+ * crop content, collapse a row or change how a whole section is built, and a
+ * role may be allowed the everyday styling above them without being allowed
+ * these (`content.advanced_style`, always together with `content.style`).
+ *
+ * Hiding the controls would not be the rule: basic and advanced tokens are
+ * saved as one document, so a save could carry anything. The style action
+ * compares what is submitted with what is stored — `advancedStylesDiffer` —
+ * and a role without the advanced capability may change the rest of the
+ * document only while every advanced token, on every node and at every width,
+ * stays exactly as it was: not added, not removed, not reset, not altered.
+ */
+export const ADVANCED_STYLE_TOKENS = [
+  "width",
+  "height",
+  "minHeight",
+  "layout",
+  "direction",
+  "wrap",
+  "justify",
+  "alignItems",
+  "columns",
+  "overflow",
+  "glow",
+] as const satisfies readonly (keyof StyleTokens)[];
+
+const ADVANCED = new Set<string>(ADVANCED_STYLE_TOKENS);
+
+export const isAdvancedToken = (token: string): boolean => ADVANCED.has(token);
+
+/**
+ * Only the advanced tokens of a document, spelled one way: nodes in path order,
+ * breakpoints in their fixed order, tokens in vocabulary order, empty branches
+ * and empty nodes dropped. Two documents with the same advanced settings give
+ * the same string however their other tokens — or their key order — differ.
+ */
+export function advancedStyleSignature(document: StyleDocument): string {
+  const nodes: [string, [Breakpoint, [string, unknown][]][]][] = [];
+  for (const path of Object.keys(document.nodes).sort()) {
+    const node = document.nodes[path]!;
+    const branches: [Breakpoint, [string, unknown][]][] = [];
+    for (const breakpoint of BREAKPOINTS) {
+      const tokens = node[breakpoint];
+      if (!tokens) continue;
+      const kept = ADVANCED_STYLE_TOKENS.filter((token) => tokens[token] !== undefined).map(
+        (token) => [token, tokens[token]] as [string, unknown],
+      );
+      if (kept.length) branches.push([breakpoint, kept]);
+    }
+    if (branches.length) nodes.push([path, branches]);
+  }
+  return JSON.stringify(nodes);
+}
+
+/**
+ * Whether two documents disagree about any advanced token. Both are read
+ * through `validateStyleDocument` first, so a value the validator would
+ * normalise — or drop — is compared as what would actually be stored.
+ */
+export function advancedStylesDiffer(a: unknown, b: unknown): boolean {
+  return (
+    advancedStyleSignature(validateStyleDocument(a)) !== advancedStyleSignature(validateStyleDocument(b))
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /* Validation                                                                 */
 /* -------------------------------------------------------------------------- */

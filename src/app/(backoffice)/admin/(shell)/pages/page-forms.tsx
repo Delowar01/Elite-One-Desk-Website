@@ -34,9 +34,16 @@ export function NewPageForm({ csrf }: { csrf: string }) {
 export function PageSettingsForm({
   csrf,
   page,
+  canEditTitles,
 }: {
   csrf: string;
   page: { id: number; slug: string; kind: string; titleEn: string; titleAr: string; isPublished: boolean };
+  /**
+   * The titles are live the moment they are saved, so changing one is page
+   * content *and* a publication (Batch 18). Without that, they are shown and
+   * sent back unchanged — the server compares them with the stored row.
+   */
+  canEditTitles: boolean;
 }) {
   return (
     <AdminForm action={updatePage} className="admin-card p-5">
@@ -46,12 +53,32 @@ export function PageSettingsForm({
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Title (English)" name="titleEn">
-          <input id="titleEn" name="titleEn" defaultValue={page.titleEn} required className="admin-input" />
+          <input
+            id="titleEn"
+            name="titleEn"
+            defaultValue={page.titleEn}
+            required
+            readOnly={!canEditTitles}
+            className="admin-input"
+          />
         </Field>
         <Field label="Title (العربية)" name="titleAr">
-          <input id="titleAr" name="titleAr" defaultValue={page.titleAr} dir="rtl" className="admin-input" />
+          <input
+            id="titleAr"
+            name="titleAr"
+            defaultValue={page.titleAr}
+            dir="rtl"
+            readOnly={!canEditTitles}
+            className="admin-input"
+          />
         </Field>
       </div>
+      {canEditTitles ? null : (
+        <p className="mt-2 text-[0.73rem] text-muted" role="note" data-permission-note="content.edit">
+          The titles are live as soon as they are saved, so changing them needs permission to edit page content as
+          well as to publish. Your role can publish or unpublish the page.
+        </p>
+      )}
 
       <label className="mt-4 flex cursor-pointer items-start gap-2.5">
         <input

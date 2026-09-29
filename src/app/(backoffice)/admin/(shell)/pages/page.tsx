@@ -3,7 +3,9 @@ import { asc, eq, sql } from "drizzle-orm";
 
 import { AdminPageHeader } from "@/components/admin/page-header";
 import { Icon } from "@/components/ui/icon";
+import { COMPOUND } from "@/lib/auth/authority";
 import { requirePermission } from "@/lib/auth/guard";
+import { satisfies } from "@/lib/auth/permissions";
 import { sectionHasDraft } from "@/lib/cms/draft-sql";
 import { db } from "@/lib/db";
 import { pageSections, pages } from "@/lib/db/schema";
@@ -14,7 +16,8 @@ export const dynamic = "force-dynamic";
 
 export default async function PagesIndex() {
   const session = await requirePermission("content.view", "/admin/pages");
-  const canManage = session.permissions.has("content.manage");
+  // A new page is layout and content at once (Batch 18, `COMPOUND.createPage`).
+  const canCreate = satisfies(session.permissions, COMPOUND.createPage);
 
   const rows = await db
     .select({
@@ -102,7 +105,7 @@ export default async function PagesIndex() {
         </table>
       </div>
 
-      {canManage ? <NewPageForm csrf={session.csrfToken} /> : null}
+      {canCreate ? <NewPageForm csrf={session.csrfToken} /> : null}
     </>
   );
 }

@@ -28,6 +28,25 @@ export type RoleRow = {
 
 export type PermissionRow = { key: string; label: string; group: string };
 
+/**
+ * How the permissions in a group work together, said once beside them (Batch
+ * 18). The actions enforce every one of these rules; this is so an owner
+ * arranging a role is not surprised by them.
+ */
+const GROUP_NOTES: Record<string, string> = {
+  Content:
+    "Every page permission here also needs “View pages and sections”. Advanced layout styles need “Edit " +
+    "standard styles” as well. Publishing is separate from every editing permission — an editor cannot " +
+    "publish without it, and a publisher cannot edit without the editing ones.",
+  "Reusable components":
+    "Creating, editing, publishing and archiving each also need “View reusable components”. Linking a component " +
+    "into a page needs “Edit page text, links and media” and “View reusable components”.",
+  Legacy:
+    "Grants nothing in this release. It is what the previous release checks for every page edit, and it is kept " +
+    "so that a rollback leaves the same people able to edit and publish there. Change it only if you mean to " +
+    "change what a role could do after a rollback.",
+};
+
 export function UsersClient({
   csrf,
   users,
@@ -290,6 +309,11 @@ export function UsersClient({
                     {Array.from(new Set(permissions.map((p) => p.group))).map((group) => (
                       <div key={group}>
                         <p className="admin-label">{group}</p>
+                        {GROUP_NOTES[group] ? (
+                          <p className="mb-2 text-[0.72rem] leading-relaxed text-muted" data-permission-group-note={group}>
+                            {GROUP_NOTES[group]}
+                          </p>
+                        ) : null}
                         <div className="space-y-1.5">
                           {permissions
                             .filter((p) => p.group === group)

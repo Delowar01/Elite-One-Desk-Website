@@ -196,7 +196,7 @@ export function MotionInspector({
   legacy,
   breakpoint,
   locale,
-  canManage,
+  canMotion,
   pending,
   replay,
   onChange,
@@ -207,7 +207,11 @@ export function MotionInspector({
   legacy: MotionPreset;
   breakpoint: Breakpoint;
   locale: Locale;
-  canManage: boolean;
+  /**
+   * `content.motion` (Batch 18). Without it every setting is shown and locked,
+   * and Replay still plays — it changes nothing and saves nothing.
+   */
+  canMotion: boolean;
   /**
    * The section's motion has changes the canvas does not show yet — unsaved or
    * saving. Replay plays what the canvas shows, so it waits for them.
@@ -352,7 +356,13 @@ export function MotionInspector({
             : "Nothing overridden here"}
       </p>
 
-      <fieldset disabled={!canManage} className="min-w-0 border-0 p-0">
+      {canMotion ? null : (
+        <p className="text-[0.72rem] leading-relaxed text-muted" role="note" data-permission-note="content.motion">
+          You can view this element’s motion and replay it, but your role does not allow editing motion.
+        </p>
+      )}
+
+      <fieldset disabled={!canMotion} className="min-w-0 border-0 p-0">
         <div className="flex flex-col gap-4">
           {GROUPS.map(({ title, fields }) => {
             const shown = fields.filter((field) => offered.has(field));
@@ -382,7 +392,7 @@ export function MotionInspector({
         </div>
       </fieldset>
 
-      {canManage ? (
+      {canMotion ? (
         <button
           type="button"
           onClick={() => onChange(withoutBranch(doc, path, breakpoint))}

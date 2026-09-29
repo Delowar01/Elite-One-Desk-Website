@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { asc, eq } from "drizzle-orm";
 
 import { AdminPageHeader } from "@/components/admin/page-header";
+import { capabilitiesOf } from "@/lib/auth/authority";
 import { requirePermission } from "@/lib/auth/guard";
 import { getBlock } from "@/lib/cms/blocks";
 import { draftKindOf } from "@/lib/cms/drafts";
@@ -18,8 +19,17 @@ import { SectionForm } from "./section-form";
 export const dynamic = "force-dynamic";
 export const metadata = { title: "Edit section" };
 
+/**
+ * One section, in the ordinary form — open to anybody who may view pages
+ * (Batch 18), with each part of the form as editable as the reader's role
+ * allows: the words need `content.edit`, the entrance menu `content.motion`,
+ * the publish and discard buttons `content.publish`. The actions behind them
+ * check exactly the same, so this screen is never a way round the Visual
+ * Editor's rules, nor the other way about.
+ */
 export default async function SectionEditor({ params }: { params: Promise<{ id: string }> }) {
-  const session = await requirePermission("content.manage");
+  const session = await requirePermission("content.view");
+  const can = capabilitiesOf(session.permissions);
   const { id: rawId } = await params;
   const id = Number(rawId) || 0;
 
@@ -100,6 +110,7 @@ export default async function SectionEditor({ params }: { params: Promise<{ id: 
         <SectionForm
           key={row.section.id}
           csrf={session.csrfToken}
+          can={{ edit: can.editContent, motion: can.editMotion, publish: can.publish }}
           block={block}
           media={library}
           previewHref={`/admin/pages/${row.page.slug}/preview`}

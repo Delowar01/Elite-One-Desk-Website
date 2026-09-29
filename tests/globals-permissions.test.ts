@@ -80,6 +80,27 @@ after(async () => {
  * same cookie sees each new combination immediately — which is also what the
  * revocation tests are about.
  */
+/**
+ * Everything a page editor may be granted since Batch 18 — every page and
+ * reusable-component capability, and `content.manage`, which this release
+ * authorizes nothing with. A "content editor" here holds all of it, so the
+ * point these cases make — none of it reaches site chrome — is made against
+ * the widest page role there is.
+ */
+const PAGE_EDITING: PermissionKey[] = [
+  "content.manage",
+  "content.edit",
+  "content.style",
+  "content.advanced_style",
+  "content.motion",
+  "content.structure",
+  "content.publish",
+  "components.view",
+  "components.edit",
+  "components.publish",
+  "components.lifecycle",
+];
+
 const SPARE_ROLE = "viewer";
 const SPARE_EMAIL = "matrix-actor@eod.invalid";
 
@@ -297,10 +318,11 @@ describe("the Globals panel is sent only what its holder may manage", () => {
   });
 
   test("a content editor with neither global permission gets neither half", async () => {
+    // Every page capability there is (Batch 18) — and still no site chrome.
     const actor = await as([
       "dashboard.view",
       "content.view",
-      "content.manage",
+      ...PAGE_EDITING,
       "visual_editor.view",
     ]);
     const state = answered(await globals(actor));
@@ -358,7 +380,7 @@ describe("the Globals panel is sent only what its holder may manage", () => {
       "dashboard.view",
       "content.view",
       "visual_editor.view",
-      "content.manage",
+      ...PAGE_EDITING,
     ]);
     const response = await call<unknown>(VE_ACTIONS, VE_ROUTE, "loadEditorGlobals", [], actor);
     assert.ok(
@@ -404,7 +426,7 @@ describe("the Globals panel is sent only what its holder may manage", () => {
 
 describe("a global write names its own permission, whatever the caller can see", () => {
   const READER: PermissionKey[] = ["dashboard.view", "content.view", "visual_editor.view"];
-  const CONTENT: PermissionKey[] = [...READER, "content.manage"];
+  const CONTENT: PermissionKey[] = [...READER, ...PAGE_EDITING];
   const NAV: PermissionKey[] = [...READER, "navigation.manage"];
   const SETTINGS: PermissionKey[] = [...READER, "settings.manage"];
 

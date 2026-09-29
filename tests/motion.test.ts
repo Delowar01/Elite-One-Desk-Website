@@ -384,7 +384,8 @@ describe("each domain writes its own column, and only one writes at a time", () 
     // when they left.
     const inspector = read("src/components/admin/visual-editor/inspector.tsx");
     assert.match(inspector, /const blocked = buffer\.saving !== null;/);
-    assert.match(inspector, /disabled=\{!dirty \|\| blocked\}/);
+    // …and, since Batch 18, while this reader may not save the domain at all.
+    assert.match(inspector, /disabled=\{!dirty \|\| blocked \|\| !editable\}/);
   });
 
   test("all three domains are offered, and dirtiness is read in one place", () => {

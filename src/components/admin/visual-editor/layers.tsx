@@ -62,7 +62,9 @@ export function LayersPanel({
   valuesOf,
   dirtyIds,
   ready,
-  canManage,
+  canStructure,
+  canEditText,
+  canAddReusable,
   busy,
   failure,
   onReloadLayout,
@@ -88,7 +90,16 @@ export function LayersPanel({
   /** Sections with edits in the panel that have not been saved yet. */
   dirtyIds: Set<number>;
   ready: boolean;
-  canManage: boolean;
+  /**
+   * `content.structure` (Batch 18): every layout control — add, move, drag,
+   * duplicate, hide, remove, restore, discard. Without it the tree is still
+   * the page's structure to look at and select from.
+   */
+  canStructure: boolean;
+  /** `content.edit`: whether a text row offers to edit on the canvas at all. */
+  canEditText: boolean;
+  /** Adding a reusable block also links content — structure, content and component viewing together. */
+  canAddReusable: boolean;
   /** A structural request is in flight; the controls wait rather than queue. */
   busy: boolean;
   /** The last refusal, with its reason — a conflict is offered a way out. */
@@ -180,7 +191,7 @@ export function LayersPanel({
         <h2 className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">
           Page structure
         </h2>
-        {canManage ? (
+        {canStructure ? (
           <button
             type="button"
             onClick={() => setAdding((open) => !open)}
@@ -194,6 +205,13 @@ export function LayersPanel({
         ) : null}
       </div>
 
+      {canStructure ? null : (
+        <p className="mx-3.5 mb-2 shrink-0 text-[0.68rem] leading-relaxed text-muted" role="note" data-permission-note="content.structure">
+          You can view this layout, but your role does not allow adding, moving, hiding, removing or restoring
+          sections.
+        </p>
+      )}
+
       {pending ? (
         <div className="mx-2 mb-2 shrink-0 rounded-[var(--radius-xs)] border border-[color-mix(in_oklab,#ffd166_40%,transparent)] bg-[color-mix(in_oklab,#ffd166_10%,transparent)] px-2.5 py-2">
           <p className="text-[0.68rem] font-semibold uppercase tracking-wide" style={{ color: "#ffd166" }}>
@@ -202,7 +220,7 @@ export function LayersPanel({
           <p className="mt-0.5 text-[0.68rem] leading-relaxed text-muted">
             Unpublished. The live page keeps its current layout.
           </p>
-          {canManage ? (
+          {canStructure ? (
             <button
               type="button"
               onClick={ops.onDiscard}
@@ -242,10 +260,10 @@ export function LayersPanel({
         </div>
       ) : null}
 
-      {adding && canManage ? (
+      {adding && canStructure ? (
         <BlockPicker
           blocks={blocks}
-          reusable={reusableBlocks}
+          reusable={canAddReusable ? reusableBlocks : []}
           after={selectedSectionId}
           disabled={busy}
           onPick={(blockType, after, componentId) => {
@@ -269,7 +287,7 @@ export function LayersPanel({
                 <li
                   key={section.sectionId}
                   data-section-id={section.sectionId}
-                  draggable={canManage && !busy}
+                  draggable={canStructure && !busy}
                   onDragStart={(event) => {
                     setDragging(index);
                     event.dataTransfer.effectAllowed = "move";
@@ -374,7 +392,7 @@ export function LayersPanel({
                           open={open}
                           lockSet={lockSet}
                           selectedAddress={selectedAddress}
-                          editable={editableOf(section)}
+                          editable={canEditText ? editableOf(section) : NO_ADDRESSES}
                           linked={
                             new Set(
                               (reuseOf?.(section.sectionId) ?? []).flatMap((link) =>
@@ -391,7 +409,7 @@ export function LayersPanel({
                     </ul>
                   ) : null}
 
-                  {canManage ? (
+                  {canStructure ? (
                     <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
                       <RowButton
                         label="Move up"
@@ -458,7 +476,7 @@ export function LayersPanel({
                       {section.summary || section.blockType}
                     </span>
                   </span>
-                  {canManage ? (
+                  {canStructure ? (
                     <button
                       type="button"
                       onClick={() => ops.onRestore(section.sectionId)}
@@ -488,6 +506,9 @@ export function LayersPanel({
  */
 const editableOf = (section: EditorSectionMeta): Set<string> =>
   new Set(section.nodes.filter((node) => node.edit).map((node) => node.address));
+
+/** For a reader who may not edit text: no row offers to (Batch 18). */
+const NO_ADDRESSES: Set<string> = new Set();
 
 /** What each kind of node is called, in words, beside its icon. */
 const GROUP: Record<LayerNode["group"], { icon: string; word: string }> = {

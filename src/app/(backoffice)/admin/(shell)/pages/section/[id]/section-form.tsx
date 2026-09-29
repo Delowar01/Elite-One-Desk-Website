@@ -41,6 +41,7 @@ import {
  */
 export function SectionForm({
   csrf,
+  can,
   section,
   block,
   media,
@@ -48,6 +49,12 @@ export function SectionForm({
   linked,
 }: {
   csrf: string;
+  /**
+   * What this reader may change (Batch 18): the words, the entrance, and
+   * publishing or discarding. The actions check the same capabilities, so a
+   * control drawn here is never the only thing standing in the way.
+   */
+  can: { edit: boolean; motion: boolean; publish: boolean };
   section: {
     id: number;
     /** The preset this screen is editing — the motion draft when there is one. */
@@ -206,28 +213,36 @@ export function SectionForm({
             somebody else saves. The button would then publish — or delete — a
             draft that was never on this screen.
           */}
-          <InlineAction
-            action={publishSection}
-            hidden={{ _csrf: csrf, id: screen.id, expectedRevision: screen.revision }}
-            onResult={onResult}
-          >
-            <ConfirmSubmit
-              variant="primary"
-              className="admin-btn-sm"
-              message="Publish this section to the live site?"
-            >
-              Publish draft
-            </ConfirmSubmit>
-          </InlineAction>
-          <InlineAction
-            action={discardDraft}
-            hidden={{ _csrf: csrf, id: screen.id, expectedRevision: screen.revision }}
-            onResult={onResult}
-          >
-            <ConfirmSubmit className="admin-btn-sm" message="Discard this draft and keep the live version?">
-              Discard
-            </ConfirmSubmit>
-          </InlineAction>
+          {can.publish ? (
+            <>
+              <InlineAction
+                action={publishSection}
+                hidden={{ _csrf: csrf, id: screen.id, expectedRevision: screen.revision }}
+                onResult={onResult}
+              >
+                <ConfirmSubmit
+                  variant="primary"
+                  className="admin-btn-sm"
+                  message="Publish this section to the live site?"
+                >
+                  Publish draft
+                </ConfirmSubmit>
+              </InlineAction>
+              <InlineAction
+                action={discardDraft}
+                hidden={{ _csrf: csrf, id: screen.id, expectedRevision: screen.revision }}
+                onResult={onResult}
+              >
+                <ConfirmSubmit className="admin-btn-sm" message="Discard this draft and keep the live version?">
+                  Discard
+                </ConfirmSubmit>
+              </InlineAction>
+            </>
+          ) : (
+            <p className="w-full text-[0.74rem] text-muted" role="note" data-permission-note="content.publish">
+              Your role does not allow publishing or discarding this draft.
+            </p>
+          )}
 
           {notice ? (
             <p
@@ -264,17 +279,30 @@ export function SectionForm({
           this: the fields already hold what was typed, and rebuilding them
           would move the caret.
         */}
-        <BlockEditor key={screen.token} block={block} initial={screen.values} media={media} {...inherited} />
+        {can.edit ? null : (
+          <p className="mb-4 text-[0.8rem] text-muted" role="note" data-permission-note="content.edit">
+            You can view this section, but your role does not allow editing its content.
+          </p>
+        )}
+        <fieldset disabled={!can.edit} className="min-w-0 border-0 p-0">
+          <BlockEditor key={screen.token} block={block} initial={screen.values} media={media} {...inherited} />
+        </fieldset>
 
         <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
           <label className="admin-label" htmlFor="animation">
             Section entrance
           </label>
+          {/*
+            Disabled without `content.motion` (Batch 18). A disabled control is
+            not submitted, and an absent entrance is "no opinion about motion"
+            to the action — so saving the words cannot move the entrance.
+          */}
           <select
             id="animation"
             name="animation"
             key={`motion-${screen.animation}-${screen.token}`}
             defaultValue={screen.animation}
+            disabled={!can.motion || !can.edit}
             className="admin-select max-w-sm"
           >
             {MOTION_PRESETS.map((preset) => (
@@ -298,6 +326,11 @@ export function SectionForm({
             so the screen says it is showing the nearest preset — and that the
             menu, left alone, leaves all of that exactly as it is.
           */}
+          {can.motion ? null : (
+            <p className="mt-1.5 text-[0.73rem] text-muted" role="note" data-permission-note="content.motion">
+              Your role does not allow editing motion. Saving this form leaves the entrance exactly as it is.
+            </p>
+          )}
           {screen.advancedMotion ? (
             <p className="mt-1.5 text-[0.73rem] text-muted" data-advanced-motion="true">
               This section also has motion set in the Visual Editor, which this menu shows as the
@@ -308,8 +341,8 @@ export function SectionForm({
         </div>
 
         <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-[var(--admin-line)] pt-5">
-          <SubmitButton variant="ghost">Save draft</SubmitButton>
-          {screen.isDraftOnly ? null : (
+          {can.edit ? <SubmitButton variant="ghost">Save draft</SubmitButton> : null}
+          {screen.isDraftOnly || !can.edit || !can.publish ? null : (
             <AlternateSubmit pendingLabel="Publishing…">Save and publish</AlternateSubmit>
           )}
           <a href={previewHref} target="_blank" rel="noopener" className="admin-btn">

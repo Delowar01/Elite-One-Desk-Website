@@ -28,6 +28,7 @@ import {
   TEXT_COLORS,
   WIDTHS,
   WRAPS,
+  isAdvancedToken,
   type Breakpoint,
   type StyleDocument,
   type StyleTokens,
@@ -114,7 +115,8 @@ export function StyleInspector({
   values,
   locale,
   breakpoint,
-  canManage,
+  canStyle,
+  canAdvanced,
   onChange,
 }: {
   node: EditorNodeMeta | null;
@@ -123,7 +125,14 @@ export function StyleInspector({
   values: Record<string, unknown>;
   locale: Locale;
   breakpoint: Breakpoint;
-  canManage: boolean;
+  /** `content.style` (Batch 18): the standard controls. */
+  canStyle: boolean;
+  /**
+   * `content.advanced_style`, with `content.style`: the advanced controls
+   * (`ADVANCED_STYLE_TOKENS`). Without it they are shown, with what they are
+   * set to, and locked — the style action refuses any document that moves one.
+   */
+  canAdvanced: boolean;
   onChange: (next: StyleDocument) => void;
 }) {
   const path = node ? relativePath(node.relativePath) : null;
@@ -149,6 +158,9 @@ export function StyleInspector({
   const offered = new Set(offeredTokens(target, layout));
   const branch: StyleTokens = stored?.[breakpoint] ?? {};
   const overrides = Object.keys(branch).length;
+  // What a reset may take away: everything, or — without the advanced
+  // capability — only the standard tokens, the advanced ones left in place.
+  const resettable = canAdvanced ? overrides : Object.keys(branch).filter((token) => !isAdvancedToken(token)).length;
   const described = describeAddress(node.blockType, node.relativePath, node.text);
   const scope = SCOPE[breakpoint];
 
@@ -175,7 +187,15 @@ export function StyleInspector({
             : " · nothing overridden here"}
       </p>
 
-      <fieldset disabled={!canManage} className="min-w-0 border-0 p-0">
+      {canStyle && !canAdvanced ? (
+        <p className="admin-card p-2.5 text-[0.72rem] leading-relaxed text-muted" role="note" data-permission-note="content.advanced_style">
+          You can change the standard styles here. Your role does not allow advanced styling, so width, height,
+          minimum height, layout, direction, wrapping, alignment, columns, overflow and glow are shown but locked —
+          and they stay exactly as they are when you save.
+        </p>
+      ) : null}
+
+      <fieldset disabled={!canStyle} className="min-w-0 border-0 p-0">
         <div className="flex flex-col gap-4">
           {groups.map(({ group, tokens }) => (
             <div key={group} data-style-group={group}>
@@ -201,34 +221,62 @@ export function StyleInspector({
                 </p>
               ) : null}
               <div className="flex flex-col gap-2">
-                {tokens.map((token) => (
-                  <Control
-                    key={token}
-                    token={token}
-                    state={tokenState(stored, breakpoint, token)}
-                    breakpoint={breakpoint}
-                    onChange={set}
-                  />
-                ))}
+                {tokens.map((token) =>
+                  isAdvancedToken(token) && !canAdvanced ? (
+                    <fieldset
+                      key={token}
+                      disabled
+                      className="min-w-0 border-0 p-0"
+                      data-style-locked={token}
+                      title="Your role does not allow advanced styling."
+                    >
+                      <Control
+                        token={token}
+                        state={tokenState(stored, breakpoint, token)}
+                        breakpoint={breakpoint}
+                        onChange={() => undefined}
+                      />
+                    </fieldset>
+                  ) : (
+                    <Control
+                      key={token}
+                      token={token}
+                      state={tokenState(stored, breakpoint, token)}
+                      breakpoint={breakpoint}
+                      onChange={set}
+                    />
+                  ),
+                )}
               </div>
             </div>
           ))}
         </div>
       </fieldset>
 
-      {canManage ? (
+      {canStyle ? (
         <button
           type="button"
-          onClick={() => onChange(withoutBranch(styles, path, breakpoint))}
-          disabled={!overrides}
+          onClick={() =>
+            onChange(withoutBranch(styles, path, breakpoint, canAdvanced ? undefined : isAdvancedToken))
+          }
+          disabled={!resettable}
           className="admin-btn admin-btn-sm self-start"
+          data-style-reset={canAdvanced ? "all" : "standard"}
         >
           <Icon name="refresh" size={12} />
           {breakpoint === "base"
-            ? "Reset styles for this element"
-            : `Reset ${FROM_LABEL[breakpoint].toLowerCase()} overrides`}
+            ? canAdvanced
+              ? "Reset styles for this element"
+              : "Reset standard styles for this element"
+            : canAdvanced
+              ? `Reset ${FROM_LABEL[breakpoint].toLowerCase()} overrides`
+              : `Reset ${FROM_LABEL[breakpoint].toLowerCase()} standard overrides`}
         </button>
-      ) : null}
+      ) : (
+        <p className="text-[0.72rem] leading-relaxed text-muted" role="note" data-permission-note="content.style">
+          You can view this element’s styles, but your role does not allow styling.
+        </p>
+      )}
 
       {path === "root" ? (
         <HiddenElements
@@ -236,7 +284,7 @@ export function StyleInspector({
           blockType={node.blockType}
           values={values}
           locale={locale}
-          canManage={canManage}
+          canManage={canStyle}
           onChange={onChange}
         />
       ) : null}

@@ -627,7 +627,9 @@ describe("the comparison screen: two real panes at one width and one language, r
     assert.match(view, /import \{ restoreVersionFromEditor \} from "@\/app\/\(backoffice\)\/admin\/visual-editor\/actions";/);
     assert.match(view, /if \(!window\.confirm\(RESTORE_CONFIRM\)\) return;/);
     assert.match(view, /const answer = await restoreVersionFromEditor\(form\);/);
-    assert.match(screen, /const canRestore = session\.permissions\.has\("content\.manage"\);/);
+    // Restoring is a page-wide act: `content.publish` since Batch 18, never the legacy key.
+    assert.match(screen, /const canRestore = may\(session\.permissions, "publish"\);/);
+    assert.doesNotMatch(screen, /content\.manage/);
   });
 
   test("labels: the current side is 'Current published', a version is the state before a publication", () => {

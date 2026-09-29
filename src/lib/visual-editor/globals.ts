@@ -62,17 +62,19 @@ export type GlobalsState = {
 };
 
 /**
- * What this session may do in the editor, one capability per domain.
+ * What this session may do with the site's global chrome.
  *
- * Four separate answers rather than one "may edit" boolean, because they are
+ * Separate answers rather than one "may edit" boolean, because they are
  * granted separately and a single flag would hand all of them to whoever held
- * any one. `canViewContent` is the route's own precondition — nobody is inside
+ * any one. Page content has its own answers, one per capability, in
+ * `lib/auth/authority.ts` (Batch 18) — a person allowed to edit a reusable
+ * call to action is not thereby allowed to change the menus or the WhatsApp
+ * number. `canViewContent` is the route's own precondition — nobody is inside
  * the editor without it — so it is computed here for the guard to read and is
  * not passed down as a prop the canvas would never consult.
  */
 export type EditorCapabilities = {
   canViewContent: boolean;
-  canManageContent: boolean;
   canManageNavigation: boolean;
   canManageSettings: boolean;
 };
@@ -80,7 +82,6 @@ export type EditorCapabilities = {
 export function globalsCapabilities(session: AdminSession): EditorCapabilities {
   return {
     canViewContent: session.permissions.has("content.view"),
-    canManageContent: session.permissions.has("content.manage"),
     canManageNavigation: session.permissions.has("navigation.manage"),
     canManageSettings: session.permissions.has("settings.manage"),
   };

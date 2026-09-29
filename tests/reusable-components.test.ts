@@ -652,21 +652,35 @@ describe("59 · the usage read after a layout action never costs the layout its 
 /* ========================================================================== */
 
 describe("41–42, 50, 52–58 · authority, isolation and invalidation, as the code states them", () => {
-  test("the temporary authority is content.view to read and content.manage to change — never settings.manage", () => {
+  test("the authority is the components.* capabilities, and page content for a page's own instances — never settings.manage", () => {
+    // Batch 17's temporary map (content.view / content.manage) is replaced by
+    // the granular one (Batch 18): each operation its own capability, every
+    // write also seeing what it writes, and a page's own use of a component a
+    // page-content operation plus component viewing.
     assert.deepEqual(REUSE_AUTHORITY, {
-      view: "content.view",
-      instances: "content.manage",
-      edit: "content.manage",
-      publish: "content.manage",
-      restore: "content.manage",
-      lifecycle: "content.manage",
+      view: "components.view",
+      instances: { all: ["content.view", "content.edit", "components.view"] },
+      edit: { all: ["components.view", "components.edit"] },
+      publish: { all: ["components.view", "components.publish"] },
+      restore: { all: ["components.view", "components.edit"] },
+      lifecycle: { all: ["components.view", "components.lifecycle"] },
     });
     const actions = source("src/app/(backoffice)/admin/(shell)/components/actions.ts");
-    assert.doesNotMatch(actions, /settings\.manage/);
-    // Every mutation goes through guardAction with a named operation.
-    const exported = [...actions.matchAll(/export async function (\w+)\(form: FormData\)/g)].map((m) => m[1]);
+    assert.doesNotMatch(actions, /settings\.manage|navigation\.manage|content\.manage/);
+    // Every mutation goes through guardAction with a named requirement and a
+    // refusal in words — before anything it does.
+    const exported = [...actions.matchAll(/export async function (\w+)\(form: FormData\)/g)].map((m) => m[1]!);
     assert.ok(exported.length >= 9, exported.join(","));
-    assert.equal((actions.match(/guardAction\(REUSE_AUTHORITY\.\w+, form\)/g) ?? []).length, exported.length);
+    for (const name of exported) {
+      const start = actions.indexOf(`export async function ${name}(form: FormData)`);
+      const next = actions.indexOf("export async function", start + 1);
+      const body = actions.slice(start, next < 0 ? undefined : next);
+      assert.match(
+        body,
+        /await guardAction\((?:REUSE_AUTHORITY\.\w+|COMPOUND\.\w+), form, (?:REUSE_DENIED\.\w+|CAPABILITY_DENIED\.\w+)\)/,
+        `${name} does not go through guardAction with a named requirement`,
+      );
+    }
   });
 
   test("55 · publishing a component drops the pages cache; a draft save does not", () => {

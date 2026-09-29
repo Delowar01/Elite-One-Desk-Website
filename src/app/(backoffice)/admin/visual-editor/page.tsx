@@ -1,6 +1,7 @@
 import { asc } from "drizzle-orm";
 
 import { VisualEditorShell, type EditablePage } from "@/components/admin/visual-editor/shell";
+import { AUTHORITY, capabilitiesOf } from "@/lib/auth/authority";
 import { requirePermissions } from "@/lib/auth/guard";
 import { blocksForPage, type BlockDef } from "@/lib/cms/blocks";
 import { db } from "@/lib/db";
@@ -34,19 +35,18 @@ export const dynamic = "force-dynamic";
  * cannot disagree.
  *
  * What may be *changed* stays resource-specific and is passed down as separate
- * capabilities: `content.manage` for the page, `navigation.manage` for the
- * menus, `settings.manage` for the site's settings and social links. One
- * editor-wide "may edit" boolean would have granted all three at once.
+ * capabilities: one per page domain from `lib/auth/authority.ts` (Batch 18 —
+ * content, standard and advanced style, motion, layout, publishing and the
+ * reusable-component four), `navigation.manage` for the menus and
+ * `settings.manage` for the site's settings and social links. One
+ * editor-wide "may edit" boolean would have granted all of them at once.
  */
 export default async function VisualEditorPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const session = await requirePermissions(
-    { all: ["content.view", "visual_editor.view"] },
-    "/admin/visual-editor",
-  );
+  const session = await requirePermissions(AUTHORITY.openEditor, "/admin/visual-editor");
   const capabilities = globalsCapabilities(session);
   const query = await searchParams;
 
@@ -116,7 +116,7 @@ export default async function VisualEditorPage({
         locale: localeOrDefault(query.lang),
         device: deviceOrDefault(query.device),
       }}
-      canManageContent={capabilities.canManageContent}
+      can={capabilitiesOf(session.permissions)}
       canManageNavigation={capabilities.canManageNavigation}
       canManageSettings={capabilities.canManageSettings}
       csrf={session.csrfToken}

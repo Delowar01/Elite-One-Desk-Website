@@ -45,12 +45,13 @@ function matches(entry: ReuseCatalogEntry, status: Status): boolean {
 export function ComponentsClient({
   entries,
   kinds,
-  canManage,
+  canCreate,
   csrf,
 }: {
   entries: ReuseCatalogEntry[];
   kinds: { kind: string; label: string }[];
-  canManage: boolean;
+  /** `components.edit` (Batch 18) — a new component starts as a draft, so creating one is editing. */
+  canCreate: boolean;
   csrf: string;
 }) {
   const router = useRouter();
@@ -123,11 +124,15 @@ export function ComponentsClient({
             ))}
           </select>
         </label>
-        {canManage ? (
+        {canCreate ? (
           <button type="button" className="admin-btn admin-btn-primary ms-auto" onClick={() => setCreating((open) => !open)} aria-expanded={creating}>
             New reusable component
           </button>
-        ) : null}
+        ) : (
+          <p className="ms-auto text-[0.74rem] text-muted" role="note" data-permission-note="components.edit">
+            You can view reusable components, but your role does not allow creating or editing them.
+          </p>
+        )}
       </div>
 
       {creating ? (

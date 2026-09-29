@@ -69,10 +69,17 @@ function tokensMatch(a: string, b: string): boolean {
  * cross-origin POSTs, but a synchroniser token tied to the session row is the
  * check that does not depend on a header an intermediary might rewrite — and it
  * is the one an auditor can see in the form markup.
+ *
+ * The requirement is any shape `satisfies()` reads (Batch 18): one key, as
+ * every resource screen still asks, or an all-of from `lib/auth/authority.ts`
+ * for a page or component operation. The session, its token and the grants are
+ * read exactly once, here — the grants from the database on this request, so a
+ * permission removed a moment ago is already gone.
  */
 export async function guardAction(
-  permission: PermissionKey,
+  requirement: PermissionRequirement,
   formData: FormData,
+  denied?: string,
 ): Promise<AdminSession> {
   const session = await getSession();
   if (!session) throw new AccessError("Your session has expired. Sign in again.");
@@ -81,8 +88,25 @@ export async function guardAction(
   if (!token || !tokensMatch(token, session.csrfToken)) {
     throw new AccessError("This form expired. Reload the page and try again.");
   }
-  if (!session.permissions.has(permission)) throw new AccessError();
+  assertAllowed(session, requirement, denied);
   return session;
+}
+
+/**
+ * A further requirement that depends on what the request would change — an
+ * advanced style token that moved, an entrance the classic form would alter,
+ * a reusable-component reference a content save adds. Checked against the
+ * session `guardAction` already verified, so there is no second session read
+ * and no second CSRF check to drift from the first; and always **before**
+ * anything is written, so a refusal leaves no revision, no row and no
+ * activity entry behind.
+ */
+export function assertAllowed(
+  session: AdminSession,
+  requirement: PermissionRequirement,
+  denied?: string,
+): void {
+  if (!satisfies(session.permissions, requirement)) throw new AccessError(denied);
 }
 
 /**

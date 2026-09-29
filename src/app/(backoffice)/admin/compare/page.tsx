@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 
 import { CompareView, type CompareState } from "@/components/admin/compare-view";
+import { may } from "@/lib/auth/authority";
 import { requirePermissions } from "@/lib/auth/guard";
 import { getPageDraftSummary, RESTORE_BLOCKED, restoreBlockers } from "@/lib/cms/publish-service";
 import { validatePageSnapshot, type PageSnapshot } from "@/lib/cms/snapshot";
@@ -127,7 +128,8 @@ export default async function ComparePage({
   // components these two states link to and no others.
   const sources = await loadComponentSources(db, reusedIds(pair.left.snapshot, rightSnapshot));
   const names = new Map([...sources].map(([id, source]) => [id, source.name]));
-  const canRestore = session.permissions.has("content.manage");
+  // Restoring is a page-wide act (Batch 18): `content.publish`, as in the page's own history.
+  const canRestore = may(session.permissions, "publish");
 
   const state: CompareState = {
     ok: true,

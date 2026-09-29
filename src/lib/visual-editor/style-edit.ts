@@ -76,16 +76,31 @@ export function withToken(
   return { v: STYLE_DOCUMENT_VERSION, nodes };
 }
 
-/** Removes one node's branch at one breakpoint, keeping the other two. */
+/**
+ * Removes one node's branch at one breakpoint, keeping the other two.
+ *
+ * `keep` names tokens the reset must leave where they are (Batch 18): a role
+ * that may change the standard styles but not the advanced ones resets only
+ * what it is allowed to change, and every width, layout and glow in the branch
+ * stays exactly as it was — which is also the only document its save would be
+ * accepted with.
+ */
 export function withoutBranch(
   document: StyleDocument,
   path: string,
   breakpoint: Breakpoint,
+  keep?: (token: keyof StyleTokens) => boolean,
 ): StyleDocument {
   const node = document.nodes[path];
   if (!node?.[breakpoint]) return document;
   const next: StyleNode = { ...node };
-  delete next[breakpoint];
+  const kept = keep
+    ? (Object.fromEntries(
+        Object.entries(node[breakpoint]!).filter(([token]) => keep(token as keyof StyleTokens)),
+      ) as StyleTokens)
+    : {};
+  if (Object.keys(kept).length) next[breakpoint] = kept;
+  else delete next[breakpoint];
   const nodes = { ...document.nodes };
   if (Object.keys(next).length) nodes[path] = next;
   else delete nodes[path];

@@ -25,7 +25,7 @@ export function ContentBody({
   buffer,
   media,
   locale,
-  canManage,
+  canContent,
   onValues,
   reuse,
 }: {
@@ -34,7 +34,8 @@ export function ContentBody({
   buffer: SectionBuffer;
   media: MediaOption[];
   locale: Locale;
-  canManage: boolean;
+  /** `content.edit` (Batch 18). Without it the fields show the real content, switched off. */
+  canContent: boolean;
   onValues: (values: Record<string, unknown>) => void;
   /** Reusable components (Batch 17): the catalogue and the instance actions. */
   reuse?: ReuseControls;
@@ -57,7 +58,6 @@ export function ContentBody({
           sectionId={buffer.data.sectionId}
           values={buffer.values}
           locale={locale}
-          canManage={canManage}
           focusField={focus?.field ?? null}
           controls={reuse}
           onValues={onValues}
@@ -68,7 +68,12 @@ export function ContentBody({
         screen of empty boxes would be a different, and false, answer to "what
         does this section say".
       */}
-      <fieldset disabled={!canManage} className="min-w-0 border-0 p-0">
+      {canContent ? null : (
+        <p className="text-[0.72rem] leading-relaxed text-muted" role="note" data-permission-note="content.edit">
+          You can view this section’s content, but your role does not allow editing it.
+        </p>
+      )}
+      <fieldset disabled={!canContent} className="min-w-0 border-0 p-0">
         <BlockEditor
           block={block}
           value={buffer.values}

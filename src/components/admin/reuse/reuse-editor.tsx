@@ -74,10 +74,24 @@ function instanceState(entry: UsageInstance): string {
   return "Referenced";
 }
 
+/**
+ * What this editor may offer (Batch 18) — three separately granted halves of
+ * one component, answered from `lib/auth/authority.ts` by whoever renders it.
+ * The actions behind every control check the same capabilities on the server.
+ */
+export type ReuseEditorCan = {
+  /** `components.edit`: the draft, its name, restoring a version to it. */
+  edit: boolean;
+  /** `components.publish`: the saved draft goes live on every linked page. */
+  publish: boolean;
+  /** `components.lifecycle`: archive, unarchive, delete. */
+  lifecycle: boolean;
+};
+
 export function ReuseEditor({
   componentId,
   csrf,
-  canManage,
+  can,
   media,
   locale,
   focus = "edit",
@@ -85,7 +99,7 @@ export function ReuseEditor({
 }: {
   componentId: number;
   csrf: string;
-  canManage: boolean;
+  can: ReuseEditorCan;
   media: MediaOption[];
   /** The edition previews open in. */
   locale: Locale;
@@ -244,7 +258,14 @@ export function ReuseEditor({
             Archived components cannot be edited. Pages that use it keep showing its published content.
           </p>
         ) : null}
-        <fieldset disabled={!canManage || archived || busy !== null} className="min-w-0 border-0 p-0">
+        {!archived && !can.edit ? (
+          <p className="text-[0.76rem] leading-relaxed text-muted" role="note" data-permission-note="components.edit">
+            {can.publish
+              ? "You can review and publish the saved draft, but your role does not allow changing it."
+              : "You can view this component, but your role does not allow editing or publishing it."}
+          </p>
+        ) : null}
+        <fieldset disabled={!can.edit || archived || busy !== null} className="min-w-0 border-0 p-0">
           <BlockEditor
             block={definition.definition}
             value={values}
@@ -253,41 +274,52 @@ export function ReuseEditor({
             idPrefix={`reusable-${view.id}`}
           />
         </fieldset>
-        {canManage && !archived ? (
+        {(can.edit || can.publish) && !archived ? (
           <div className="flex flex-wrap gap-1.5">
-            <button
-              type="button"
-              className="admin-btn admin-btn-sm admin-btn-primary"
-              disabled={!dirty || busy !== null || Boolean(latest)}
-              onClick={() => void run("save", saveReusableDraft, (form) => form.set("values", JSON.stringify(values)), "saved")}
-              data-reuse-save
-            >
-              {busy === "save" ? "Saving…" : "Save draft"}
-            </button>
-            {dirty ? (
-              <button type="button" className="admin-btn admin-btn-sm" onClick={() => setValues(base)}>
-                Undo unsaved edits
-              </button>
+            {can.edit ? (
+              <>
+                <button
+                  type="button"
+                  className="admin-btn admin-btn-sm admin-btn-primary"
+                  disabled={!dirty || busy !== null || Boolean(latest)}
+                  onClick={() => void run("save", saveReusableDraft, (form) => form.set("values", JSON.stringify(values)), "saved")}
+                  data-reuse-save
+                >
+                  {busy === "save" ? "Saving…" : "Save draft"}
+                </button>
+                {dirty ? (
+                  <button type="button" className="admin-btn admin-btn-sm" onClick={() => setValues(base)}>
+                    Undo unsaved edits
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="admin-btn admin-btn-sm"
+                  disabled={!view.hasDraft || dirty || busy !== null || Boolean(latest)}
+                  onClick={() => setConfirm("discard")}
+                  data-reuse-discard
+                >
+                  Discard draft
+                </button>
+              </>
             ) : null}
-            <button
-              type="button"
-              className="admin-btn admin-btn-sm"
-              disabled={!view.hasDraft || dirty || busy !== null || Boolean(latest)}
-              onClick={() => setConfirm("discard")}
-              data-reuse-discard
-            >
-              Discard draft
-            </button>
-            <button
-              type="button"
-              className="admin-btn admin-btn-sm"
-              disabled={!view.hasDraft || dirty || busy !== null || Boolean(latest)}
-              title={dirty ? "Save the draft first" : undefined}
-              onClick={() => setConfirm("publish")}
-              data-reuse-publish
-            >
-              Publish…
-            </button>
+            {can.publish ? (
+              <button
+                type="button"
+                className="admin-btn admin-btn-sm"
+                disabled={!view.hasDraft || dirty || busy !== null || Boolean(latest)}
+                title={dirty ? "Save the draft first" : undefined}
+                onClick={() => setConfirm("publish")}
+                data-reuse-publish
+              >
+                Publish…
+              </button>
+            ) : (
+              <p className="basis-full text-[0.72rem] text-muted" role="note" data-permission-note="components.publish">
+                Your role does not allow publishing reusable components — someone who may publish them makes a saved
+                draft live.
+              </p>
+            )}
           </div>
         ) : null}
         {dirty ? <p className="text-[0.72rem] text-muted">Unsaved edits — save the draft to preview or publish them.</p> : null}
@@ -422,7 +454,7 @@ export function ReuseEditor({
                 <span className="text-muted">
                   {entry.label} · {entry.actorName} · <When iso={entry.createdAt} />
                 </span>
-                {canManage && !archived ? (
+                {can.edit && !archived ? (
                   <button
                     type="button"
                     className="admin-btn admin-btn-sm"
@@ -470,8 +502,9 @@ export function ReuseEditor({
       ) : null}
 
       {/* Name and lifecycle ----------------------------------------------- */}
-      {canManage ? (
+      {can.edit || can.lifecycle ? (
         <section aria-label="Name and lifecycle" className="flex flex-col gap-2 border-t border-[var(--admin-line)] pt-3">
+          {can.edit ? (
           <form
             className="flex flex-wrap items-end gap-1.5"
             onSubmit={(event) => {
@@ -489,6 +522,8 @@ export function ReuseEditor({
               Rename
             </button>
           </form>
+          ) : null}
+          {can.lifecycle ? (
           <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
@@ -517,7 +552,12 @@ export function ReuseEditor({
               </p>
             )}
           </div>
-          {confirm === "delete" ? (
+          ) : (
+            <p className="text-[0.72rem] text-muted" role="note" data-permission-note="components.lifecycle">
+              Your role does not allow archiving or deleting reusable components.
+            </p>
+          )}
+          {confirm === "delete" && can.lifecycle ? (
             <div className="admin-card p-2.5" role="alertdialog" aria-label="Delete the component">
               <p className="text-[0.8rem] font-semibold text-strong">Delete “{view.name}” permanently?</p>
               <p className="mt-1 text-[0.74rem] text-body">

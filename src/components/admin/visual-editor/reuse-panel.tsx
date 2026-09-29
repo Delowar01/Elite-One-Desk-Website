@@ -40,7 +40,29 @@ type Values = Record<string, unknown>;
 /** The direct-edit refusal the canvas asked for: this text is linked and not overridden here. */
 export type ReuseNotice = { sectionId: number; slot: string; key: string };
 
+/**
+ * What this panel may offer (Batch 18), answered from `lib/auth/authority.ts`
+ * by the shell. Each control asks for exactly its own capability, and the
+ * server checks the same one again.
+ */
+export type ReuseAccess = {
+  /** Typing into an override that is already on — ordinary page content (`content.edit`). */
+  typeOverride: boolean;
+  /**
+   * Link, unlink, switch an override on or off, detach — page content plus
+   * seeing the shared definition (`content.edit` and `components.view`).
+   */
+  instances: boolean;
+  /** Save as reusable, as a draft (`content.view` and `components.edit`). */
+  saveDraft: boolean;
+  /** "Create, publish and link" — `content.edit`, `components.edit` and `components.publish`. */
+  savePublished: boolean;
+  /** Open a component's own editor or its usage (`components.view`). */
+  open: boolean;
+};
+
 export type ReuseControls = {
+  access: ReuseAccess;
   /** Every component, with usage; `null` until it has been read, or for nobody allowed to. */
   catalog: ReuseCatalogEntry[] | null;
   notice: ReuseNotice | null;
@@ -81,7 +103,6 @@ export function ReusePanel({
   sectionId,
   values,
   locale,
-  canManage,
   focusField,
   controls,
   onValues,
@@ -90,7 +111,6 @@ export function ReusePanel({
   sectionId: number;
   values: Values;
   locale: Locale;
-  canManage: boolean;
   /** The field the canvas has selected, so its slot can be pointed at. */
   focusField: string | null;
   controls: ReuseControls;
@@ -128,7 +148,6 @@ export function ReusePanel({
             reference={ref}
             values={values}
             locale={locale}
-            canManage={canManage}
             focused={focused || slot.slot === BLOCK_SLOT}
             controls={controls}
             onValues={onValues}
@@ -139,7 +158,6 @@ export function ReusePanel({
             blockType={blockType}
             slot={slot}
             values={values}
-            canManage={canManage}
             focused={focused}
             controls={controls}
             blocked={slot.slot === BLOCK_SLOT && hasSeparateLinks(blockType, values) ? WHOLE_BLOCK_REFUSAL : null}
@@ -161,7 +179,6 @@ function LinkedSlot({
   reference,
   values,
   locale,
-  canManage,
   focused,
   controls,
   onValues,
@@ -172,7 +189,6 @@ function LinkedSlot({
   reference: SlotRef;
   values: Values;
   locale: Locale;
-  canManage: boolean;
   focused: boolean;
   controls: ReuseControls;
   onValues: (values: Values) => void;
@@ -190,6 +206,7 @@ function LinkedSlot({
   const keys = slot.overridable.filter((key) => !key.includes(".") || key.endsWith(`.${locale}`));
   const fixed = slot.fields.filter((field) => !["text", "textarea", "link"].includes(field.type));
   const notice = controls.notice?.sectionId === sectionId && controls.notice.slot === slot.slot ? controls.notice : null;
+  const { access } = controls;
 
   const toggle = (key: string, on: boolean) => {
     const next = setOverride(blockType, values, slot.slot, key, on, on ? valueAt(shown, key) : valueAt(inherited, key));
@@ -237,14 +254,22 @@ function LinkedSlot({
       {notice ? (
         <div className="rounded-[var(--radius-xs)] border border-[var(--admin-line)] p-2" role="alert" data-reuse-notice>
           <p className="text-[0.74rem] leading-relaxed text-body">
-            This text comes from reusable component “{name}”. Edit the global component, or create an override for
-            this page.
+            {access.instances || access.open ? (
+              <>
+                This text comes from reusable component “{name}”. Edit the global component, or create an override for
+                this page.
+              </>
+            ) : (
+              "This text comes from a reusable component. Your role does not allow changing how this page uses it."
+            )}
           </p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            <button type="button" className="admin-btn admin-btn-sm" onClick={() => controls.onOpen(reference.c, "edit")}>
-              Edit global component
-            </button>
-            {canManage && available ? (
+            {access.open ? (
+              <button type="button" className="admin-btn admin-btn-sm" onClick={() => controls.onOpen(reference.c, "edit")}>
+                Edit global component
+              </button>
+            ) : null}
+            {access.instances && available ? (
               <button
                 type="button"
                 className="admin-btn admin-btn-sm"
@@ -282,7 +307,7 @@ function LinkedSlot({
                       id={inputId}
                       rows={3}
                       value={valueAt(values, key)}
-                      disabled={!canManage}
+                      disabled={!access.typeOverride}
                       onChange={(event) => type(key, event.target.value)}
                       className="admin-input mt-1"
                     />
@@ -290,7 +315,7 @@ function LinkedSlot({
                     <input
                       id={inputId}
                       value={valueAt(values, key)}
-                      disabled={!canManage}
+                      disabled={!access.typeOverride}
                       onChange={(event) => type(key, event.target.value)}
                       className="admin-input mt-1"
                     />
@@ -298,7 +323,7 @@ function LinkedSlot({
                   <p className="mt-0.5 text-muted">
                     Inherited value: {valueAt(inherited, key) || "(empty)"}
                   </p>
-                  {canManage ? (
+                  {access.instances ? (
                     <button type="button" className="admin-btn admin-btn-sm mt-1" onClick={() => toggle(key, false)}>
                       Reset override
                     </button>
@@ -310,7 +335,7 @@ function LinkedSlot({
                     <span className="font-medium text-body">{label}</span> — inherited from “{name}”
                   </p>
                   <p className="mt-0.5 break-words text-strong">{valueAt(shown, key) || "(empty)"}</p>
-                  {overriding && canManage && available ? (
+                  {overriding && access.instances && available ? (
                     <button type="button" className="admin-btn admin-btn-sm mt-1" onClick={() => toggle(key, true)}>
                       Override on this page
                     </button>
@@ -327,14 +352,23 @@ function LinkedSlot({
         </p>
       ) : null}
 
+      {!access.open ? (
+        <p className="text-[0.7rem] leading-relaxed text-muted" role="note" data-permission-note="components.view">
+          Your role does not allow viewing reusable components, so this one cannot be opened, linked or detached here.
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-1.5">
-        <button type="button" className="admin-btn admin-btn-sm" onClick={() => controls.onOpen(reference.c, "edit")}>
-          Edit global component
-        </button>
-        <button type="button" className="admin-btn admin-btn-sm" onClick={() => controls.onOpen(reference.c, "usage")}>
-          View usage
-        </button>
-        {canManage && available ? (
+        {access.open ? (
+          <>
+            <button type="button" className="admin-btn admin-btn-sm" onClick={() => controls.onOpen(reference.c, "edit")}>
+              Edit global component
+            </button>
+            <button type="button" className="admin-btn admin-btn-sm" onClick={() => controls.onOpen(reference.c, "usage")}>
+              View usage
+            </button>
+          </>
+        ) : null}
+        {access.instances && available ? (
           <button
             type="button"
             className="admin-btn admin-btn-sm"
@@ -344,7 +378,7 @@ function LinkedSlot({
             Override this instance
           </button>
         ) : null}
-        {canManage ? (
+        {access.instances ? (
           <button
             type="button"
             className="admin-btn admin-btn-sm"
@@ -356,7 +390,7 @@ function LinkedSlot({
         ) : null}
       </div>
 
-      {confirmDetach ? (
+      {confirmDetach && access.instances ? (
         <div className="rounded-[var(--radius-xs)] border border-[var(--admin-line)] p-2" role="alertdialog" aria-label="Detach this instance" data-reuse-detach-confirm>
           <p className="text-[0.76rem] font-semibold text-strong">Detach this instance from “{name}”?</p>
           <p className="mt-1 text-[0.74rem] leading-relaxed text-body">
@@ -393,7 +427,6 @@ function UnlinkedSlot({
   blockType,
   slot,
   values,
-  canManage,
   focused,
   controls,
   blocked,
@@ -401,7 +434,6 @@ function UnlinkedSlot({
   blockType: string;
   slot: SlotDef;
   values: Values;
-  canManage: boolean;
   focused: boolean;
   controls: ReuseControls;
   /** Why this slot cannot be linked or saved as reusable right now, if it cannot. */
@@ -410,7 +442,9 @@ function UnlinkedSlot({
   const [mode, setMode] = useState<null | "link" | "save">(null);
   const cta = slot.kind === "cta";
   const noun = cta ? "CTA" : "component";
-  if (!canManage) return null;
+  const { access } = controls;
+  // Nothing to offer: a reader sees the section's own content in the fields below.
+  if (!access.instances && !access.saveDraft) return null;
   if (blocked) {
     return (
       <div
@@ -440,24 +474,28 @@ function UnlinkedSlot({
         <span className="font-medium text-body">{slot.label}</span> — this page’s own content
       </p>
       <div className="mt-1.5 flex flex-wrap gap-1.5">
-        <button
-          type="button"
-          className="admin-btn admin-btn-sm"
-          aria-expanded={mode === "link"}
-          onClick={() => setMode(mode === "link" ? null : "link")}
-        >
-          {cta ? "Link to reusable CTA…" : "Link section to reusable component…"}
-        </button>
-        <button
-          type="button"
-          className="admin-btn admin-btn-sm"
-          aria-expanded={mode === "save"}
-          onClick={() => setMode(mode === "save" ? null : "save")}
-        >
-          {cta ? "Save as reusable CTA…" : "Save section as reusable component…"}
-        </button>
+        {access.instances ? (
+          <button
+            type="button"
+            className="admin-btn admin-btn-sm"
+            aria-expanded={mode === "link"}
+            onClick={() => setMode(mode === "link" ? null : "link")}
+          >
+            {cta ? "Link to reusable CTA…" : "Link section to reusable component…"}
+          </button>
+        ) : null}
+        {access.saveDraft ? (
+          <button
+            type="button"
+            className="admin-btn admin-btn-sm"
+            aria-expanded={mode === "save"}
+            onClick={() => setMode(mode === "save" ? null : "save")}
+          >
+            {cta ? "Save as reusable CTA…" : "Save section as reusable component…"}
+          </button>
+        ) : null}
       </div>
-      {mode === "link" ? (
+      {mode === "link" && access.instances ? (
         <ReusePicker
           kinds={[slot.kind]}
           catalog={controls.catalog}
@@ -471,9 +509,10 @@ function UnlinkedSlot({
           }}
         />
       ) : null}
-      {mode === "save" ? (
+      {mode === "save" && access.saveDraft ? (
         <SaveAsForm
           noun={noun}
+          canPublish={access.savePublished}
           busy={controls.busy}
           onCancel={() => setMode(null)}
           onSave={(name, publish) => {
@@ -583,11 +622,17 @@ function ReusePicker({
 
 function SaveAsForm({
   noun,
+  canPublish,
   busy,
   onSave,
   onCancel,
 }: {
   noun: string;
+  /**
+   * Publishing in the same step is offered only to a role that may do all of
+   * it — edit page content, and edit and publish reusable components (Batch 18).
+   */
+  canPublish: boolean;
   busy: boolean;
   onSave: (name: string, publish: boolean) => void;
   onCancel: () => void;
@@ -602,7 +647,7 @@ function SaveAsForm({
       data-reuse-save-as
       onSubmit={(event) => {
         event.preventDefault();
-        if (name.trim()) onSave(name.trim(), publish);
+        if (name.trim()) onSave(name.trim(), publish && canPublish);
       }}
     >
       <label className="text-[0.72rem] font-medium text-strong">
@@ -636,6 +681,7 @@ function SaveAsForm({
             type="radio"
             name="reuse-publish"
             checked={publish}
+            disabled={!canPublish}
             onChange={() => setPublish(true)}
             className="mt-0.5"
             data-reuse-save-mode="publish"
@@ -643,8 +689,9 @@ function SaveAsForm({
           <span>
             <span className="block font-medium text-strong">Create, publish and link</span>
             <span className="block text-muted">
-              Publishes its first version with exactly this content and links this {noun} to it. Nothing on the site
-              changes — nothing else uses it yet, and this page’s link stays a draft until you publish the page.
+              {canPublish
+                ? `Publishes its first version with exactly this content and links this ${noun} to it. Nothing on the site changes — nothing else uses it yet, and this page’s link stays a draft until you publish the page.`
+                : "Your role does not allow this: it needs permission to edit page content and to edit and publish reusable components."}
             </span>
           </span>
         </label>
