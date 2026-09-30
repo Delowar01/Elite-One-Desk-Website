@@ -166,10 +166,20 @@ try {
     heavy.after.scroll === plain.after.scroll,
     `with ${heavy.after.scroll}, without ${plain.after.scroll}`,
   );
+  // Per second of the measured window, not in total (Batch 19A). The site's
+  // own chrome runs frame loops of its own while the page scrolls — the stats
+  // counters, the cursor companion — so both pages call for about one frame
+  // callback per frame, and the totals move with how long each window lasted
+  // and how fast the machine drew: locally the page with motion has always
+  // come in lower (313 against 335), on a CI runner six higher (405 against
+  // 399), against an allowance of five. A frame loop in motion would add a
+  // callback on every frame — thirty a second even at 30 fps — so the rate,
+  // with an allowance of ten a second, still catches one several times over.
+  const rafRate = (m: typeof heavy) => (m.after.raf - m.before.raf) / (m.scrollMs / 1000);
   say(
     "S6. motion runs no frame loop: frame callbacks during the scroll do not grow with the nodes",
-    heavy.after.raf - heavy.before.raf <= plain.after.raf - plain.before.raf + 5,
-    `with ${heavy.after.raf - heavy.before.raf}, without ${plain.after.raf - plain.before.raf}`,
+    rafRate(heavy) <= rafRate(plain) + 10,
+    `with ${rafRate(heavy).toFixed(1)}/s (${heavy.after.raf - heavy.before.raf} in ${heavy.scrollMs} ms), without ${rafRate(plain).toFixed(1)}/s (${plain.after.raf - plain.before.raf} in ${plain.scrollMs} ms)`,
   );
   say(
     "S7. the only DOM write motion makes is one data-shown per observed element",
