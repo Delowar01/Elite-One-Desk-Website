@@ -28,7 +28,7 @@ import path from "node:path";
 import { after, describe, test } from "node:test";
 
 import { LEGACY_REF, REPO_ROOT, compatRef, dbUrl, scriptEnv } from "./helpers/env";
-import { compatTree, giveFresh, resolveCommit } from "./helpers/fixtures";
+import { WORK, compatTree, giveFresh, removeWorktree, resolveCommit, worktreeAt } from "./helpers/fixtures";
 import { dropDatabase } from "./helpers/pg";
 
 const created: string[] = [];
@@ -178,27 +178,33 @@ describe("the compatibility worktree is the release it claims to be", () => {
     //
     // Two real commits from this repository's own history, no production
     // anywhere near it.
+    //
+    // On a tree of its own (Batch 19A). The shared compatibility tree is in use
+    // by other test files at the same moment — they run the previous release's
+    // own migrate and seed from it — and swapping it under them made one or
+    // the other fail at random ("… compat-tree already exists").
     const first = resolveCommit(compatRef());
     const second = resolveCommit(LEGACY_REF);
     assert.notEqual(first, second, "the two refs must differ for this to prove anything");
 
+    const dir = path.join(WORK, `swap-tree-${process.pid}`);
     const original = process.env.COMPAT_REF;
     try {
-      assert.equal(headOf(compatTree()), first);
+      assert.equal(headOf(worktreeAt(compatRef(), dir)), first);
 
       process.env.COMPAT_REF = LEGACY_REF;
       assert.equal(
-        headOf(compatTree()),
+        headOf(worktreeAt(compatRef(), dir)),
         second,
         "the worktree should have been rebuilt at the new ref, not reused",
       );
 
-      // And back, so the rest of the run sees the tree it expects.
       delete process.env.COMPAT_REF;
-      assert.equal(headOf(compatTree()), first, "and rebuilt again when the ref changes back");
+      assert.equal(headOf(worktreeAt(compatRef(), dir)), first, "and rebuilt again when the ref changes back");
     } finally {
       if (original === undefined) delete process.env.COMPAT_REF;
       else process.env.COMPAT_REF = original;
+      removeWorktree(dir);
     }
   });
 

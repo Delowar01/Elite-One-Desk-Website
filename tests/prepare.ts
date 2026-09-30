@@ -6,7 +6,7 @@
  * the same time. They lock, so it would be correct either way — but doing it
  * once, up front, is faster and says plainly what the slow part is.
  */
-import { discardFixtures, freshSql, legacySql } from "./helpers/fixtures";
+import { compatTree, discardFixtures, freshSql, legacySql } from "./helpers/fixtures";
 import { LEGACY_REF, PG_BASE } from "./helpers/env";
 
 const started = Date.now();
@@ -16,4 +16,6 @@ console.log(`· legacy ref      ${LEGACY_REF}`);
 console.log("· building fixtures (cached in .data/test — REBUILD_FIXTURES=1 to redo)");
 console.log(`  legacy          ${legacySql()}`);
 console.log(`  restructured    ${freshSql()}`);
+// The previous release's checkout, which several files use at once (Batch 19A).
+console.log(`  compatibility   ${compatTree()}`);
 console.log(`· ready in ${((Date.now() - started) / 1000).toFixed(1)}s\n`);

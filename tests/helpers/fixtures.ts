@@ -235,9 +235,55 @@ export function legacyTree(): string {
  * A checkout of the release currently in production — the one a new migration
  * has to stay readable by. Deliberately a different worktree from `legacyTree`:
  * one is a fixed historical fixture, the other moves with every release.
+ *
+ * Several test files use it at once — `npm test` runs them as parallel
+ * processes — so it is checked, and built the first time, under a lock
+ * (Batch 19A): two processes finding it missing on a fresh machine would both
+ * run `git worktree add` on the same directory, and one of them would fail.
+ * `tests/prepare.ts` builds it before the files start, so in practice nothing
+ * waits here.
  */
 export function compatTree(): string {
-  return ensureTree(compatRef(), COMPAT_TREE);
+  const lock = `${COMPAT_TREE}.lock`;
+  mkdirSync(WORK, { recursive: true });
+  const deadline = Date.now() + 10 * 60_000;
+  for (;;) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch {
+      // Held by another process. A lock older than the deadline is stale.
+      if (Date.now() > deadline) rmSync(lock, { recursive: true, force: true });
+      else spawnSync("sleep", ["0.25"]);
+    }
+  }
+  try {
+    return ensureTree(compatRef(), COMPAT_TREE);
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+}
+
+/**
+ * A checkout of `ref` in a directory of the caller's own — the logic
+ * `compatTree` uses, for a test of that logic. Never a shared tree: other test
+ * files run the previous release's scripts from the compatibility tree while
+ * the test would be swapping it under them (Batch 19A).
+ */
+export function worktreeAt(ref: string, dir: string): string {
+  const where = path.resolve(dir);
+  if (where === COMPAT_TREE || where === LEGACY_TREE) {
+    throw new Error(`${where} is shared by every test file; swap a tree of your own`);
+  }
+  return ensureTree(ref, where);
+}
+
+/** Removes a tree made by `worktreeAt`, through git, so no stale entry is left. */
+export function removeWorktree(dir: string): void {
+  if (sh("git", ["worktree", "remove", "--force", dir]).status !== 0) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  sh("git", ["worktree", "prune"]);
 }
 
 export { LEGACY_SQL, FRESH_SQL, WORK, LEGACY_TREE, COMPAT_TREE };
