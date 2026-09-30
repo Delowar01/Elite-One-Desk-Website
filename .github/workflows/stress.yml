@@ -1,0 +1,94 @@
+# The stress suite (tests/stress) — by hand, or once a week (Batch 19A).
+#
+# Long and repetitive by design, so it is not part of every push: CI runs the
+# thirty probes on each one (.github/workflows/ci.yml). The same rules hold
+# here: an ephemeral PostgreSQL service container is the only database, the
+# only credentials are that container's, nothing is deployed or published,
+# and a failing script fails the job — no continue-on-error, no retries.
+
+name: Stress
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "Comma-separated stress scripts (empty for all), e.g. quick-links-selection,replay-selection"
+        required: false
+        default: ""
+      loops:
+        description: "STRESS_LOOPS for the scripts that loop (empty for each script's own default)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "17 3 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  NEXT_TELEMETRY_DISABLED: "1"
+  TEST_PG_URL: postgres://postgres:postgres@127.0.0.1:5432
+
+jobs:
+  stress:
+    name: Stress suite on isolated databases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: PostgreSQL 16 client tools first on PATH
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/pg_dump ]; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client-16
+          fi
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - name: Chromium for Playwright (the version package-lock.json pins)
+        run: npx playwright install --with-deps chromium
+      - name: Production build
+        env:
+          DATABASE_URL: postgresql://invalid:invalid@127.0.0.1:1/invalid
+        run: npm run build
+      - name: Stress suite
+        env:
+          ONLY: ${{ inputs.only }}
+          STRESS_LOOPS: ${{ inputs.loops }}
+        run: |
+          if [ -z "$STRESS_LOOPS" ]; then unset STRESS_LOOPS; fi
+          if [ -n "$ONLY" ]; then
+            npm run test:stress -- --timeout-min 60 --only "$ONLY"
+          else
+            npm run test:stress -- --timeout-min 60
+          fi
+      - name: Keep the stress logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-logs
+          path: .data/test/results/
+          if-no-files-found: ignore
+          retention-days: 14

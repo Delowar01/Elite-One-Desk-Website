@@ -30,7 +30,7 @@ import { after, before, describe, test } from "node:test";
 import { REPO_ROOT, dbUrl, scriptEnv, uniqueName } from "./helpers/env";
 import { compatTree, giveFresh } from "./helpers/fixtures";
 import { connect, dropDatabase, dumpDatabase, recreateDatabase, restoreDatabase, type Sql } from "./helpers/pg";
-import { migrate, seed } from "./helpers/run";
+import { migrate, runScript, seed } from "./helpers/run";
 
 import { INTRODUCED_FROM, PERMISSIONS, ROLE_DEFAULTS } from "@/lib/auth/permissions";
 
@@ -313,6 +313,136 @@ describe("18 · rollback compatibility, as data", () => {
       const granular = (await grantsOf(sql)).get("editor")!;
       assert.ok(!granular.has("content.manage"));
       assert.ok(granular.has("content.edit"));
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  });
+});
+
+/* ========================================================================== */
+
+/**
+ * Batch 19A — the release rehearsal: the preflight that gates the switch, a
+ * real rollback (the previous release's own migrate and seed run against the
+ * upgraded database), an owner's save on the previous release's Roles screen,
+ * and the re-upgrade after it.
+ */
+describe("19A · release rehearsal: the preflight, a rollback and the re-upgrade", () => {
+  const preflight = (database: string, strict = false) =>
+    runScript("scripts/check-permissions.ts", database, strict ? ["--strict"] : []);
+
+  /** The previous release's own script, from its own checkout, against this database. */
+  function previousScript(script: string, database: string) {
+    const result = spawnSync("npx", ["tsx", script], {
+      cwd: compatTree(),
+      encoding: "utf8",
+      env: scriptEnv(dbUrl(database)),
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    assert.equal(result.status, 0, `the previous release's ${script} failed: ${result.stderr || result.stdout}`);
+  }
+
+  /** The permission tables, as one string — the preflight must not move them. */
+  const permissionState = async (sql: Sql) =>
+    JSON.stringify({
+      permissions: await sql`select id, key, label, group_name from permissions order by id`,
+      roles: await sql`select id, key, name from roles order by id`,
+      grants: await sql`select role_id, permission_id from role_permissions order by role_id, permission_id`,
+    });
+
+  test("the preflight refuses a database that has not been upgraded, and passes it once the seed has run", async () => {
+    const database = previousRelease("b19_preflight");
+    const sql = connect(database);
+    try {
+      const untouched = await permissionState(sql);
+      const refused = preflight(database);
+      assert.equal(refused.code, 1, refused.output);
+      assert.match(refused.stdout, /missing from the permission catalogue: .*content\.edit/);
+      assert.match(refused.stdout, /NOT verified/);
+      assert.equal(await permissionState(sql), untouched, "the preflight wrote to the database");
+
+      assert.equal(migrate(database).code, 0);
+      assert.equal(seed(database).code, 0);
+      const upgraded = await permissionState(sql);
+      const passed = preflight(database);
+      assert.equal(passed.code, 0, passed.output);
+      assert.match(passed.stdout, /complete and the owner holds every key/);
+      // Straight after the first upgrade, strict holds too: derivation gave every
+      // content.manage role its whole split.
+      const strict = preflight(database, true);
+      assert.equal(strict.code, 0, strict.output);
+      assert.equal(await permissionState(sql), upgraded, "the preflight wrote to the database");
+
+      // An owner narrows the Editor: a note by default, a failure under --strict.
+      await setGrant(sql, "editor", "content.publish", false);
+      const noted = preflight(database);
+      assert.equal(noted.code, 0, noted.output);
+      assert.match(noted.stdout, /NOTE {2}editor holds the source of, but not: content\.publish/);
+      assert.equal(preflight(database, true).code, 1);
+
+      // The owner missing a key is always a failure.
+      await setGrant(sql, "owner", "components.lifecycle", false);
+      const ownerless = preflight(database);
+      assert.equal(ownerless.code, 1, ownerless.output);
+      assert.match(ownerless.stdout, /the owner role lacks: components\.lifecycle/);
+    } finally {
+      await sql.end({ timeout: 5 });
+    }
+  });
+
+  test("a fresh installation passes the preflight, strict included", () => {
+    const fresh = giveFresh("b19_preflight_fresh");
+    created.push(fresh);
+    const strict = preflight(fresh, true);
+    assert.equal(strict.code, 0, strict.output);
+  });
+
+  test("rollback and re-upgrade: the previous release's own scripts leave the grants alone; its Roles screen drops the granular keys, and the re-upgrade does not give them back", async () => {
+    const database = previousRelease("b19_rollback");
+    const sql = connect(database);
+    try {
+      assert.equal(migrate(database).code, 0);
+      assert.equal(seed(database).code, 0);
+      const upgraded = await grantsOf(sql);
+
+      // The rollback deploy: the previous release's migrate and seed, from its
+      // own checkout, against the upgraded database.
+      previousScript("scripts/migrate.ts", database);
+      previousScript("scripts/seed.ts", database);
+      const rolledBack = await grantsOf(sql);
+      for (const role of ["owner", "admin", "editor", "viewer"]) {
+        assert.deepEqual(sorted(rolledBack.get(role)!), sorted(upgraded.get(role)!), `the previous release's seed changed ${role}`);
+      }
+      const keys = new Set((await sql<{ key: string }[]>`select key from permissions`).map((row) => row.key));
+      for (const key of NEW_KEYS) assert.ok(keys.has(key), `the previous release's seed deleted ${key}`);
+      // Under the previous release, the Editor's page authority is content.manage alone.
+      assert.ok(rolledBack.get("editor")!.has("content.manage"));
+
+      // The owner saves the Editor on the previous release's Roles screen: its
+      // saveRolePermissions replaces the role's grants with the ticked keys of
+      // ITS catalogue — which has no granular keys.
+      const kept = [...rolledBack.get("editor")!].filter((key) => previousCatalogue.length === 0 || previousCatalogue.includes(key));
+      assert.ok(previousCatalogue.length > 0, "the production upgrade test recorded the previous catalogue");
+      await sql`delete from role_permissions where role_id = (select id from roles where key = 'editor')`;
+      for (const key of kept) await setGrant(sql, "editor", key, true);
+
+      // Re-upgrade: this release's migrate and seed again.
+      assert.equal(migrate(database).code, 0);
+      assert.equal(seed(database).code, 0);
+      const reUpgraded = await grantsOf(sql);
+      for (const key of FROM_MANAGE) {
+        assert.ok(!reUpgraded.get("editor")!.has(key), `the re-upgrade handed ${key} back to the Editor`);
+        assert.ok(reUpgraded.get("admin")!.has(key), `the Admin lost ${key} across the rollback`);
+      }
+      assert.ok(reUpgraded.get("editor")!.has("content.manage"));
+      // The preflight says so: complete catalogue, owner complete, and a NOTE for
+      // the Editor — the review the rollback documentation asks for.
+      const check = preflight(database);
+      assert.equal(check.code, 0, check.output);
+      assert.match(check.stdout, /NOTE {2}editor holds the source of, but not: /);
+      assert.equal(preflight(database, true).code, 1);
+      const [legacy] = await sql<{ group_name: string }[]>`select group_name from permissions where key = 'content.manage'`;
+      assert.equal(legacy?.group_name, "Legacy", "the re-upgrade restores this release's catalogue labels");
     } finally {
       await sql.end({ timeout: 5 });
     }

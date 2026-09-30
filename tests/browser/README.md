@@ -1,0 +1,121 @@
+# Browser QA — the tracked probes
+
+Thirty probes drive the real application in a real Chromium: the public pages,
+ordinary Preview and the Visual Editor, in English and Arabic, at Desktop,
+Tablet and Mobile widths. Each prints one `PASS` or `FAIL` line per check.
+Until Batch 19A they lived in a gitignored folder on one machine; they are now
+tracked here, with everything needed to run them from a fresh clone.
+
+| Path | What it is |
+|------|------------|
+| `probes/*.probe.mts` | the thirty probes, one file each |
+| `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
+| `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
+| `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
+| `canvas.ts` | clicking and selecting on the Visual Editor's canvas without racing it |
+| `wait.ts` | `until`, `quietFor`, `animationsDone`, `watchNetwork` — the only waits the probes use |
+| `.env.example` | the settings a run reads, with safe defaults |
+| `../stress/` | the stress suite — see [`tests/stress/README.md`](../stress/README.md) |
+| `../browser-suite.test.ts` | guards run by `npm test`: counts, ports, paths, waits |
+
+## Requirements
+
+- **Node.js** 20.9 or newer (CI uses 22) and npm.
+- **PostgreSQL** 16: a server the tests may create and drop databases on, and
+  the `psql` and `pg_dump` client tools on `PATH`. The tests only ever touch
+  databases named `eodt_*`, which they create and drop themselves; they never
+  read `.env`. Point `TEST_PG_URL` at a disposable server — **never production**.
+- **git with full history**: the fixtures check out `LEGACY_REF` (`ea20a22`)
+  and the commit in `deploy/previous-release` into worktrees.
+- **Chromium for Playwright 1.63** (`playwright` is a pinned devDependency):
+  `npx playwright install --with-deps chromium`. A machine that already has a
+  compatible Chromium can set `PLAYWRIGHT_CHROMIUM_EXECUTABLE` instead.
+- **A production build.** The probes run `.next/standalone` exactly as
+  production does. `npm run build` needs no database.
+
+## From a fresh clone
+
+```sh
+git clone https://github.com/Delowar01/elite-one-desk-website.git
+cd elite-one-desk-website
+npm ci
+npx playwright install --with-deps chromium
+cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
+set -a; . tests/browser/.env; set +a
+npm run build
+npm test                          # the tracked suite; builds the fixtures on its way
+npm run test:browser              # the thirty probes, once each
+npm run test:stress               # the stress suite (long)
+npm run test:cleanup -- --yes     # only after an interrupted run
+```
+
+What happens underneath:
+
+1. **Fixtures.** `tests/prepare.ts` (run by `npm test` and by the runner
+   before the first probe) builds the test fixtures once and caches them in
+   `.data/test/`: a scratch database gets this checkout's migrations
+   (`scripts/migrate.ts`) and seed (`scripts/seed.ts`) and is dumped to
+   `fresh.sql`; the pre-restructure fixture is built the same way from
+   `LEGACY_REF`. `REBUILD_FIXTURES=1` rebuilds them.
+2. **A database per probe.** Each probe restores `fresh.sql` into a database
+   of its own (`eodt_<probe>_<random>`) and drops it in its `finally`.
+3. **A server per probe.** Each starts the production build on its own port
+   (listed in the probe; `npm test` checks they are unique) from a hard-linked
+   copy under `.data/test/servers/<port>`, so no two servers share a cache.
+4. **Test users.** The seed creates the owner `owner@test.invalid` with a
+   test-only password (`tests/helpers/env.ts`). A probe that needs another
+   role inserts that user into its own database. Nobody logs in through the
+   form: `tests/helpers/session.ts` writes a session row and hands the probe
+   its cookie and CSRF token.
+5. **Cleanup.** Every probe drops its database and stops its server, pass or
+   fail. A run killed from outside (the runner's own timeout included) cannot,
+   so `npm run test:cleanup` lists what is left and `-- --yes` removes it: only
+   `eodt_*` databases on `TEST_PG_URL` and `.data/test/servers`.
+
+## Running
+
+```sh
+npm run test:browser                                     # every probe, once
+npm run test:browser -- --only hardening,motion-15b      # just those
+npm run test:browser -- --only permissions --repeat 10   # one probe, ten times
+npm run test:browser -- --list                           # what exists, and what it expects
+npm run test:browser -- --timeout-min 40                 # per-run limit (default 25 min)
+```
+
+A run is **clean** when the script exits 0, prints no `FAIL` line and prints
+exactly the number of `PASS` lines `probes/expected.json` records. The count
+is part of the contract: a probe that stops early, or loses a check in an edit,
+prints fewer `PASS` lines and no `FAIL` at all, and that must not read as green.
+
+**Nothing is retried.** An unclean run is reported with its log path, and the
+runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
+
+## Expected results
+
+Every probe clean, with the counts in `probes/expected.json` — 1,089 `PASS`
+across the thirty as of Batch 19A (1,078 at Batch 18; `hardening` gained eleven
+checks in 19A: eight on where its own clicks land and what the canvas reported,
+three on the selection after a redraw on a slowed CPU).
+
+## Writing a probe
+
+- Start the browser with `launchChromium()` from `harness.ts`; give the probe a
+  `PORT` no other script uses; add its count to `expected.json`.
+- **Clicking the canvas:** `clickCanvasNode` / `selectCanvasNode` from
+  `canvas.ts`, never `locator.click()` on a canvas node. Playwright's `position`
+  is not scaled for the canvas's `transform: scale(…)`, and its retries
+  re-scroll with `element.scrollIntoView`, which glides under the site's
+  `scroll-behavior: smooth` — the click then lands beside a moving node, and
+  its hit check (which compares the nearest link) cannot tell.
+- **Selecting:** wait for the Inspector's answer (`waitForInspector`,
+  `selectFromLayers`), not for the Motion tab, which is already on screen
+  whenever anything was selected before.
+- **Waiting:** poll a condition with a bound (`until`, `holdsStill`,
+  `animationsDone`, `watchNetwork(page).quiet()`), or — for a claim that
+  something does *not* happen — name an observation window with `quietFor`,
+  derived from the timer it outlasts (`AUTOSAVE_QUIET_MS`, `REPLAY_QUIET_MS`).
+  A fixed sleep of a second or more fails `npm test`.
+- **Scrolling a public page for a measurement:** scroll instantly
+  (`window.scrollTo({ top, behavior: "instant" })`) and wait until it has
+  arrived. A wheel sent while a smooth scroll is still gliding is dropped by
+  Chromium (`tests/stress/smooth-scroll-wheel.stress.mts`).

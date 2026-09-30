@@ -367,8 +367,17 @@ export function VisualCanvas({
   return (
     <div ref={stageRef} className="relative h-full w-full overflow-hidden">
       {src ? (
+        // `overflow-clip`, not `overflow-hidden` (Batch 19A). The frame's own
+        // layout box is the unscaled page — 1440 px wide for Desktop — so this
+        // box has overflow, and with `hidden` it is a scroll container that
+        // only script can scroll. A `scrollIntoView` inside the canvas — the
+        // bridge bringing a Layers selection into view — carried on into this
+        // document and scrolled it: the page slid up inside its frame, its top
+        // edge cut off and an empty band left at the bottom. `clip` clips
+        // exactly the same and cannot be scrolled at all, so the page scrolls
+        // inside the canvas and the frame stays where it is.
         <div
-          className="relative mx-auto overflow-hidden rounded-[var(--radius-sm)] border border-[var(--admin-line-strong)] bg-[var(--color-ink-900)] shadow-[0_24px_70px_-30px_rgb(0_0_0/0.9)] transition-[width] duration-200"
+          className="relative mx-auto overflow-clip rounded-[var(--radius-sm)] border border-[var(--admin-line-strong)] bg-[var(--color-ink-900)] shadow-[0_24px_70px_-30px_rgb(0_0_0/0.9)] transition-[width] duration-200"
           style={{ width: `${Math.round(logical * scale)}px`, height: `${stage.height}px` }}
         >
           <iframe

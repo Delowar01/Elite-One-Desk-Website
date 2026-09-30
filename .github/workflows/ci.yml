@@ -1,0 +1,208 @@
+# Continuous integration (Batch 19A).
+#
+# Four stages, each its own job:
+#   static   — install, lint, typecheck, and a cold production build that has
+#              no database to reach
+#   tests    — the tracked suite (`npm test`) on an ephemeral PostgreSQL 16:
+#              migrations, seed, fixtures, every *.test.ts
+#   browser  — the thirty tracked browser probes against isolated databases on
+#              that same kind of ephemeral server, and a production build
+#   compat   — schema compatibility with the release in production
+#              (deploy/previous-release), the permission upgrade and its
+#              idempotence, public/editor isolation, and a search for
+#              destructive DDL in the migrations
+#
+# What this workflow never does: deploy, publish, reach the VPS, read a
+# production secret, URL or database. The only credentials in it belong to the
+# throwaway PostgreSQL service container below. Every command's exit status is
+# the job's: no continue-on-error, no `|| true`, no retries of tests.
+#
+# The stress suite is separate and manual/scheduled: .github/workflows/stress.yml.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  NEXT_TELEMETRY_DISABLED: "1"
+  # The test suites create and drop their own eodt_* databases on the service
+  # container of the job they run in, and nowhere else.
+  TEST_PG_URL: postgres://postgres:postgres@127.0.0.1:5432
+
+jobs:
+  static:
+    name: Static — install, lint, typecheck, cold build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - name: Cold production build — no database reachable
+        env:
+          DATABASE_URL: postgresql://invalid:invalid@127.0.0.1:1/invalid
+        run: npm run build
+
+  tests:
+    name: Tests — tracked suite on PostgreSQL 16
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The fixtures check out LEGACY_REF and deploy/previous-release.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: PostgreSQL 16 client tools first on PATH
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/pg_dump ]; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client-16
+          fi
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - run: psql --version && pg_dump --version
+      - run: npm ci
+      - name: Production build for the server tests
+        env:
+          DATABASE_URL: postgresql://invalid:invalid@127.0.0.1:1/invalid
+        run: npm run build
+      - run: npm test
+
+  browser:
+    name: Browser QA — thirty probes on isolated databases
+    runs-on: ubuntu-24.04
+    # About 45 minutes on a 4-core machine; the bound leaves room for a slower
+    # hosted runner. It is a limit, not a retry — nothing here runs twice.
+    timeout-minutes: 240
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: PostgreSQL 16 client tools first on PATH
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/pg_dump ]; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client-16
+          fi
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+      - name: Chromium for Playwright (the version package-lock.json pins)
+        run: npx playwright install --with-deps chromium
+      - name: Production build
+        env:
+          DATABASE_URL: postgresql://invalid:invalid@127.0.0.1:1/invalid
+        run: npm run build
+      - name: Thirty tracked probes, once each
+        run: npm run test:browser -- --timeout-min 30
+      - name: Keep the probe logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-qa-logs
+          path: .data/test/results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  compat:
+    name: Security and compatibility — schema, permission upgrade, isolation, DDL
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: PostgreSQL 16 client tools first on PATH
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/pg_dump ]; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client-16
+          fi
+          echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
+      - name: No destructive DDL in any migration
+        run: |
+          if grep -niE 'drop (table|column|type|index|constraint|schema)|rename (to|column)|alter column [^;]* (set data )?type |truncate|delete from' drizzle/*.sql; then
+            echo "A migration above drops, renames, retypes or deletes. Migrations must stay additive: the previous release keeps serving while they run."
+            exit 1
+          fi
+      - run: npm ci
+      - name: Production build for the isolation and permission tests
+        env:
+          DATABASE_URL: postgresql://invalid:invalid@127.0.0.1:1/invalid
+        run: npm run build
+      - name: Schema compatibility, permission upgrade and idempotence, previous-release compatibility, public/editor isolation
+        run: >-
+          node --import tsx tests/prepare.ts &&
+          node --import tsx --test
+          tests/schema-compat.test.ts
+          tests/permissions-migration.test.ts
+          tests/permissions-authority.test.ts
+          tests/permissions-granular.test.ts
+          tests/globals-permissions.test.ts
+          tests/build-isolation.test.ts
+          tests/public-routes.test.ts
+          tests/cta-audit.test.ts
+          tests/browser-suite.test.ts

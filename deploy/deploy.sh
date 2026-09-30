@@ -34,7 +34,8 @@
 #       production may be backed up and migrated)
 #   5  stamp the built runtime with its release sha
 #   6  back up the database and uploads
-#   7  migrate and seed, from the verified build
+#   7  migrate and seed, from the verified build, then verify the permission
+#      upgrade the seed performed (read-only; nothing is switched on failure)
 #   8  stage the new runtime, stop the service, rename it into place
 #   9  move the production tree to TARGET_SHA, start, health-check
 #  10  on any failure after the switch: restore the previous runtime
@@ -740,6 +741,17 @@ as_app "${BUILD_DIR}" npm run db:migrate
 
 log "Syncing seed content (idempotent — nothing existing is overwritten)"
 as_app "${BUILD_DIR}" npm run db:seed
+
+# The seed is also the permission upgrade (Batch 18): it introduces the
+# granular keys and derives each role's share from what it already held. This
+# release authorizes every editorial action with those keys, so it must not
+# take traffic until they are verified — read-only, against the database the
+# seed just wrote. Nothing has been switched yet: on failure the previous
+# release is still serving, and everything written so far is additive.
+log "Verifying the permission upgrade before this release takes traffic"
+if ! as_app "${BUILD_DIR}" npm run db:check-permissions; then
+  die "The permission check failed after the seed. The previous release is still serving. See docs/release/permission-upgrade.md."
+fi
 
 # --- 10/11/12. stage, stop, switch ------------------------------------------
 ROLLBACK_RUNTIME="${APP_ROOT}/standalone.rollback-${CURRENT_SHA:0:7}-${STAMP}"

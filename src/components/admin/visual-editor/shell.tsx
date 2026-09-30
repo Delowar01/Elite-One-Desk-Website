@@ -124,18 +124,6 @@ const STATUS: Record<CanvasState["status"], { label: string; tone: string }> = {
 const EMPTY_CANVAS: CanvasState = { status: "loading", innerWidth: null, message: null };
 
 /**
- * How long to wait for the canvas to answer a restored selection before
- * falling back to the section it was in.
- *
- * The canvas answers an address it cannot resolve by clearing the selection,
- * which is indistinguishable from not having answered yet — so this is a
- * timeout rather than a signal. Long enough that a slow frame is not mistaken
- * for a missing node, short enough that the fallback still feels like part of
- * the save.
- */
-const RESTORE_FALLBACK_MS = 400;
-
-/**
  * How long after the last local edit a section's drafts are saved.
  *
  * One constant, one number. Long enough that ordinary typing produces one save
@@ -320,6 +308,19 @@ export function VisualEditorShell({
   /** Where the selection should go once the canvas comes back from a save. */
   const restoreTo = useRef<{ address: string; fallback: string } | null>(null);
   const [restoreToken, setRestoreToken] = useState(0);
+  /**
+   * A restore that has been asked for and not answered yet (Batch 19A).
+   *
+   * The canvas answers every `editor.select`: with the node, or — when nothing
+   * in the new document answers to the address — by clearing the selection.
+   * So the next selection it reports after a restore *is* the answer, and the
+   * fallback to the section follows that answer rather than a clock. It used
+   * to follow a 400 ms timer, and a canvas slower than that (a heavy page, a
+   * busy machine) was taken for a missing node: the section was asked for as
+   * well, arrived after the node, and the Inspector jumped from what was being
+   * edited to its whole section.
+   */
+  const restoring = useRef<{ address: string; fallback: string } | null>(null);
   /** `selected` readable from a timer without making it a dependency. */
   const selectedRef = useRef<EditorNodeMeta | null>(null);
   /**
@@ -602,6 +603,20 @@ export function VisualEditorShell({
   const onCanvasState = useCallback((next: CanvasState) => setCanvas(next), []);
   const onStructure = useCallback((next: EditorSectionMeta[]) => setSections(next), []);
   const onSelection = useCallback((node: EditorNodeMeta | null) => {
+    const pending = restoring.current;
+    if (pending) {
+      restoring.current = null;
+      // The canvas's answer to a restore was "nothing here": the node the edit
+      // removed — the row that was just deleted — cannot come back, so the
+      // nearest thing that still exists, its section.
+      if (node === null) {
+        setSelectRequest((current) => ({
+          address: pending.fallback,
+          scrollIntoView: true,
+          token: (current?.token ?? 0) + 1,
+        }));
+      }
+    }
     selectedRef.current = node;
     setSelected(node);
   }, []);
@@ -618,6 +633,9 @@ export function VisualEditorShell({
     setSections([]);
     setEditRequest(null);
     setReplayRequest(null);
+    // A restore still waiting on the document being replaced has nobody left
+    // to answer it; a new one is asked for once the new document is ready.
+    restoring.current = null;
     selectedRef.current = null;
     setSelected(null);
     setSelectRequest(null);
@@ -2744,7 +2762,8 @@ export function VisualEditorShell({
    * different DOM node in a different document, and it is still the same
    * heading. A node that the edit removed — the row that was just deleted —
    * cannot come back, so the fallback is its section, which is the nearest
-   * thing that still exists and keeps the inspector on the right block.
+   * thing that still exists and keeps the inspector on the right block — asked
+   * for when the canvas says the node is gone, never on a timer (`restoring`).
    */
   useEffect(() => {
     if (!restoreToken || canvas.status !== "ready") return;
@@ -2752,11 +2771,9 @@ export function VisualEditorShell({
     if (!wanted) return;
     restoreTo.current = null;
 
+    // The next selection the canvas reports is its answer (`onSelection`).
+    restoring.current = wanted.fallback !== wanted.address ? wanted : null;
     ask(wanted.address);
-    const timer = window.setTimeout(() => {
-      if (!selectedRef.current && wanted.fallback !== wanted.address) ask(wanted.fallback);
-    }, RESTORE_FALLBACK_MS);
-    return () => window.clearTimeout(timer);
   }, [restoreToken, canvas.status, ask]);
 
   /**
