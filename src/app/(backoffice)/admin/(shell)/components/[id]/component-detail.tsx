@@ -26,7 +26,10 @@ export function ComponentDetail({
       media={media}
       locale="en"
       onChanged={(_view, event) => {
-        if (event === "deleted") router.push("/admin/components");
+        // The browser goes back to the list, for the reason the list opens a
+        // new component that way (see `components-client.tsx`, 19B): a push
+        // right after the delete action could be left uncommitted.
+        if (event === "deleted") window.location.assign("/admin/components");
         else router.refresh();
       }}
     />

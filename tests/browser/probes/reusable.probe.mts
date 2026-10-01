@@ -147,10 +147,21 @@ try {
   const create = page.getByRole("form", { name: "New reusable component" });
   await create.getByLabel("Type").selectOption("cta");
   await create.getByLabel(/^Name/).fill("Primary Contact CTA");
+  // Marks this document: a page the browser loads starts without it (19B).
+  await page.evaluate(() => ((window as unknown as { __eodList?: boolean }).__eodList = true));
   await create.getByRole("button", { name: "Create draft" }).click();
   await page.waitForURL(/\/admin\/components\/\d+$/, { timeout: 30_000 });
   const created = await component("Primary Contact CTA");
   const CID = created?.id ?? 0;
+  /**
+   * The new component is opened by the browser, not by a client transition
+   * that could be left uncommitted (see `components-client.tsx` and
+   * `tests/stress/create-navigation.stress.mts`).
+   */
+  say("19B · Create draft opens the new component by loading its page — no client transition left to hang",
+    page.url().endsWith(`/admin/components/${CID}`) &&
+      !(await page.evaluate(() => Boolean((window as unknown as { __eodList?: boolean }).__eodList))),
+    page.url());
   await page.locator(`#reusable-${CID}-label-en`).fill("Contact our desk");
   await page.locator(`#reusable-${CID}-label-ar`).fill("تواصل مع مكتبنا");
   await page.locator(`#reusable-${CID}-href`).fill("/contact");
@@ -713,6 +724,27 @@ try {
     const width = await frame.evaluate(() => window.innerWidth);
     const mark = await frame.locator(`[data-eod-address="section:${HOME_CTA}/field:primaryCtaLabel"]`).first().getAttribute("data-eod-reuse");
     say(`widths · ${label} (${lang}): the linked CTA draws and is marked on the canvas`, Boolean(cta.text) && mark === "primaryCta", `${width}px “${cta.text}”`);
+  }
+
+  /* 19B · deleting a component from its own page returns to the list ------ */
+  {
+    const form = new FormData();
+    form.set("_csrf", owner.csrfToken);
+    form.set("kind", "cta");
+    form.set("name", "Scratch CTA");
+    form.set("publish", "0");
+    const made = (await callAction<{ ok: boolean; component?: { id: number } }>({ ...RC, origin, action: "createReusableComponent", args: [form], cookie: owner.cookie })).value!;
+    const scratch = made.component?.id ?? 0;
+    await page.goto(`${origin}/admin/components/${scratch}`, { waitUntil: "load" });
+    await page.evaluate(() => ((window as unknown as { __eodDetail?: boolean }).__eodDetail = true));
+    await page.locator("[data-reuse-delete]").click();
+    await page.getByRole("alertdialog", { name: "Delete the component" }).getByRole("button", { name: "Delete" }).click();
+    await page.waitForURL(/\/admin\/components$/, { timeout: 30_000 });
+    const loaded = !(await page.evaluate(() => Boolean((window as unknown as { __eodDetail?: boolean }).__eodDetail)));
+    const removed = (await sql`select 1 from reusable_components where id = ${scratch}`).length === 0;
+    say("19B · deleting a component from its page returns to the list by loading it, and the list no longer shows it",
+      made.ok && loaded && removed && (await page.getByText("Scratch CTA", { exact: true }).count()) === 0,
+      `loaded ${loaded}, removed ${removed}`);
   }
 
   say("no page errors in the editor", errors.length === 0, errors.slice(0, 3).join(" | "));

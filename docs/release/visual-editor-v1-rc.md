@@ -160,6 +160,17 @@ are in the acceptance matrix.
 3. **Legal pages' heading levels.** Rich text starts at `h3` under the page's
    `h1` on Privacy, Terms and Disclaimer (both editions) — advisory, not a
    WCAG A/AA failure; a content or design decision.
+4. **An upstream React behaviour, mitigated where it was seen.** The React
+   bundled with Next.js 15.5.25 (`19.2.0-canary-0bdb9206-20250818`) can drop a
+   ping that arrives during a render — `pingSuspendedRoot` neither restarts
+   the render nor records the ping there, and its source marks the case TODO —
+   which leaves a client navigation uncommitted. The release-candidate gate
+   caught it on the component screens (defect 6 in the acceptance matrix):
+   creating and deleting a component now navigate with the browser, and
+   `tests/stress/create-navigation.stress.mts` holds both under load. It was
+   not seen anywhere else in the gate's runs, but any client transition is
+   exposed in principle; the remedy is a Next.js/React release that fixes it,
+   taken in a maintenance batch through the full gate.
 
 ## Gate record
 

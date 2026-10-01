@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import { componentStatus } from "@/components/admin/visual-editor/reuse-panel";
@@ -54,7 +53,6 @@ export function ComponentsClient({
   canCreate: boolean;
   csrf: string;
 }) {
-  const router = useRouter();
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("all");
   const [status, setStatus] = useState<Status>("all");
@@ -87,7 +85,18 @@ export function ComponentsClient({
       setMessage(result.message);
       return;
     }
-    router.push(`/admin/components/${result.component.id}`);
+    /**
+     * The browser opens the new component; the client router does not (19B).
+     * A `router.push` dispatched as the action answers renders together with
+     * the action's own update of this list, and React 19 can lose the ping of
+     * a stream chunk that resolves during that render: every transition lane
+     * stays suspended with nothing left to wake it. In a few creates in a
+     * hundred under load the component existed and the screen never moved —
+     * an invitation to click again and make a second one. A document
+     * navigation does not depend on that transition. Held by
+     * `tests/stress/create-navigation.stress.mts`.
+     */
+    window.location.assign(`/admin/components/${result.component.id}`);
   };
 
   return (
