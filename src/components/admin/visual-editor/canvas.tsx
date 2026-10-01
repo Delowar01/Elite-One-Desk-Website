@@ -140,6 +140,8 @@ export function VisualCanvas({
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [bridgeId, setBridgeId] = useState<string | null>(null);
   const [loads, setLoads] = useState(0);
+  /** How many times the document on screen has said it is listening. See the locks below. */
+  const [announced, setAnnounced] = useState(0);
   const [stage, setStage] = useState({ width: 0, height: 0 });
   const [hover, setHover] = useState<{ node: EditorNodeMeta; rect: Rect } | null>(null);
   /**
@@ -170,6 +172,7 @@ export function VisualCanvas({
   useEffect(() => {
     setBridgeId(newBridgeId());
     setLoads(0);
+    setAnnounced(0);
     setHover(null);
     setSelection(null);
     onSelection(null);
@@ -211,6 +214,7 @@ export function VisualCanvas({
       switch (message.type) {
         case "canvas.ready":
           settled = true;
+          setAnnounced((n) => n + 1);
           onState({ status: "ready", innerWidth: message.innerWidth, message: null });
           return;
         case "canvas.structure":
@@ -308,21 +312,25 @@ export function VisualCanvas({
 
   /**
    * The locks, re-sent whenever they change *and* whenever a new document
-   * arrives.
+   * says it is listening.
    *
-   * `loads` is in the dependencies on purpose: a canvas that reloaded — a
-   * language switch, a device switch, a publish — is a fresh document that has
-   * never heard of them, and without this it would happily let the pointer
-   * select something the editor had locked a moment earlier.
+   * A canvas that reloaded — a language switch, a device switch, a publish —
+   * is a fresh document that has never heard of them, and without this it
+   * would happily let the pointer select something the editor had locked a
+   * moment earlier. They follow the document's announcement, not the frame's
+   * `load`: the bridge starts listening when the page hydrates, which can be
+   * after `load`, and a message posted before then is simply lost — a locked
+   * node then selectable on the new canvas, as the 19B probe caught after a
+   * language switch.
    */
   const lockKey = locks.join("|");
   useEffect(() => {
-    if (!bridgeId || loads === 0) return;
+    if (!bridgeId || announced === 0) return;
     frameRef.current?.contentWindow?.postMessage(
       envelope(bridgeId, { type: "editor.locks" as const, addresses: lockKey ? lockKey.split("|") : [] }),
       bridgeOrigin(),
     );
-  }, [bridgeId, loads, lockKey]);
+  }, [bridgeId, announced, lockKey]);
 
   useEffect(() => {
     if (!bridgeId || !editRequest) return;

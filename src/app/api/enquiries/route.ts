@@ -7,6 +7,7 @@ import { enquiries } from "@/lib/db/schema";
 import { getAuthSecret } from "@/lib/env";
 import { getCatalog } from "@/lib/queries/catalog";
 import { contactProblem, enquirySchema } from "@/lib/validation/enquiry";
+import { clientIpFrom } from "@/lib/auth/client-ip";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -85,8 +86,9 @@ export async function POST(request: Request) {
     );
   }
 
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "";
-  const ipKey = createHash("sha256").update(`${forwarded}:${getAuthSecret()}`).digest("hex").slice(0, 32);
+  // The proxy's word for the address, not the client's (19B): see `clientIpFrom`.
+  const address = clientIpFrom(request.headers);
+  const ipKey = createHash("sha256").update(`${address}:${getAuthSecret()}`).digest("hex").slice(0, 32);
   if (overLimit(ipKey)) {
     return NextResponse.json(
       { ok: false, message: "Too many requests. Please try again shortly, or reach us on WhatsApp." },

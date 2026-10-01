@@ -165,9 +165,12 @@ export async function callAction<T>(options: {
   action: string;
   args: unknown[];
   cookie?: string;
+  /** Further request headers — what a proxy in front of the app would add. */
+  headers?: Record<string, string>;
 }): Promise<ActionResponse<T>> {
   const body = await encoder()(options.args);
   const headers: Record<string, string> = {
+    ...options.headers,
     "Next-Action": actionId(options.file, options.action),
     origin: options.origin,
   };

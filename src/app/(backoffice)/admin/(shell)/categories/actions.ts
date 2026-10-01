@@ -144,7 +144,7 @@ export async function deleteCategory(_prev: ActionState, form: FormData): Promis
 
 export async function moveCategory(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("category-move", async () => {
-    await guardAction("services.manage", form);
+    const session = await guardAction("services.manage", form);
     const id = Number(form.get("id"));
     const up = field(form, "direction", 8) === "up";
 
@@ -174,6 +174,13 @@ export async function moveCategory(_prev: ActionState, form: FormData): Promise<
         .set({ sortOrder: neighbour.sortOrder })
         .where(eq(serviceCategories.id, row.id));
     });
+    // A reorder is a change like any other, and the audit trail says so (19B).
+    await logActivity(session, {
+      action: "category.reordered",
+      entityType: "category",
+      entityId: row.id,
+      summary: `Moved the category “${row.titleEn}” ${up ? "up" : "down"}`,
+    });
     refresh();
     return ok();
   });
@@ -195,7 +202,6 @@ export async function saveSubcategory(_prev: ActionState, form: FormData): Promi
     if (!SLUG.test(slug)) return fail("The address must be lower-case words joined by hyphens.", { slug: "Invalid." });
 
     const values = {
-      categoryId,
       slug,
       titleEn,
       titleAr: field(form, "titleAr", 190),
@@ -205,11 +211,23 @@ export async function saveSubcategory(_prev: ActionState, form: FormData): Promi
       isPublished: checkbox(form, "isPublished"),
     };
 
+    /**
+     * The category is where a new group goes, not something an edit can
+     * change: the form carries it only as the screen's own context, and its
+     * services keep their category, so moving the group alone would split them
+     * across two. An update keeps the stored one, and an id that names no group
+     * is refused rather than reported — and logged — as saved (19B).
+     */
+    let savedId = id;
+    let savedCategory = categoryId;
     if (id) {
-      await db
+      const [updated] = await db
         .update(serviceSubcategories)
         .set({ ...values, updatedAt: new Date() })
-        .where(eq(serviceSubcategories.id, id));
+        .where(eq(serviceSubcategories.id, id))
+        .returning({ id: serviceSubcategories.id, categoryId: serviceSubcategories.categoryId });
+      if (!updated) return fail("That group no longer exists.");
+      savedCategory = updated.categoryId;
     } else {
       const [exists] = await db
         .select({ id: serviceSubcategories.id })
@@ -217,17 +235,21 @@ export async function saveSubcategory(_prev: ActionState, form: FormData): Promi
         .where(and(eq(serviceSubcategories.categoryId, categoryId), eq(serviceSubcategories.slug, slug)))
         .limit(1);
       if (exists) return fail("A group in this category already uses that address.", { slug: "Already taken." });
-      await db.insert(serviceSubcategories).values(values);
+      const [created] = await db
+        .insert(serviceSubcategories)
+        .values({ ...values, categoryId })
+        .returning({ id: serviceSubcategories.id });
+      savedId = created!.id;
     }
 
     await logActivity(session, {
       action: id ? "subcategory.updated" : "subcategory.created",
       entityType: "subcategory",
-      entityId: id || 0,
+      entityId: savedId,
       summary: `${id ? "Updated" : "Created"} the group “${titleEn}”`,
     });
     refresh();
-    revalidatePath(`/admin/categories/${categoryId}`);
+    revalidatePath(`/admin/categories/${savedCategory}`);
     return ok(id ? "Group saved." : "Group created.");
   });
 }

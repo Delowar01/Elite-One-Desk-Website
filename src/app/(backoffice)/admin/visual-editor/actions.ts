@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
+import { revisionField } from "@/lib/admin/actions";
 import { TAGS, revalidate } from "@/lib/cache";
 import { AUTHORITY, COMPOUND, DENIED, may } from "@/lib/auth/authority";
 import { AccessError, assertAllowed, guardAction } from "@/lib/auth/guard";
@@ -321,7 +322,7 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
 
     const sectionId = Number(form.get("sectionId"));
     const pageId = Number(form.get("pageId"));
-    const expected = Number(form.get("expectedRevision"));
+    const expected = revisionField(form);
 
     const found = await ownedSection(sectionId, pageId);
     if (!found.ok) return found;
@@ -485,8 +486,8 @@ export async function detachVisualInstance(form: FormData): Promise<VisualDetach
 
     const sectionId = Number(form.get("sectionId"));
     const pageId = Number(form.get("pageId"));
-    const expected = Number(form.get("expectedRevision"));
-    const expectedVersion = Number(form.get("expectedComponentVersion"));
+    const expected = revisionField(form);
+    const expectedVersion = revisionField(form, "expectedComponentVersion");
     const slot = String(form.get("slot") ?? "");
 
     const found = await ownedSection(sectionId, pageId);
@@ -613,7 +614,7 @@ export async function saveVisualSectionStyles(form: FormData): Promise<VisualSty
 
     const sectionId = Number(form.get("sectionId"));
     const pageId = Number(form.get("pageId"));
-    const expected = Number(form.get("expectedRevision"));
+    const expected = revisionField(form);
 
     const found = await ownedSection(sectionId, pageId);
     if (!found.ok) return found;
@@ -719,7 +720,7 @@ export async function saveVisualSectionMotion(form: FormData): Promise<VisualMot
 
     const sectionId = Number(form.get("sectionId"));
     const pageId = Number(form.get("pageId"));
-    const expected = Number(form.get("expectedRevision"));
+    const expected = revisionField(form);
 
     const found = await ownedSection(sectionId, pageId);
     if (!found.ok) return found;
@@ -860,10 +861,7 @@ const structureFailure = (result: StructureResult & { ok: false }): VisualStruct
 });
 
 /** The page revision the screen that submitted this carried. */
-const expectedPageRevision = (form: FormData): number => {
-  const value = Number(form.get("expectedRevision"));
-  return Number.isInteger(value) && value >= 0 ? value : -1;
-};
+const expectedPageRevision = (form: FormData): number => revisionField(form);
 
 /**
  * `content.structure` for every layout operation (Batch 18), Undo and Redo of
@@ -889,7 +887,7 @@ async function runStructure(
     if (!result.ok) return structureFailure(result);
 
     await logActivity(session, result.log);
-    if (result.also) await logActivity(session, result.also);
+    for (const entry of result.also ?? []) await logActivity(session, entry);
 
     const [page] = await db.select({ slug: pages.slug }).from(pages).where(eq(pages.id, pageId)).limit(1);
     if (page) revalidatePath(`/admin/pages/${page.slug}`);

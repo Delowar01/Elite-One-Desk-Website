@@ -92,10 +92,25 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,089 `PASS`
-across the thirty as of Batch 19A (1,078 at Batch 18; `hardening` gained eleven
-checks in 19A: eight on where its own clicks land and what the canvas reported,
-three on the selection after a redraw on a slowed CPU).
+Every probe clean, with the counts in `probes/expected.json` — 1,129 `PASS`
+across the thirty as of Batch 19B (1,089 at Batch 19A, 1,078 at Batch 18;
+`hardening` gained eleven checks in 19A: eight on where its own clicks land and
+what the canvas reported, three on the selection after a redraw on a slowed
+CPU).
+
+Batch 19B kept the thirty and added 40 checks to eight of them, each labelled
+`19B ·`: `acceptance` (+15: every editor control named at 1680, 1280 and 900,
+the toolbar, Layers, the Inspector's tabs, Undo/Redo and Publish worked from
+the keyboard, and the public pages' headings and alt text), `acceptance2` (+3:
+unsaved work guarded on leaving and kept across a change of selection),
+`layers-editing` (+6: a lock kept across width and language, cleared with the
+page, never stored), `permissions` (+3: no permission key or token in a
+visitor's page, the preview or the canvas), `responsive` (+3: an edit made on
+the Arabic canvas at Tablet and Mobile), `styles` (+4: choosing and replacing a
+picture from the library, and canvas/preview/public parity), `reusable` (+4:
+the detach warning and the picker from the keyboard, and the component
+screen's four confirmations opening on Cancel) and `undo-compare` (+2:
+the comparison's controls from the keyboard).
 
 ## Writing a probe
 

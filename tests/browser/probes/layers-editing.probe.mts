@@ -7,6 +7,7 @@ import { giveFresh } from "../../helpers/fixtures";
 import { connect, dropDatabase } from "../../helpers/pg";
 import { startServer } from "../../helpers/server";
 import { signIn } from "../../helpers/session";
+import { canvasRedrawn, canvasUrl, editorSettled } from "../canvas";
 import { launchChromium } from "../harness";
 import { AUTOSAVE_QUIET_MS, quietFor } from "../wait";
 
@@ -273,6 +274,80 @@ try {
   await clickCanvas(imageAddress);
   const shown18 = await settled(imageAddress);
   say("18. unlocked, the canvas selects it again", shown18 === imageAddress, shown18);
+
+  /* --- 19B: a lock belongs to this view of this page, never to a record -- */
+  /**
+   * Locking is a convenience of one editor tab. It survives what keeps the
+   * same page on screen — another canvas width, the other language, whose
+   * canvas is a new document and has to be told again — and is cleared with
+   * the page, whose section ids it names. It is never saved: a reload starts
+   * with nothing locked, and locking writes no revision, row or activity entry.
+   *
+   * Each canvas check first selects the image from Layers (which a lock never
+   * prevents), so "the canvas did not select it" is read as a move *away* from
+   * it, not as a stale answer from before the click.
+   */
+  const lockOf = () => page.locator(`[data-layer-lock="${imageAddress}"]`);
+  const locked = async () => (await lockOf().getAttribute("aria-pressed").catch(() => null)) === "true";
+  const recorded = async () => ({
+    section: await state(links!.id),
+    page: (await sql<{ revision: number }[]>`select revision from pages where id = ${home!.id}`)[0]!.revision,
+    activity: (await sql<{ n: number }[]>`select count(*)::int as n from activity_logs`)[0]!.n,
+  });
+  const canvasRefuses = async () => {
+    await layerRow(imageAddress).click();
+    await settled(imageAddress);
+    await clickCanvas(imageAddress);
+    return settledAwayFrom(imageAddress);
+  };
+  const canvasAccepts = async () => {
+    await clickCanvas(headline);
+    await settled(headline);
+    await clickCanvas(imageAddress);
+    return settled(imageAddress);
+  };
+  const before19B = await recorded();
+
+  await lockOf().click();
+  await until(locked, 5_000);
+  await page.getByRole("group", { name: "Canvas width" }).getByRole("button", { name: /Tablet/ }).click();
+  await editorSettled(page);
+  say("19B · a lock is kept when the canvas changes width", await locked());
+
+  const englishCanvas = canvasUrl(page);
+  await page.getByRole("group", { name: "Canvas language" }).getByRole("button", { name: "العربية" }).click();
+  await canvasRedrawn(page, englishCanvas);
+  await editorSettled(page);
+  say("19B · …and when it changes language", (await locked()) && canvasUrl(page).includes("/ar"), canvasUrl(page));
+  const arabicPick = await canvasRefuses();
+  say("19B · the new Arabic canvas is told about the lock again", arabicPick !== imageAddress, arabicPick);
+
+  const arabicCanvas = canvasUrl(page);
+  await page.getByRole("group", { name: "Canvas language" }).getByRole("button", { name: "English" }).click();
+  await canvasRedrawn(page, arabicCanvas);
+  await page.getByRole("group", { name: "Canvas width" }).getByRole("button", { name: /Desktop/ }).click();
+  await editorSettled(page);
+
+  await page.selectOption("#ve-page", "about");
+  await editorSettled(page);
+  await page.selectOption("#ve-page", "home");
+  await editorSettled(page);
+  const afterPage = await canvasAccepts();
+  say("19B · a lock is cleared with the page", afterPage === imageAddress && !(await locked()), afterPage);
+
+  await layerRow(imageAddress).click();
+  await settled(imageAddress);
+  await lockOf().click();
+  await until(locked, 5_000);
+  await open("?page=home&lang=en&device=desktop");
+  const afterReload = await canvasAccepts();
+  say("19B · a reload starts with nothing locked", afterReload === imageAddress, afterReload);
+  const after19B = await recorded();
+  say(
+    "19B · locking and unlocking wrote nothing: no revision, no row, no activity entry",
+    JSON.stringify(after19B) === JSON.stringify(before19B),
+    `${JSON.stringify(before19B).slice(0, 80)} → ${JSON.stringify(after19B).slice(0, 80)}`,
+  );
 
   /* --- 19-21. geometry at three widths --------------------------------- */
   for (const [label, device, width] of [

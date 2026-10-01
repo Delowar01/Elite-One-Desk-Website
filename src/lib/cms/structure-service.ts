@@ -73,14 +73,18 @@ export type StructureResult =
       revision: number;
       sectionId?: number;
       log: StructureLog;
-      /** A second entry the operation deserves — a new section linked to a reusable component (Batch 17). */
+      /**
+       * Further entries the operation deserves — one per link a new section
+       * makes to a reusable component (Batch 17), whether it was added linked
+       * or copied from a linked one (19B).
+       */
       also?: {
         action: string;
         entityType: string;
         entityId: number;
         summary: string;
         metadata?: Record<string, unknown>;
-      };
+      }[];
       message: string;
     }
   | { ok: false; reason: StructureFailure; message: string };
@@ -494,14 +498,16 @@ export async function addStructureSection(
     },
     ...(linkedName && componentId !== undefined
       ? {
-          also: {
-            action: "reusable_component.instance_linked",
-            // The entity is the component the new section links to.
-            entityType: "reusable_component",
-            entityId: componentId,
-            summary: `Linked a new ${block.name} section on “${opened.page.slug}” in a layout draft`,
-            metadata: { sectionId: created, slot: BLOCK_SLOT },
-          },
+          also: [
+            {
+              action: "reusable_component.instance_linked",
+              // The entity is the component the new section links to.
+              entityType: "reusable_component",
+              entityId: componentId,
+              summary: `Linked a new ${block.name} section on “${opened.page.slug}” in a layout draft`,
+              metadata: { sectionId: created, slot: BLOCK_SLOT },
+            },
+          ],
         }
       : {}),
   };
@@ -655,6 +661,20 @@ export async function duplicateStructureSection(
       entityId: created,
       summary: `Duplicated the ${source.blockType} section into the layout draft`,
     },
+    // The copy is a new instance of every component the original links, and a
+    // new link is recorded as one, as it is when a linked section is added
+    // (19B).
+    ...(Object.keys(links).length
+      ? {
+          also: Object.entries(links).map(([slot, ref]) => ({
+            action: "reusable_component.instance_linked",
+            entityType: "reusable_component",
+            entityId: ref.c,
+            summary: `Linked a copy of a ${block.name} section on “${opened.page.slug}” in a layout draft`,
+            metadata: { sectionId: created, slot },
+          })),
+        }
+      : {}),
   };
 }
 

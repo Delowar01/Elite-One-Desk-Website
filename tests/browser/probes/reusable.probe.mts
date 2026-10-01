@@ -160,8 +160,41 @@ try {
   say("1. a reusable CTA is created as a draft — nothing published", Boolean(created) && draftSaved && afterDraft!.published_version === 0 && afterDraft!.published === null,
     JSON.stringify(afterDraft?.draft));
 
+  /**
+   * 19B · the component screen's four confirmations are alertdialogs that
+   * open with the focus on Cancel — the choice that changes nothing — so a
+   * keyboard reaches it before the destructive button and a screen reader is
+   * brought into the warning. Discard and Delete are opened and cancelled
+   * with Enter here, while the component is still an unused draft; Publish
+   * and Restore are checked where the steps below open them anyway. A miss is
+   * closed by its Cancel button, so it is reported rather than left open.
+   */
+  const cancelHasFocus = () =>
+    page.evaluate(() => {
+      const active = document.activeElement;
+      return (active?.textContent ?? "").trim() === "Cancel" && Boolean(active?.closest("[role='alertdialog']"));
+    });
+  const focusMissed: string[] = [];
+  for (const [opener, name] of [
+    ["[data-reuse-discard]", "Discard the draft"],
+    ["[data-reuse-delete]", "Delete the component"],
+  ] as const) {
+    await page.locator(opener).click();
+    const dialog = page.getByRole("alertdialog", { name });
+    await dialog.waitFor({ timeout: 10_000 });
+    if (await cancelHasFocus()) await page.keyboard.press("Enter");
+    else {
+      focusMissed.push(name);
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+    }
+    await dialog.waitFor({ state: "detached", timeout: 10_000 });
+  }
+  const cancelledNothing = (await component("Primary Contact CTA"))?.draft?.href === "/contact";
+
   // 2. Publish it — confirmed, with the impact said first.
   await page.locator("[data-reuse-publish]").click();
+  await page.getByRole("alertdialog", { name: "Publish the component" }).waitFor({ timeout: 10_000 });
+  if (!(await cancelHasFocus())) focusMissed.push("Publish the component");
   const firstImpact = (await page.locator("[data-reuse-impact]").textContent()) ?? "";
   await page.locator("[data-reuse-publish-yes]").click();
   const published1 = await until(async () => (await component("Primary Contact CTA"))?.published_version === 1);
@@ -367,6 +400,70 @@ try {
   say("22. the reference is restored and saved", restoredRef, JSON.stringify(reuseOf((await state(ABOUT_CTA)).draft)));
   await publishPage(ABOUT);
 
+  /* 19B · the detach warning and the picker, from the keyboard alone -------- */
+  /**
+   * Linking and detaching need no pointer. The detach warning is an
+   * alertdialog that takes the focus onto Cancel — the choice that changes
+   * nothing — so Enter there changes nothing, and Detach is one Shift+Tab
+   * away. The picker opens on Enter with its search box focused, and a
+   * component is chosen with Tab and Enter. About ends linked and published,
+   * exactly as step 22 left it, for the steps that follow.
+   */
+  await open("?page=about&lang=en&device=desktop");
+  await select(`section:${ABOUT_CTA}/field:primaryCtaLabel`);
+  await contentTab();
+  const focusedText = () => page.evaluate(() => (document.activeElement?.textContent ?? "").trim());
+  const detachButton = slotPanel().getByRole("button", { name: "Detach from global" });
+  const detachWarning = slotPanel().getByRole("alertdialog", { name: "Detach this instance" });
+  await detachButton.focus();
+  await page.keyboard.press("Enter");
+  await detachWarning.waitFor({ timeout: 10_000 });
+  const firstFocus = await focusedText();
+  const firstFocusInside = await page.evaluate(() => Boolean(document.activeElement?.closest("[role='alertdialog']")));
+  // Enter on Cancel closes the warning. Without the focus there, it is closed
+  // by its button, so the line below reports the miss instead of timing out.
+  if (firstFocus === "Cancel" && firstFocusInside) await page.keyboard.press("Enter");
+  else await detachWarning.getByRole("button", { name: "Cancel" }).click();
+  await detachWarning.waitFor({ state: "detached", timeout: 10_000 });
+  const untouched = await state(ABOUT_CTA);
+  say(
+    "19B · the detach warning takes the focus onto Cancel, and Enter there changes nothing",
+    firstFocus === "Cancel" && firstFocusInside && untouched.draft === null &&
+      reuseOf(untouched.published)?.primaryCta?.c === CID,
+    firstFocus,
+  );
+
+  await detachButton.focus();
+  await page.keyboard.press("Enter");
+  await detachWarning.waitFor({ timeout: 10_000 });
+  await page.keyboard.press("Shift+Tab");
+  const secondFocus = await focusedText();
+  await page.keyboard.press("Enter");
+  const detachedByKeys = await saved(ABOUT_CTA, (row) => row.draft !== null && reuseOf(row.draft) === null);
+  say("19B · …and Detach, one Shift+Tab away, detaches on Enter", secondFocus === "Detach" && detachedByKeys, secondFocus);
+
+  await ready();
+  await select(`section:${ABOUT_CTA}/field:primaryCtaLabel`);
+  await contentTab();
+  const linkButton = slotPanel().getByRole("button", { name: "Link to reusable CTA…" });
+  await linkButton.focus();
+  await page.keyboard.press("Enter");
+  const search = slotPanel().locator("[data-reuse-picker] input[type='search']");
+  await search.waitFor({ timeout: 10_000 });
+  const searchFocused = await search.evaluate((input) => input === document.activeElement);
+  await page.keyboard.type("Primary Contact");
+  let onChoice = false;
+  for (let i = 0; i < 4 && !onChoice; i += 1) {
+    await page.keyboard.press("Tab");
+    onChoice = await page.evaluate((id) => document.activeElement?.getAttribute("data-reuse-choice") === String(id), CID);
+  }
+  if (onChoice) await page.keyboard.press("Enter");
+  const linkedByKeys = await saved(ABOUT_CTA, (row) => reuseOf(row.draft)?.primaryCta?.c === CID);
+  say("19B · the picker opens on Enter with its search focused; Tab and Enter choose the component",
+    searchFocused && onChoice && linkedByKeys, `search focused ${searchFocused}, choice reached ${onChoice}`);
+  await ready();
+  await publishPage(ABOUT);
+
   /* ====================================================================== */
   /* EN / AR 24–27                                                          */
   /* ====================================================================== */
@@ -464,11 +561,15 @@ try {
   const alphaVersion = (await component("Primary Contact CTA"))!.published_version - 1;
   await page.locator(`[data-reuse-version="${alphaVersion}"]`).getByRole("button", { name: "Restore to draft" }).click();
   const restoreDialog = page.getByRole("alertdialog", { name: "Restore a version to the draft" });
+  await restoreDialog.waitFor({ timeout: 10_000 });
+  if (!(await cancelHasFocus())) focusMissed.push("Restore a version to the draft");
   const restoreWarning = (await restoreDialog.textContent()) ?? "";
   await restoreDialog.getByRole("button", { name: "Restore to draft" }).click();
   const alphaDraft = await until(async () => ((await component("Primary Contact CTA"))?.draft?.label as { en?: string } | undefined)?.en === "Alpha");
   say("30. restoring “Alpha” stages it as the draft, with the usage warning",
     alphaDraft && /Publishing this restored CTA will update 2 instances on 2 published pages/.test(restoreWarning), restoreWarning.slice(0, 140));
+  say("19B · the component screen's four confirmations — discard, delete, publish, restore — open with the focus on Cancel, and cancelling changes nothing",
+    focusMissed.length === 0 && cancelledNothing, focusMissed.length ? `not on Cancel: ${focusMissed.join(", ")}` : "all four on Cancel");
   say("31. the live pages still show “Bravo”", (await liveLink("/about", "Bravo")) === "/bravo");
   await page.locator("[data-reuse-publish]").click();
   await page.locator("[data-reuse-publish-yes]").click();

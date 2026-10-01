@@ -1131,6 +1131,9 @@ async function runStructural(
   if (!result.ok) return structuralConflict(result);
 
   await logActivity(session, result.log);
+  // A copy of a linked section links too, and this screen records it as the
+  // editor does (19B).
+  for (const entry of result.also ?? []) await logActivity(session, entry);
   const [page] = await db.select({ slug: pages.slug }).from(pages).where(eq(pages.id, pageId)).limit(1);
   if (page) refreshPage(page.slug);
   return ok(result.message, result.sectionId);
@@ -1150,6 +1153,11 @@ export async function toggleSection(_prev: ActionState, form: FormData): Promise
 
 export async function moveSection(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("section-move", async () => {
+    // Checked before the layout is read, not only inside `runStructural`: a
+    // move at the edge answers without writing, and neither that answer nor
+    // whether a page or section exists is anything to tell a caller who may
+    // not move sections (19B).
+    await guardAction(AUTHORITY.editStructure, form, DENIED.editStructure);
     const pageId = Number(form.get("pageId"));
     const id = Number(form.get("id"));
     const up = field(form, "direction", 8) === "up";

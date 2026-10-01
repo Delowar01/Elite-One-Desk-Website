@@ -866,7 +866,14 @@ export function GlobalsPanel({
         <h2 className="flex-1 truncate text-[0.82rem] font-semibold text-strong">
           Global site settings
         </h2>
-        <button type="button" onClick={onRefresh} className="admin-btn admin-btn-sm" disabled={loading}>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="admin-btn admin-btn-sm"
+          disabled={loading}
+          aria-label="Refresh global site settings"
+          title="Refresh global site settings"
+        >
           <Icon name="refresh" size={12} />
         </button>
         <button type="button" onClick={onClose} className="admin-btn admin-btn-sm" aria-label="Close">

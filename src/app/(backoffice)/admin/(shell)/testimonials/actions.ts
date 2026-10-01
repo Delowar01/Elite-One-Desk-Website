@@ -44,19 +44,31 @@ export async function saveTestimonial(_prev: ActionState, form: FormData): Promi
       sortOrder: numberField(form, "sortOrder", 0),
     };
 
+    // An id that names no testimonial is refused, not reported — and logged —
+    // as saved; a new one is logged under the id it was given (19B).
+    let savedId = id;
     if (id) {
-      await db.update(testimonials).set({ ...values, updatedAt: new Date() }).where(eq(testimonials.id, id));
+      const [updated] = await db
+        .update(testimonials)
+        .set({ ...values, updatedAt: new Date() })
+        .where(eq(testimonials.id, id))
+        .returning({ id: testimonials.id });
+      if (!updated) return fail("That testimonial no longer exists.");
     } else {
       const [last] = await db
         .select({ n: sql<number>`coalesce(max(${testimonials.sortOrder}), -1)::int` })
         .from(testimonials);
-      await db.insert(testimonials).values({ ...values, sortOrder: (last?.n ?? -1) + 1 });
+      const [created] = await db
+        .insert(testimonials)
+        .values({ ...values, sortOrder: (last?.n ?? -1) + 1 })
+        .returning({ id: testimonials.id });
+      savedId = created!.id;
     }
 
     await logActivity(session, {
       action: id ? "testimonial.updated" : "testimonial.created",
       entityType: "testimonial",
-      entityId: id || 0,
+      entityId: savedId,
       summary: `${id ? "Updated" : "Added"} a testimonial from ${name}`,
     });
     refresh();

@@ -3029,9 +3029,10 @@ export function VisualEditorShell({
             <span aria-hidden className="inline-block size-1.5 rounded-full" style={{ background: status.tone }} />
             {status.label}
           </p>
+          {/* Below lg the words are hidden from the eye, never from a screen reader. */}
           <button type="button" onClick={freshCanvas} className="admin-btn admin-btn-sm">
             <Icon name="refresh" size={12} />
-            <span className="hidden lg:inline">Reload</span>
+            <span className="sr-only lg:not-sr-only">Reload</span>
           </button>
           {/*
             The site's controls, beside the page's and never mixed into them.
@@ -3061,6 +3062,7 @@ export function VisualEditorShell({
             type="button"
             onClick={() => setPagePanel((value) => !value)}
             aria-expanded={pagePanel}
+            aria-describedby={summary?.publishable ? "ve-publish-pending" : undefined}
             className="admin-btn admin-btn-sm"
             style={
               summary?.publishable
@@ -3069,11 +3071,18 @@ export function VisualEditorShell({
             }
           >
             <Icon name="check" size={12} />
-            <span className="hidden lg:inline">Publish</span>
+            <span className="sr-only lg:not-sr-only">Publish</span>
             {summary?.publishable ? (
               <span aria-hidden className="inline-block size-1.5 rounded-full" style={{ background: "var(--color-orange)" }} />
             ) : null}
           </button>
+          {/* The dot and the border are colour; this is the same fact in words —
+              the button's description, so its name stays what it does (19B). */}
+          {summary?.publishable ? (
+            <span id="ve-publish-pending" className="sr-only">
+              This page has unpublished changes.
+            </span>
+          ) : null}
           <a
             href={previewPagePath(page.slug, locale)}
             target="_blank"

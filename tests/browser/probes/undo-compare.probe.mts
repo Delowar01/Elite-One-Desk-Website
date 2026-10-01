@@ -707,6 +707,45 @@ try {
   await compare.waitForTimeout(600);
   [left, right] = await panes();
 
+  // 19B · the same controls, worked from the keyboard: focused and pressed,
+  // never clicked — Enter for one, Space for the other, as a keyboard user would.
+  const paneWidths = async () => {
+    [left, right] = await panes();
+    return [await left.evaluate(() => window.innerWidth), await right.evaluate(() => window.innerWidth)];
+  };
+  const widthGroup = compare.getByRole("group", { name: "Width of both panes" });
+  await widthGroup.getByRole("button", { name: /Tablet/ }).focus();
+  await compare.keyboard.press("Enter");
+  await compare.waitForTimeout(900);
+  const keyTablet = await paneWidths();
+  await widthGroup.getByRole("button", { name: /Desktop/ }).focus();
+  await compare.keyboard.press("Space");
+  await compare.waitForTimeout(900);
+  const keyDesktop = await paneWidths();
+  say("C11a. 19B · the panes' width is switched from the keyboard",
+    keyTablet.every((w) => w === 834) && keyDesktop.every((w) => w === 1440), `${keyTablet} → ${keyDesktop}`);
+
+  const languageGroup = compare.getByRole("group", { name: "Language of both panes" });
+  await languageGroup.getByRole("button", { name: "العربية" }).focus();
+  await compare.keyboard.press("Enter");
+  const keyDeadline = Date.now() + 20_000;
+  while (Date.now() < keyDeadline && compare.frames().filter((f) => f.url().includes("/ar/about?compare=")).length < 2) {
+    await compare.waitForTimeout(200);
+  }
+  [left, right] = await panes();
+  const keyArabic = [(await inspect(left)).dir, (await inspect(right)).dir];
+  await languageGroup.getByRole("button", { name: "English" }).focus();
+  await compare.keyboard.press("Space");
+  const backDeadline = Date.now() + 20_000;
+  while (Date.now() < backDeadline && compare.frames().filter((f) => f.url().includes("/ar/about?compare=")).length > 0) {
+    await compare.waitForTimeout(200);
+  }
+  await compare.waitForTimeout(600);
+  [left, right] = await panes();
+  const keyEnglish = [(await inspect(left)).dir, (await inspect(right)).dir];
+  say("C11b. 19B · …and their language too, both ways",
+    keyArabic.every((d) => d === "rtl") && keyEnglish.every((d) => d !== "rtl"), `${keyArabic} → ${keyEnglish}`);
+
   // Synchronised scrolling.
   const progress = (frame: Frame) =>
     frame.evaluate(() => {

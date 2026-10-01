@@ -1,5 +1,32 @@
 import { z } from "zod";
 
+import { FORM_PRESETS } from "@/lib/forms/presets";
+
+export const UTM_KEYS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+  "gclid",
+  "fbclid",
+] as const;
+
+/** Every extra field a request form can carry: the presets' own field names. */
+const DETAIL_KEYS: ReadonlySet<string> = new Set(
+  Object.values(FORM_PRESETS).flatMap((fields) => fields.map((field) => field.name)),
+);
+const UTM_KEY_SET: ReadonlySet<string> = new Set(UTM_KEYS);
+
+/**
+ * Keeps only the keys a form can send (19B). Each value was always capped; the
+ * keys were not, so one request could carry thousands of them — up to the
+ * proxy's body limit — into a row that is kept. The form only ever sends known
+ * keys, so nothing a visitor typed is lost.
+ */
+const knownKeys = (allowed: ReadonlySet<string>) => (record: Record<string, string>) =>
+  Object.fromEntries(Object.entries(record).filter(([key]) => allowed.has(key)));
+
 /**
  * One schema, used by the browser before submit and again by the route handler
  * before anything is written. The server copy is the one that counts — the
@@ -20,8 +47,8 @@ export const enquirySchema = z.object({
   preferredContact: z.enum(["phone", "whatsapp", "email"]).default("whatsapp"),
   sourcePage: z.string().trim().max(255).default(""),
   locale: z.enum(["en", "ar"]).default("en"),
-  details: z.record(z.string(), z.string().max(500)).default({}),
-  utm: z.record(z.string(), z.string().max(190)).default({}),
+  details: z.record(z.string(), z.string().max(500)).default({}).transform(knownKeys(DETAIL_KEYS)),
+  utm: z.record(z.string(), z.string().max(190)).default({}).transform(knownKeys(UTM_KEY_SET)),
   /**
    * Honeypot. Not constrained here on purpose: a schema error would tell a bot
    * exactly which field gave it away. The route checks it after parsing and
@@ -43,13 +70,3 @@ export function contactProblem(input: Pick<EnquiryInput, "email" | "phone" | "wh
   if (input.email || input.phone || input.whatsapp) return null;
   return "Please leave a phone number or an email address so we can reply.";
 }
-
-export const UTM_KEYS = [
-  "utm_source",
-  "utm_medium",
-  "utm_campaign",
-  "utm_term",
-  "utm_content",
-  "gclid",
-  "fbclid",
-] as const;

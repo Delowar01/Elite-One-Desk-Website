@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
+import { revisionField } from "@/lib/admin/actions";
 import { AccessError, guardAction } from "@/lib/auth/guard";
 import { getSession } from "@/lib/auth/session";
 import { TAGS, revalidate } from "@/lib/cache";
@@ -131,10 +132,7 @@ const idOf = (form: FormData, name = "id"): number => {
   return Number.isInteger(value) && value > 0 ? value : 0;
 };
 
-const revisionOf = (form: FormData): number => {
-  const value = Number(form.get("expectedRevision"));
-  return Number.isInteger(value) && value >= 0 ? value : -1;
-};
+const revisionOf = (form: FormData): number => revisionField(form);
 
 function valuesOf(form: FormData): unknown {
   try {

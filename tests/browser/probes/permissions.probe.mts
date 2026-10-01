@@ -768,6 +768,46 @@ try {
       archive?.ok === false && (await stateOf()) === before, JSON.stringify(archive));
   }
 
+  /* ====================================================================== */
+  /* P19 · 19B: what a visitor's page and the editor's canvas carry          */
+  /* ====================================================================== */
+  {
+    /**
+     * Authority is the shell's to know and the server's to enforce. A
+     * visitor's page names no permission and carries no token; nor does the
+     * canvas an editor works on, which is the site rendered for them, or the
+     * ordinary preview — the shell around the canvas holds the token, and only
+     * the shell posts. A permission key anywhere in these documents would be a
+     * capability map leaking; the session's own token, a session leaking.
+     */
+    const keys = (await sql<{ key: string }[]>`select key from permissions order by key`).map((r) => r.key);
+    const carried = (html: string, token: string) => [
+      ...keys.filter((key) => html.includes(key)),
+      ...(html.includes(token) ? ["the session's CSRF token"] : []),
+      ...(/_csrf|csrfToken/.test(html) ? ["a CSRF field"] : []),
+    ];
+    const visitorPages = await Promise.all(
+      ["/", "/about", "/ar/about"].map(async (path) => [path, await (await fetch(`${origin}${path}`)).text()] as const),
+    );
+    const visitorLeaks = visitorPages.flatMap(([path, html]) => carried(html, owner.csrfToken).map((what) => `${path}: ${what}`));
+    say("P19.1 a visitor's page names no permission and carries no token", keys.length > 0 && visitorLeaks.length === 0,
+      visitorLeaks.slice(0, 3).join(" | "));
+
+    const preview = await (await fetch(`${origin}/about?preview=1`, { headers: { cookie: owner.cookie } })).text();
+    const previewLeaks = carried(preview, owner.csrfToken);
+    say("P19.2 the ordinary preview, opened by the owner, carries none either",
+      preview.length > 0 && previewLeaks.length === 0, previewLeaks.slice(0, 3).join(" | "));
+
+    const ownerContext = await contextFor(owner);
+    const ownerPage = await newPage(ownerContext);
+    await open(ownerPage, "about");
+    const canvasHtml = await (await frameNow(ownerPage)).content();
+    const canvasLeaks = carried(canvasHtml, owner.csrfToken);
+    say("P19.3 the owner's canvas names no permission and carries no token",
+      canvasHtml.includes("data-eod-address") && canvasLeaks.length === 0, canvasLeaks.slice(0, 3).join(" | "));
+    await ownerContext.close();
+  }
+
   say("no page errors in any browser session", errors.length === 0, errors.slice(0, 3).join(" | "));
   await actorContext.close();
 } finally {

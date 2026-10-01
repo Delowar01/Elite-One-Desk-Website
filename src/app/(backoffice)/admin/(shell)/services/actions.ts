@@ -19,7 +19,7 @@ import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { sanitizeRichText } from "@/lib/cms/sanitize";
 import { db } from "@/lib/db";
-import { services } from "@/lib/db/schema";
+import { serviceSubcategories, services } from "@/lib/db/schema";
 import type { LocalisedItem, LocalisedStep } from "@/lib/db/schema";
 import { isPresetKey } from "@/lib/forms/presets";
 
@@ -98,6 +98,24 @@ function readService(form: FormData) {
   };
 }
 
+/**
+ * A service filed under a group must sit in that group's category. The form
+ * only offers matching pairs; the server holds the same rule rather than
+ * trusting that it did, because a mismatched pair lists the service under one
+ * category and its group under another (19B).
+ */
+async function groupProblem(values: { categoryId: number; subcategoryId: number | null }): Promise<ActionState | null> {
+  if (!values.subcategoryId) return null;
+  const [group] = await db
+    .select({ id: serviceSubcategories.id })
+    .from(serviceSubcategories)
+    .where(
+      and(eq(serviceSubcategories.id, values.subcategoryId), eq(serviceSubcategories.categoryId, values.categoryId)),
+    )
+    .limit(1);
+  return group ? null : fail("Choose a group from this service's category.", { subcategoryId: "Not in this category." });
+}
+
 export async function createService(_prev: ActionState, form: FormData): Promise<ActionState> {
   let newId = 0;
   const result = await runAction("service-create", async () => {
@@ -107,6 +125,8 @@ export async function createService(_prev: ActionState, form: FormData): Promise
 
     if (!values.titleEn) return fail("Give the service a title.", { titleEn: "Required." });
     if (!values.categoryId) return fail("Choose a category.", { categoryId: "Required." });
+    const createProblem = await groupProblem(values);
+    if (createProblem) return createProblem;
     if (!SLUG.test(slug)) {
       return fail("The address must be lower-case words joined by hyphens.", { slug: "Invalid." });
     }
@@ -145,6 +165,8 @@ export async function updateService(_prev: ActionState, form: FormData): Promise
     const values = readService(form);
     if (!values.titleEn) return fail("Give the service a title.", { titleEn: "Required." });
     if (!values.categoryId) return fail("Choose a category.", { categoryId: "Required." });
+    const updateProblem = await groupProblem(values);
+    if (updateProblem) return updateProblem;
 
     const [row] = await db
       .update(services)

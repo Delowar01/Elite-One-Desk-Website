@@ -53,16 +53,25 @@ export function IconSelect({
         >
           <Icon name={value || "sparkle"} size={17} />
         </span>
+        {/* The visible text is the icon's key, which on its own does not say
+            which field it is — the name carries both (19B). */}
         <button
           type="button"
           id={id}
           onClick={() => setOpen(true)}
           className="admin-btn admin-btn-sm"
+          aria-haspopup="dialog"
+          aria-label={value ? `${label}: ${value}` : undefined}
         >
           {value ? value : "Choose an icon"}
         </button>
         {value ? (
-          <button type="button" onClick={() => onChange("")} className="admin-btn admin-btn-sm">
+          <button
+            type="button"
+            onClick={() => onChange("")}
+            className="admin-btn admin-btn-sm"
+            aria-label={`Clear ${label.toLowerCase()}`}
+          >
             Clear
           </button>
         ) : null}
@@ -93,7 +102,7 @@ export function IconSelect({
                 className="admin-input"
                 autoFocus
               />
-              <button type="button" onClick={() => setOpen(false)} className="admin-btn admin-btn-sm">
+              <button type="button" onClick={() => setOpen(false)} className="admin-btn admin-btn-sm" aria-label="Close">
                 <Icon name="close" size={14} />
               </button>
             </div>

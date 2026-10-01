@@ -55,19 +55,31 @@ export async function saveVideo(_prev: ActionState, form: FormData): Promise<Act
       sortOrder: numberField(form, "sortOrder", 0),
     };
 
+    // An id that names no video is refused, not reported — and logged — as
+    // saved; a new one is logged under the id it was given (19B).
+    let savedId = id;
     if (id) {
-      await db.update(videos).set({ ...values, updatedAt: new Date() }).where(eq(videos.id, id));
+      const [updated] = await db
+        .update(videos)
+        .set({ ...values, updatedAt: new Date() })
+        .where(eq(videos.id, id))
+        .returning({ id: videos.id });
+      if (!updated) return fail("That video no longer exists.");
     } else {
       const [last] = await db
         .select({ n: sql<number>`coalesce(max(${videos.sortOrder}), -1)::int` })
         .from(videos);
-      await db.insert(videos).values({ ...values, sortOrder: (last?.n ?? -1) + 1 });
+      const [created] = await db
+        .insert(videos)
+        .values({ ...values, sortOrder: (last?.n ?? -1) + 1 })
+        .returning({ id: videos.id });
+      savedId = created!.id;
     }
 
     await logActivity(session, {
       action: id ? "video.updated" : "video.added",
       entityType: "video",
-      entityId: id || 0,
+      entityId: savedId,
       summary: `${id ? "Updated" : "Added"} the video “${titleEn}”`,
     });
     refresh();
@@ -122,7 +134,7 @@ export async function toggleVideo(_prev: ActionState, form: FormData): Promise<A
 
 export async function moveVideo(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("video-move", async () => {
-    await guardAction("videos.manage", form);
+    const session = await guardAction("videos.manage", form);
     const id = Number(form.get("id"));
     const up = field(form, "direction", 8) === "up";
     const [row] = await db.select().from(videos).where(eq(videos.id, id)).limit(1);
@@ -140,6 +152,13 @@ export async function moveVideo(_prev: ActionState, form: FormData): Promise<Act
       await tx.update(videos).set({ sortOrder: -1 }).where(eq(videos.id, row.id));
       await tx.update(videos).set({ sortOrder: row.sortOrder }).where(eq(videos.id, neighbour.id));
       await tx.update(videos).set({ sortOrder: neighbour.sortOrder }).where(eq(videos.id, row.id));
+    });
+    // A reorder is a change like any other, and the audit trail says so (19B).
+    await logActivity(session, {
+      action: "video.reordered",
+      entityType: "video",
+      entityId: row.id,
+      summary: `Moved the video “${row.titleEn}” ${up ? "up" : "down"}`,
     });
     refresh();
     return ok();

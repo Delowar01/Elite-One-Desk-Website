@@ -377,19 +377,24 @@ export async function saveSocialLink(_prev: ActionState, form: FormData): Promis
         .update(socialLinks)
         .set({ platform, url: parsed.toString(), isPublished, updatedAt: new Date() })
         .where(eq(socialLinks.id, id));
-    } else {
+    }
+    let savedId = id;
+    if (!existing) {
       const [last] = await db
         .select({ n: sql<number>`coalesce(max(${socialLinks.sortOrder}), -1)::int` })
         .from(socialLinks);
-      await db
+      const [created] = await db
         .insert(socialLinks)
-        .values({ platform, url: parsed.toString(), isPublished, sortOrder: (last?.n ?? -1) + 1 });
+        .values({ platform, url: parsed.toString(), isPublished, sortOrder: (last?.n ?? -1) + 1 })
+        .returning({ id: socialLinks.id });
+      // Logged under the id it was given, not 0 (19B).
+      savedId = created!.id;
     }
 
     await logActivity(session, {
       action: existing ? "social.updated" : "social.created",
       entityType: "social",
-      entityId: id || 0,
+      entityId: savedId,
       summary: describeSave(existing, { platform, url: parsed.toString(), isPublished }),
     });
     refreshAll();

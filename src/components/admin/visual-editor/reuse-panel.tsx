@@ -409,7 +409,10 @@ function LinkedSlot({
             >
               Detach
             </button>
-            <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirmDetach(false)}>
+            {/* The warning takes the focus, onto the choice that changes nothing,
+                so a keyboard reaches it before Detach and a screen reader reads
+                it out (19B). */}
+            <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirmDetach(false)} autoFocus>
               Cancel
             </button>
           </div>

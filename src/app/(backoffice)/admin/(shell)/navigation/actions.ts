@@ -168,6 +168,7 @@ export async function saveNavItem(_prev: ActionState, form: FormData): Promise<A
       isPublished: checkbox(form, "isPublished"),
     };
 
+    let savedId = id;
     if (id) {
       await db.update(navigationItems).set({ ...values, updatedAt: new Date() }).where(eq(navigationItems.id, id));
     } else {
@@ -175,13 +176,18 @@ export async function saveNavItem(_prev: ActionState, form: FormData): Promise<A
         .select({ n: sql<number>`coalesce(max(${navigationItems.sortOrder}), -1)::int` })
         .from(navigationItems)
         .where(eq(navigationItems.menu, menu));
-      await db.insert(navigationItems).values({ ...values, sortOrder: (last?.n ?? -1) + 1 });
+      const [created] = await db
+        .insert(navigationItems)
+        .values({ ...values, sortOrder: (last?.n ?? -1) + 1 })
+        .returning({ id: navigationItems.id });
+      // Logged under the id it was given, not 0 (19B).
+      savedId = created!.id;
     }
 
     await logActivity(session, {
       action: id ? "navigation.updated" : "navigation.created",
       entityType: "navigation",
-      entityId: id || 0,
+      entityId: savedId,
       summary: `${id ? "Updated" : "Added"} the link “${labelEn}”`,
     });
     refresh();
@@ -216,7 +222,7 @@ export async function deleteNavItem(_prev: ActionState, form: FormData): Promise
 
 export async function moveNavItem(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("nav-move", async () => {
-    await guardAction("navigation.manage", form);
+    const session = await guardAction("navigation.manage", form);
     const id = Number(form.get("id"));
     const up = field(form, "direction", 8) === "up";
     const [row] = await db.select().from(navigationItems).where(eq(navigationItems.id, id)).limit(1);
@@ -261,6 +267,13 @@ export async function moveNavItem(_prev: ActionState, form: FormData): Promise<A
         .update(navigationItems)
         .set({ sortOrder: neighbour.sortOrder })
         .where(eq(navigationItems.id, row.id));
+    });
+    // A reorder is a change like any other, and the audit trail says so (19B).
+    await logActivity(session, {
+      action: "navigation.reordered",
+      entityType: "navigation",
+      entityId: row.id,
+      summary: `Moved the link “${row.labelEn}” ${up ? "up" : "down"}`,
     });
     refresh();
     return ok("Order saved.");

@@ -70,8 +70,17 @@ export function MediaPicker({
           <p className="truncate text-[0.82rem] text-strong">
             {selected ? selected.title || selected.filename : "No image selected"}
           </p>
+          {/* Named after the field as well, so a list of "Choose" buttons is not
+              all a screen reader can offer (19B). The visible word leads the
+              name, so a spoken command for it still works. */}
           <div className="mt-1.5 flex gap-2">
-            <button type="button" onClick={() => setOpen(true)} className="admin-btn admin-btn-sm">
+            <button
+              type="button"
+              onClick={() => setOpen(true)}
+              className="admin-btn admin-btn-sm"
+              aria-haspopup="dialog"
+              aria-label={`${selected ? "Change" : "Choose"} ${label.toLowerCase()}`}
+            >
               {selected ? "Change" : "Choose"}
             </button>
             {selected ? (
@@ -79,6 +88,7 @@ export function MediaPicker({
                 type="button"
                 onClick={() => onChange(null)}
                 className="admin-btn admin-btn-sm"
+                aria-label={`Remove ${label.toLowerCase()}`}
               >
                 Remove
               </button>
@@ -109,7 +119,7 @@ export function MediaPicker({
                 className="admin-input"
                 autoFocus
               />
-              <button type="button" onClick={() => setOpen(false)} className="admin-btn admin-btn-sm">
+              <button type="button" onClick={() => setOpen(false)} className="admin-btn admin-btn-sm" aria-label="Close">
                 <Icon name="close" size={14} />
               </button>
             </div>

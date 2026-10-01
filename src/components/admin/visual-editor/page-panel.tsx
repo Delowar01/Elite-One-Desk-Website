@@ -77,7 +77,14 @@ export function PagePanel({
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-[var(--admin-line)] px-3.5 py-2.5">
         <h2 className="flex-1 truncate text-[0.82rem] font-semibold text-strong">{title}</h2>
-        <button type="button" onClick={onRefresh} className="admin-btn admin-btn-sm" disabled={busy}>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="admin-btn admin-btn-sm"
+          disabled={busy}
+          aria-label="Refresh changes and history"
+          title="Refresh changes and history"
+        >
           <Icon name="refresh" size={12} />
         </button>
         <button type="button" onClick={onClose} className="admin-btn admin-btn-sm" aria-label="Close">

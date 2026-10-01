@@ -489,6 +489,57 @@ try {
     printed === printSteps.h1,
     `${printed} vs h1 ${printSteps.h1} / h2 ${printSteps.h2} / h3 ${printSteps.h3}`,
   );
+  /* --- 19B · an edit made on the Arabic canvas, at Tablet and at Mobile ------- */
+  /**
+   * A style document has no language — a width is the same width in both
+   * editions — so an edit made while the Arabic canvas is on screen lands in
+   * the branch of the width being edited, and not in Base. Published, both
+   * editions wear it at that width and at no other. The alignments are chosen
+   * against what the heading already has, so a value that was there anyway can
+   * never pass for one that arrived.
+   */
+  const alignAt = (width: number, path: string) => at(width, path, HEADING, "text-align");
+  const baseAlign = await alignAt(1440, "/privacy");
+  const [tabletAlign, mobileAlign] = ["center", "end", "start"].filter((value) => value !== baseAlign);
+  await open("?page=privacy&lang=ar&device=tablet");
+  say(
+    "19B · the editor opens the Arabic canvas at Tablet: a real 834 viewport, right to left",
+    frame().url().includes("/ar/") && (await canvasSize()) === 834 &&
+      (await frame().locator("html").getAttribute("dir")) === "rtl",
+    `${frame().url()} ${await canvasSize()}`,
+  );
+  await select(title);
+  await styleTab().click();
+  await page.getByText("Tablet override", { exact: true }).waitFor({ timeout: 10_000 });
+  await setToken("align", tabletAlign!);
+  await saveStyles(hero.id);
+  await device("Mobile");
+  await styleTab().click();
+  await page.getByText("Mobile override", { exact: true }).waitFor({ timeout: 10_000 });
+  await setToken("align", mobileAlign!);
+  await saveStyles(hero.id);
+  const arabicNode =
+    ((await state(hero.id)).draft_styles as { nodes: Record<string, Record<string, Record<string, unknown>>> }).nodes[
+      "field:title"
+    ] ?? {};
+  say(
+    "19B · …each lands in the branch of the width it was made at, and none in Base",
+    arabicNode.tablet?.align === tabletAlign && arabicNode.mobile?.align === mobileAlign &&
+      arabicNode.base?.align === undefined,
+    JSON.stringify(arabicNode),
+  );
+  await publish(hero.id);
+  const editions = {
+    en: [await alignAt(1440, "/privacy"), await alignAt(834, "/privacy"), await alignAt(390, "/privacy")],
+    ar: [await alignAt(1440, "/ar/privacy"), await alignAt(834, "/ar/privacy"), await alignAt(390, "/ar/privacy")],
+  };
+  say(
+    "19B · published, both editions wear them at those widths and only there",
+    JSON.stringify(editions.en) === JSON.stringify([baseAlign, tabletAlign, mobileAlign]) &&
+      JSON.stringify(editions.ar) === JSON.stringify(editions.en),
+    JSON.stringify(editions),
+  );
+
   void baseSize;
   await still.close();
   await visitor.close();

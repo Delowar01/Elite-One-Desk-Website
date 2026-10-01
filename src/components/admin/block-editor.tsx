@@ -296,7 +296,14 @@ function FieldRow({
     );
   }
 
-  // text / textarea / richtext — localised or not.
+  // text / textarea / richtext — localised or not. Every other type has its own
+  // branch above, and one added to the registry without an editor stops the
+  // build here instead of being offered as a text box (19B).
+  if (field.type !== "text" && field.type !== "textarea" && field.type !== "richtext") {
+    const unhandled: never = field.type;
+    return shell(<p className="text-[0.76rem] text-muted">{`${field.label} cannot be edited here (${String(unhandled)}).`}</p>);
+  }
+
   if (!field.localised) {
     return shell(
       <div>
@@ -328,10 +335,16 @@ function FieldRow({
   const pair = asLocalised(value);
   const hint = field.type === "richtext" ? RICH_HINT : field.help;
   const langs: Lang[] = locale ? [locale] : ["en", "ar"];
+  // One visible label names the field for all its editions, so each box is
+  // named by it, plus its language when both are shown. Without this, the
+  // single-edition boxes the Visual Editor shows had no accessible name (19B).
+  const labelledBy = (lang: Lang) => (langs.length > 1 ? `${id}-label ${id}-${lang}-label` : `${id}-label`);
 
   return shell(
     <div>
-      <span className="admin-label">{field.label}</span>
+      <span className="admin-label" id={`${id}-label`}>
+        {field.label}
+      </span>
       <div className={langs.length > 1 ? "grid gap-2.5 lg:grid-cols-2" : undefined}>
         {langs.map((lang) => (
           <div key={lang}>
@@ -339,6 +352,7 @@ function FieldRow({
               <label
                 className="mb-1 block text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-muted"
                 htmlFor={`${id}-${lang}`}
+                id={`${id}-${lang}-label`}
               >
                 {lang === "en" ? "English" : "العربية"}
               </label>
@@ -346,6 +360,7 @@ function FieldRow({
             {field.type === "text" ? (
               <input
                 id={`${id}-${lang}`}
+                aria-labelledby={labelledBy(lang)}
                 value={pair[lang]}
                 onChange={(event) => onChange({ ...pair, [lang]: event.target.value })}
                 placeholder={field.placeholder}
@@ -355,6 +370,7 @@ function FieldRow({
             ) : (
               <textarea
                 id={`${id}-${lang}`}
+                aria-labelledby={labelledBy(lang)}
                 rows={field.rows ?? (field.type === "richtext" ? 8 : 3)}
                 value={pair[lang]}
                 onChange={(event) => onChange({ ...pair, [lang]: event.target.value })}
@@ -553,6 +569,15 @@ function ItemsField({
                           <p className="mt-1.5 text-[0.72rem] text-muted">{sub.help}</p>
                         ) : null}
                       </div>
+                    );
+                  }
+
+                  if (sub.type !== undefined && sub.type !== "text" && sub.type !== "textarea") {
+                    const unhandled: never = sub.type;
+                    return (
+                      <p key={sub.name} className="text-[0.72rem] text-muted">
+                        {`${sub.label} cannot be edited here (${String(unhandled)}).`}
+                      </p>
                     );
                   }
 

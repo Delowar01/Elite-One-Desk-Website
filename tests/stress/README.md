@@ -2,8 +2,9 @@
 
 Longer, repetitive runs that the probes make once: concurrency storms against
 the server, many motion nodes on one page, a hundred Undo steps, the three
-intermittent failures Batch 19A closed and the selection defect it found, each
-looped until a regression would show. Same runner, same rules and same requirements as the probes — see
+intermittent failures Batch 19A closed and the selection defect it found, the
+editor's own speed and clean-up on a large page (19B), each looped until a
+regression would show. Same runner, same rules and same requirements as the probes — see
 [`tests/browser/README.md`](../browser/README.md).
 
 ```sh
@@ -28,6 +29,8 @@ would not, until something has changed that it is there to catch.
 | `replay-selection` | Replay interrupted by a click, Layers, an edit, a page, language or device switch and a reload (19A) | 12 |
 | `restore-selection` | after a save redraws the canvas, the selection stays on its node — unthrottled and on a CPU slowed 4× and 6× — or lands on its section when the node was removed (19A) | 7 |
 | `smooth-scroll-wheel` | on a plain page: a wheel sent during a smooth scroll is dropped — why probes scroll instantly (19A) | 2 |
+| `editor-performance` | a 16-section Home: open, every Layers branch, every section selected, forty selections back and forth, 300 typed characters, ten style and ten entrance changes — times, long tasks and the heap after a collection, held to bounds only a stall or a leak would cross (19B) | 9 |
+| `editor-cleanup` | page switches, canvas reloads, Replay with a parallax sweep, the component drawer and the comparison's controls, each repeated: no observer, window/document listener, pending frame or interval outlives them (19B) | 8 |
 
 `STRESS_LOOPS` sets the loop count where a script has one; each documents its
 own default at the top of the file. `smooth-scroll-wheel` also prints an

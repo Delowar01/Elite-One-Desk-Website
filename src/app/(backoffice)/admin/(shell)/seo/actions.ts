@@ -71,9 +71,13 @@ export async function clearSeo(_prev: ActionState, form: FormData): Promise<Acti
     const entityKey = field(form, "entityKey", 190);
     if (!isType(entityType) || !entityKey) return fail("That page could not be identified.");
 
-    await db
+    const removed = await db
       .delete(seoMetadata)
-      .where(and(eq(seoMetadata.entityType, entityType), eq(seoMetadata.entityKey, entityKey)));
+      .where(and(eq(seoMetadata.entityType, entityType), eq(seoMetadata.entityKey, entityKey)))
+      .returning({ id: seoMetadata.id });
+    // Nothing was there: say so, and leave no entry for a removal that did not
+    // happen (19B).
+    if (!removed.length) return ok("There was no override to remove.");
 
     await logActivity(session, {
       action: "seo.cleared",

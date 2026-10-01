@@ -15,6 +15,7 @@ import {
 } from "@/lib/db/schema";
 import { getAuthSecret, isProduction } from "@/lib/env";
 import type { PermissionKey } from "./permissions";
+import { clientIpFrom } from "./client-ip";
 
 export const SESSION_COOKIE = "eod_session";
 /** Absolute lifetime. A session older than this is gone regardless of activity. */
@@ -27,11 +28,9 @@ const sha256 = (value: string) => createHash("sha256").update(value).digest("hex
 /** Peppered so a database copy alone cannot be reversed into visitor addresses. */
 export const hashIp = (ip: string) => (ip ? sha256(`${ip}:${getAuthSecret()}`).slice(0, 64) : "");
 
+/** See `clientIpFrom`: the proxy's word for the address, never the client's. */
 export async function clientIp(): Promise<string> {
-  const h = await headers();
-  const forwarded = h.get("x-forwarded-for");
-  if (forwarded) return forwarded.split(",")[0]!.trim();
-  return h.get("x-real-ip") ?? "";
+  return clientIpFrom(await headers());
 }
 
 export type AdminSession = {

@@ -55,17 +55,29 @@ export async function saveFaq(_prev: ActionState, form: FormData): Promise<Actio
       sortOrder: numberField(form, "sortOrder", 0),
     };
 
+    // An id that names no question is refused, not reported — and logged — as
+    // saved; a new one is logged under the id it was given (19B).
+    let savedId = id;
     if (id) {
-      await db.update(faqs).set({ ...values, updatedAt: new Date() }).where(eq(faqs.id, id));
+      const [updated] = await db
+        .update(faqs)
+        .set({ ...values, updatedAt: new Date() })
+        .where(eq(faqs.id, id))
+        .returning({ id: faqs.id });
+      if (!updated) return fail("That question no longer exists.");
     } else {
       const [last] = await db.select({ n: sql<number>`coalesce(max(${faqs.sortOrder}), -1)::int` }).from(faqs);
-      await db.insert(faqs).values({ ...values, sortOrder: (last?.n ?? -1) + 1 });
+      const [created] = await db
+        .insert(faqs)
+        .values({ ...values, sortOrder: (last?.n ?? -1) + 1 })
+        .returning({ id: faqs.id });
+      savedId = created!.id;
     }
 
     await logActivity(session, {
       action: id ? "faq.updated" : "faq.created",
       entityType: "faq",
-      entityId: id || 0,
+      entityId: savedId,
       summary: `${id ? "Updated" : "Added"} the question “${questionEn.slice(0, 80)}”`,
     });
     refresh();

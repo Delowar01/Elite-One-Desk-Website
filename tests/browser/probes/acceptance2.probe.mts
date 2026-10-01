@@ -4,6 +4,7 @@ import { giveFresh } from "../../helpers/fixtures";
 import { connect, dropDatabase } from "../../helpers/pg";
 import { startServer } from "../../helpers/server";
 import { signIn } from "../../helpers/session";
+import { selectFromLayers, waitForInspector } from "../canvas";
 import { launchChromium } from "../harness";
 
 const PORT = 3702;
@@ -20,6 +21,9 @@ try {
   const [hero] = await sql<{ id: number }[]>`
     select s.id from page_sections s join pages p on p.id = s.page_id
      where p.slug = 'home' and s.block_type = 'hero' limit 1`;
+  const [links] = await sql<{ id: number }[]>`
+    select s.id from page_sections s join pages p on p.id = s.page_id
+     where p.slug = 'home' and s.block_type = 'quick-links' limit 1`;
 
   const context = await browser.newContext({ viewport: { width: 1680, height: 1000 } });
   const [name, value] = owner.cookie.split("=");
@@ -40,6 +44,29 @@ try {
 
   say("typing is marked unsaved straight away", (await page.getByText("1 unsaved").count()) > 0);
 
+  /* --- unsaved work is protected (19B) ---------------------------- */
+  /**
+   * While anything is unsaved or still being saved, leaving the editor asks
+   * first: the browser's own prompt, armed only while there is something to
+   * lose. A synthetic `beforeunload` reaches the same listener the browser
+   * calls, and `dispatchEvent` answers false when the listener cancelled it.
+   */
+  const leaveIsGuarded = () =>
+    page.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })));
+  say("19B · leaving with unsaved work asks first", await leaveIsGuarded());
+
+  // An edit belongs to its section's buffer, not to the selection: choosing a
+  // node in another section and coming back finds the text where it was left.
+  await selectFromLayers(page, `section:${links!.id}`);
+  await lead.click();
+  const returned = await waitForInspector(page, `section:${hero!.id}/field:lead`);
+  say(
+    "19B · an edit survives selecting another section and coming back",
+    returned === `section:${hero!.id}/field:lead` &&
+      (await page.locator('[data-field="lead"] textarea').first().inputValue()) === "Mine.",
+    returned,
+  );
+
   /* --- a buffer survives a page change ---------------------------- */
   /**
    * Batch 10 made saving automatic, so "1 unsaved" is now a state that lasts
@@ -49,6 +76,7 @@ try {
    */
   await page.getByText("Draft saved", { exact: true }).waitFor({ timeout: 20_000 });
   await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });
+  say("19B · once everything is saved, leaving asks nothing", !(await leaveIsGuarded()));
 
   await page.selectOption("#ve-page", "about");
   await page.getByText("Ready", { exact: true }).waitFor({ timeout: 30_000 });

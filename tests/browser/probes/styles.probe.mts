@@ -237,6 +237,80 @@ try {
   const mediaFrame = await inlineStyle(frame(), `section:${withImage!.id}/field:image`);
   say("…and not on the frame, where it would do nothing", !/object-position/.test(mediaFrame ?? ""), mediaFrame ?? "");
 
+  /* --- 19B · choosing and replacing a picture --------------------------- */
+  /**
+   * A picture comes from the library and nowhere else: the Inspector offers
+   * the library's chooser and no file input. Replacing it is a content change
+   * to the same node, so the focal point — a style filed under that node's
+   * address — stays on the new picture. And it is one rendering: the editor's
+   * canvas, the ordinary preview and, once published, the public page draw
+   * the same <img>.
+   */
+  const imageAddress = `section:${withImage!.id}/field:image`;
+  const [replacement] = await sql<{ id: number; filename: string }[]>`
+    select m.id, m.filename from media m
+     where m.id <> (select (published->>'image')::int from page_sections where id = ${withImage!.id})
+     order by m.id desc limit 1`;
+  await page.getByRole("tab", { name: /Content/ }).click();
+  const picker = page.locator('aside[aria-label="Inspector"] [data-field="image"]');
+  await picker.waitFor({ timeout: 10_000 });
+  say(
+    "19B · the Inspector offers the library's chooser, named for its field, and no upload",
+    (await picker.getByRole("button", { name: /^Change image$/i }).count()) === 1 &&
+      (await page.locator('input[type="file"]').count()) === 0,
+  );
+  await picker.getByRole("button", { name: /^Change image$/i }).click();
+  const library = page.getByRole("dialog", { name: /^Choose /i });
+  await library.waitFor({ timeout: 10_000 });
+  await library.locator(`button:has(img[src="/media/${replacement!.filename}"])`).click();
+  const chosen = async () => Number((await state(withImage!.id)).draft?.image ?? 0);
+  for (let i = 0; i < 100 && (await chosen()) !== replacement!.id; i += 1) await page.waitForTimeout(200);
+  await editorSettled(page);
+  say("19B · choosing from the library stores the picture's library id", (await chosen()) === replacement!.id,
+    `${await chosen()} (wanted ${replacement!.id})`);
+
+  const facts = (img: ReturnType<Page["locator"]>) =>
+    img.first().evaluate((node) => {
+      const el = node as HTMLImageElement;
+      return {
+        src: el.getAttribute("src"),
+        srcset: el.getAttribute("srcset"),
+        sizes: el.getAttribute("sizes"),
+        width: el.getAttribute("width"),
+        height: el.getAttribute("height"),
+        alt: el.getAttribute("alt"),
+        position: el.style.objectPosition,
+      };
+    });
+  const onCanvas = await facts(frame().locator(`[data-eod-address="${imageAddress}"] img`));
+  say(
+    "19B · …the canvas shows the new picture, and the focal point stayed on the node",
+    String(onCanvas.src).includes(replacement!.filename.replace(/\.webp$/, "")) && onCanvas.position === "15% 85%",
+    JSON.stringify(onCanvas),
+  );
+
+  const viewer = await context.newPage();
+  await viewer.goto(`${server!.origin}/about?preview=1`, { waitUntil: "load" });
+  const inPreview = await facts(viewer.locator('[data-section="image-text"] img'));
+  await page.goto(`${server!.origin}/admin/pages/section/${withImage!.id}`, { waitUntil: "load" });
+  // The section screen asks before publishing; this probe answers yes.
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Publish draft" }).click();
+  for (let i = 0; i < 80 && (await state(withImage!.id)).draft !== null; i += 1) await page.waitForTimeout(200);
+  const publishedRow = await state(withImage!.id);
+  await viewer.close();
+  const visitor = await browser.newContext({ viewport: { width: 1720, height: 1020 } });
+  const visitorPage = await visitor.newPage();
+  await visitorPage.goto(`${server!.origin}/about`, { waitUntil: "load" });
+  const published = await facts(visitorPage.locator('[data-section="image-text"] img'));
+  await visitor.close();
+  say(
+    "19B · the canvas, the preview and the published page draw the same picture",
+    publishedRow.draft === null && publishedRow.draft_styles === null &&
+      JSON.stringify(onCanvas) === JSON.stringify(inPreview) && JSON.stringify(inPreview) === JSON.stringify(published),
+    `${JSON.stringify(inPreview)} | ${JSON.stringify(published)}`,
+  );
+
   /* --- Content and style, unsaved together ---------------------------- */
   await open(PRIVACY);
   await select(`section:${hero!.id}/field:lead`);

@@ -927,6 +927,35 @@ describe("37–39 · archived components keep rendering; delete only what nothin
     assert.equal(deleted.ok, true, JSON.stringify(deleted));
     assert.equal(await componentRow(unused.id), null);
     assert.equal(await activity("reusable_component.deleted", unused.id), 1);
+
+    // The second half of the title, asserted (Batch 19B): linked and published,
+    // then detached and published again. No section uses it any more, but the
+    // restore point taken before the second publication does, and deleting it
+    // would leave that version unrestorable.
+    const kept = await createCta("Kept by history", "From history", "", "/from-history");
+    assert.equal((await link(await sectionOf("about", "final-cta"), "primaryCta", kept)).ok, true);
+    assert.equal((await publishPage("about")).ok, true);
+    assert.equal((await detach(await sectionOf("about", "final-cta"), "primaryCta", kept.publishedVersion)).ok, true);
+    assert.equal((await publishPage("about")).ok, true);
+    const refused = await componentAction("deleteReusable", { id: kept.id, expectedRevision: (await componentRow(kept.id))!.revision });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(!refused.ok && refused.reason, "in_use");
+    assert.match(String(!refused.ok && refused.message), /saved page versions? refers? to it/);
+    assert.ok(await componentRow(kept.id), "the component a saved version needs was deleted");
+    assert.equal(await activity("reusable_component.deleted", kept.id), 0);
+  });
+
+  test("19B · a component only a draft refers to is not deleted until that draft is gone", async () => {
+    const drafted = await createCta("Draft-only CTA", "Draft words", "", "/draft-words");
+    assert.equal((await link(await sectionOf("about", "final-cta"), "primaryCta", drafted)).ok, true);
+    const refused = await componentAction("deleteReusable", { id: drafted.id, expectedRevision: drafted.revision });
+    assert.equal(refused.ok, false, JSON.stringify(refused));
+    assert.equal(!refused.ok && refused.reason, "in_use");
+    assert.ok(await componentRow(drafted.id));
+    assert.equal((await discardPage("about")).ok, true);
+    const deleted = await componentAction("deleteReusable", { id: drafted.id, expectedRevision: drafted.revision });
+    assert.equal(deleted.ok, true, JSON.stringify(deleted));
+    assert.equal(await componentRow(drafted.id), null);
   });
 
   test("38 · delete racing a link: never both — the survivor is always consistent", async () => {

@@ -340,7 +340,8 @@ export function ReuseEditor({
             >
               Discard draft
             </button>
-            <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirm(null)}>
+            {/* A warning takes the focus, onto the choice that changes nothing (19B). */}
+            <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirm(null)} autoFocus>
               Cancel
             </button>
           </div>
@@ -377,7 +378,8 @@ export function ReuseEditor({
             >
               {busy === "publish" ? "Publishing…" : `Publish ${noun}`}
             </button>
-            <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirm(null)}>
+            {/* A warning takes the focus, onto the choice that changes nothing (19B). */}
+            <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirm(null)} autoFocus>
               Cancel
             </button>
           </div>
@@ -494,7 +496,8 @@ export function ReuseEditor({
             >
               Restore to draft
             </button>
-            <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirm(null)}>
+            {/* A warning takes the focus, onto the choice that changes nothing (19B). */}
+            <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirm(null)} autoFocus>
               Cancel
             </button>
           </div>
@@ -572,7 +575,8 @@ export function ReuseEditor({
                 >
                   Delete
                 </button>
-                <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirm(null)}>
+                {/* A warning takes the focus, onto the choice that changes nothing (19B). */}
+                <button type="button" className="admin-btn admin-btn-sm" onClick={() => setConfirm(null)} autoFocus>
                   Cancel
                 </button>
               </div>

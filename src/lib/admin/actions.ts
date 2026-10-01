@@ -94,6 +94,18 @@ export const numberField = (form: FormData, name: string, fallback = 0): number 
   return Number.isFinite(value) ? value : fallback;
 };
 
+/**
+ * The revision the submitting screen was built from, or -1 when the form did
+ * not carry a readable one. Every row starts at revision 0, so reading an
+ * absent field as `Number(null)` — 0 — would wave a request that names no
+ * revision through on any row nobody has edited yet. -1 matches no row, so it
+ * is refused like any other stale screen (19B).
+ */
+export const revisionField = (form: FormData, name = "expectedRevision"): number => {
+  const value = numberField(form, name, -1);
+  return Number.isInteger(value) && value >= 0 ? value : -1;
+};
+
 export const optionalId = (form: FormData, name: string): number | null => {
   const value = numberField(form, name, 0);
   return value > 0 ? value : null;
