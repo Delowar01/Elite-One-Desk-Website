@@ -256,6 +256,30 @@ describe("the real page in the canvas, and nothing of the editor anywhere else",
     const page = await html(`/services/${subject.slug}?preview=1&editor=1&bridge=${BRIDGE}`);
     assert.equal(page.includes("data-eod-"), false);
     assert.equal(page.includes("bridgeId"), false);
+    // A comparison asked for by a visitor is the live page, not a still version of it.
+    const compared = await html(`/services/${subject.slug}?compare=published`);
+    assert.equal(compared.includes("data-eod-"), false);
+  });
+
+  test("a preview, a canvas or a comparison is private and never indexed — whoever asks", async () => {
+    const headers = async (path: string, cookie?: string) => {
+      const response = await fetch(`${server.origin}${path}`, { headers: cookie ? { cookie } : {}, redirect: "manual" });
+      await response.arrayBuffer();
+      return { robots: response.headers.get("x-robots-tag"), cache: response.headers.get("cache-control") };
+    };
+    for (const cookie of [owner.cookie, undefined]) {
+      for (const path of [
+        `/services/${subject.slug}?preview=1`,
+        `/services/${subject.slug}?preview=1&editor=1&bridge=${BRIDGE}`,
+        `/ar/services/${subject.slug}?compare=published`,
+      ]) {
+        const answered = await headers(path, cookie);
+        assert.equal(answered.robots, "noindex, nofollow, noarchive", path);
+        assert.equal(answered.cache, "private, no-store, max-age=0", path);
+      }
+    }
+    // An ordinary visit keeps its ordinary headers.
+    assert.equal((await headers(`/services/${subject.slug}`)).robots, null);
   });
 
   test("an authorised canvas marks every region by its record", async () => {
@@ -353,17 +377,28 @@ describe("drafts never touch live content", () => {
     assert.equal(live.includes("A draft question?"), false);
   });
 
-  test("a picture is chosen from the library; an id that is not there is refused", async () => {
-    const [picture] = await sql<{ id: number }[]>`select id from media order by id limit 1`;
+  test("a picture is chosen from the library, and removed again; an id that is not there is refused", async () => {
     const services = await serviceRows(subject.id);
     const card = services[0]!;
-    const missing = await saveValues({ type: "service", id: card.id }, (values) => ({ ...values, image: 987654 }));
+    const [picture] = await sql<{ id: number }[]>`
+      select id from media where id is distinct from ${card.image_id} order by id limit 1`;
+    assert.ok(picture, "the fixture's library holds a picture");
+    const target: RouteOwner = { type: "service", id: card.id };
+    const imageDraft = async () =>
+      ((await nodeRow(`service:${card.id}`))?.draft_content as Record<string, { value: unknown }> | null)?.imageId;
+    const missing = await saveValues(target, (values) => ({ ...values, image: 987654 }));
     assert.equal(missing?.ok, false);
     assert.match(String(missing?.message), /media library/);
-    if (picture) {
-      const chosen = await saveValues({ type: "service", id: card.id }, (values) => ({ ...values, image: picture.id }));
-      assert.ok(chosen?.ok, chosen?.message);
-    }
+    const chosen = await saveValues(target, (values) => ({ ...values, image: picture.id }));
+    assert.ok(chosen?.ok, chosen?.message);
+    assert.equal((await imageDraft())?.value, picture.id);
+    // Remove: back to no picture — a draft of null, or no draft at all when live has none.
+    const removed = await saveValues(target, (values) => ({ ...values, image: null }));
+    assert.ok(removed?.ok, removed?.message);
+    if (card.image_id === null) assert.equal(await imageDraft(), undefined);
+    else assert.equal((await imageDraft())?.value, null);
+    // The live row never moved.
+    assert.equal((await serviceRows(subject.id)).find((row) => row.id === card.id)!.image_id, card.image_id);
   });
 
   test("generated content is not stored, whatever is sent", async () => {
@@ -781,6 +816,9 @@ describe("the rest of the admin keeps working", () => {
     assert.equal((await categoryRow(other.id)).cta_href, "/packages");
     const live = await publicPage(other);
     assert.match(live, /href="\/packages"[^>]*class="btn btn-primary"|class="btn btn-primary"[^>]*href="\/packages"/);
+    // A site path is a link within the edition it is shown in.
+    const arabic = await publicPage(other, "/ar");
+    assert.match(arabic, /href="\/ar\/packages"[^>]*class="btn btn-primary"|class="btn btn-primary"[^>]*href="\/ar\/packages"/);
     const bad = await actionOf<Answer>(CATEGORY_ACTIONS, `/admin/categories/${other.id}`, "updateCategory", [{ ok: false }, formOf({ ...base, ctaHref: "javascript:alert(1)" }, owner)], owner);
     assert.equal(bad?.ok, false);
     assert.equal((await categoryRow(other.id)).cta_href, "/packages");
