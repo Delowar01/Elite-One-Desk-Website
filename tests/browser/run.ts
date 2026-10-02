@@ -124,6 +124,8 @@ function runOnce(name: string, run: number): Promise<Run> {
   let pass = 0;
   let fail = 0;
   const failures: string[] = [];
+  /** The last lines that were neither PASS nor FAIL — a stack trace, when a script dies. */
+  const tail: string[] = [];
   let pending = "";
   const read = (chunk: Buffer) => {
     sink.write(chunk);
@@ -135,6 +137,9 @@ function runOnce(name: string, run: number): Promise<Run> {
       else if (line.startsWith("FAIL")) {
         fail += 1;
         failures.push(line);
+      } else if (line.trim()) {
+        tail.push(line);
+        if (tail.length > 12) tail.shift();
       }
     }
   };
@@ -153,7 +158,12 @@ function runOnce(name: string, run: number): Promise<Run> {
       sink.end();
       const seconds = Math.round((Date.now() - started) / 1000);
       const clean = !timedOut && code === 0 && fail === 0 && pass === expected[name];
-      resolve({ name, run, pass, fail, exit: code, timedOut, seconds, clean, failures, log: path.relative(REPO_ROOT, log) });
+      // A script that died — an exception, a timeout — printed no FAIL line, and
+      // said why only in its log, which a CI job keeps in an artifact. The end of
+      // its output goes into the summary instead, so the job log shows the reason
+      // (19C: the first candidate's Stress run lost a script without a word).
+      const reasons = !clean && fail === 0 ? tail.map((line) => `| ${line}`) : failures;
+      resolve({ name, run, pass, fail, exit: code, timedOut, seconds, clean, failures: reasons, log: path.relative(REPO_ROOT, log) });
     });
   });
 }
@@ -177,7 +187,7 @@ async function main(): Promise<number> {
       console.log(
         `${result.clean ? "clean  " : "UNCLEAN"} ${name}${repeat > 1 ? ` #${run}` : ""}  PASS=${result.pass} FAIL=${result.fail}  ${result.seconds}s${why}`,
       );
-      for (const line of result.failures.slice(0, 8)) console.log(`        ${line}`);
+      for (const line of result.failures.slice(0, 12)) console.log(`        ${line}`);
       if (!result.clean) console.log(`        log: ${result.log}`);
     }
   }

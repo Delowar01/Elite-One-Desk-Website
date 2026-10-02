@@ -8,7 +8,7 @@
  * serves visitors.
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 
 import { REPO_ROOT, dbUrl, scriptEnv } from "./env";
@@ -33,21 +33,36 @@ export const BUILD_HINT =
  *
  * Hard links, so a copy of the whole `node_modules` tree costs almost nothing;
  * every file here is read-only to the server.
+ *
+ * **Staging writes nothing another server reads (19C).** `output: standalone`
+ * ships neither the static chunks nor `public/`, and this used to copy both
+ * *into* the shared `.next/standalone` before linking it. But `cpSync` onto an
+ * existing file truncates that inode and rewrites it, and every server already
+ * running serves those very inodes through its hard links: with three servers
+ * restarting at once, 0.8% of concurrent reads of a chunk found it empty, a
+ * browser was handed a chunk that loaded and installed nothing ("Loading chunk
+ * … failed (missing …)"), and a stress script's next click waited out its
+ * timeout. Now each tree links the build's own chunks and `public/` beside its
+ * own copy of the server, and the shared trees are never written.
  */
-function stageServer(port: number, reuse: boolean): string {
+export function stageServer(port: number, reuse: boolean): string {
   const root = path.join(SERVERS, String(port));
   if (reuse && existsSync(path.join(root, "server.js"))) return root;
   rmSync(root, { recursive: true, force: true });
   mkdirSync(SERVERS, { recursive: true });
-  // `output: standalone` copies neither the static chunks nor `public/`.
-  cpSync(path.join(REPO_ROOT, ".next", "static"), path.join(STANDALONE, ".next", "static"), {
-    recursive: true,
-  });
-  cpSync(path.join(REPO_ROOT, "public"), path.join(STANDALONE, "public"), { recursive: true });
-  rmSync(path.join(STANDALONE, ".next", "cache"), { recursive: true, force: true });
-
-  const copied = spawnSync("cp", ["-al", STANDALONE, root], { encoding: "utf8" });
-  if (copied.status !== 0) throw new Error(`could not stage a server tree: ${copied.stderr}`);
+  const link = (from: string, to: string) => {
+    const copied = spawnSync("cp", ["-al", from, to], { encoding: "utf8" });
+    if (copied.status !== 0) throw new Error(`could not stage a server tree: ${copied.stderr}`);
+  };
+  link(STANDALONE, root);
+  // Whatever the shared tree holds in these places — copies an earlier version
+  // of this helper made, a cache — is this tree's own links, dropped here; the
+  // shared files themselves are not touched.
+  for (const own of [path.join(root, ".next", "static"), path.join(root, "public"), path.join(root, ".next", "cache")]) {
+    rmSync(own, { recursive: true, force: true });
+  }
+  link(path.join(REPO_ROOT, ".next", "static"), path.join(root, ".next", "static"));
+  link(path.join(REPO_ROOT, "public"), path.join(root, "public"));
   return root;
 }
 

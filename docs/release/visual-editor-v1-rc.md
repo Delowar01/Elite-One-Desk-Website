@@ -248,6 +248,26 @@ below was committed after `3d98b81`). The 19C record travels with the
 candidate instead: in the message of the annotated tag `visual-editor-v1-rc`,
 which points at the exact commit, and in the 19C report.
 
+**How it got here.** The first 19C candidate, `f957923`, passed GitHub CI
+([36968001846](https://github.com/Delowar01/Elite-One-Desk-Website/actions/runs/36968001846),
+all four jobs) and the fresh clone's install, static checks and `npm test` ×3,
+but the Stress run dispatched on it
+([36968008106](https://github.com/Delowar01/Elite-One-Desk-Website/actions/runs/36968008106))
+lost `create-navigation`: the script exited without printing a line. Run
+locally it passed in isolation and in the suite's own order; with two CPU
+burners beside it, a run recorded "Loading chunk 3476 failed (missing …)" — a
+chunk that loaded and installed nothing. The cause was the test helper, not
+the product: every `startServer` copied the build's static chunks into the
+shared `.next/standalone` that the running servers were hard-linked to, and
+`cpSync` truncates and rewrites a file in place — 7,734 of 956,472 reads made
+during the copies found a chunk empty. With three servers restarting at once
+a browser could be served one, and the script's next click waited out its
+timeout. The helper now links each server's tree to the build's own files and
+writes nothing shared (`tests/server-staging.test.ts`, which fails on the old
+helper), the runner prints the end of a script's output when it dies without
+a `FAIL` line, so a CI log shows why without its artifact, and the complete
+gate was run again on the candidate.
+
 ### 19B — `3d98b81`, approved
 
 The release candidate was `3d98b8173c3cadd73df90c75532ea46fa97091a7`, and
