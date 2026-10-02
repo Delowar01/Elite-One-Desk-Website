@@ -3,8 +3,10 @@
 import {
   createContext,
   useActionState,
+  useCallback,
   useContext,
   useEffect,
+  useReducer,
   useRef,
   useState,
   type ReactNode,
@@ -17,6 +19,83 @@ import type { ActionState } from "@/lib/admin/actions";
 const EMPTY: ActionState = { ok: false };
 
 export type FormAction = (prev: ActionState, form: FormData) => Promise<ActionState>;
+
+/** How often, and for how long, an answer that is not on screen is helped onto it. */
+const NUDGE_EVERY_MS = 300;
+const NUDGE_FOR_MS = 15_000;
+
+/**
+ * `useActionState` that makes sure its answer reaches the screen (19C).
+ *
+ * The admin saves through Server Actions that revalidate the page, so an
+ * action's response carries the re-rendered screen as well as its answer, and
+ * React renders both in one transition. With the React that Next 15.5 bundles
+ * (19.2.0-canary-0bdb9206-20250818) that transition can stall for good: the
+ * server has saved, the button still says "Saving…", and the screen shows
+ * nothing new. On cold servers it happened to 8 of 36 account creations and
+ * 15 of 36 question saves (and to 8 of 36 question saves on the 19B release
+ * candidate, so it is not new). Read off the root while stalled, every time:
+ * one transition lane pending, suspended and entangled, no ping, no callback
+ * — the state 19B traced to a ping React drops when a stream chunk resolves
+ * while it is rendering (`pingSuspendedRoot`, defect 6). Nothing is left to
+ * wake it until the next update of any kind — a keystroke, a click — which
+ * clears the suspended lanes and lets the render finish.
+ *
+ * So once the server has answered, this makes that update itself: a no-op
+ * state change of its own every `NUDGE_EVERY_MS` until the answer is on
+ * screen. One update is all React needs — scheduling it clears the suspended
+ * lanes (`markRootUpdated`) and the transition, whose data arrived long
+ * before, renders and commits. An answer that commits normally is on screen
+ * before the first check and is never nudged. Held by
+ * `tests/stress/admin-form-settle.stress.mts`.
+ *
+ * Until the form has hydrated, the hook hands React the Server Action itself,
+ * not the wrapper: React writes a server reference into the server-rendered
+ * form as hidden fields, so a form submitted before hydration — or without
+ * JavaScript — still posts straight to the action. A client function there
+ * would leave the form unable to submit at all until the page had hydrated.
+ */
+export function useSettledActionState(
+  action: FormAction,
+  initial: ActionState,
+): [ActionState, (payload: FormData) => void, boolean] {
+  const [, nudge] = useReducer((count: number) => count + 1, 0);
+  /** The answer the server gave that the screen does not show yet. */
+  const unseen = useRef<ActionState | null>(null);
+  const mounted = useRef(false);
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    mounted.current = true;
+    setHydrated(true);
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  const settled = useCallback(
+    async (previous: ActionState, payload: FormData): Promise<ActionState> => {
+      const answer = await action(previous, payload);
+      unseen.current = answer;
+      const deadline = Date.now() + NUDGE_FOR_MS;
+      const check = () => {
+        if (!mounted.current || unseen.current !== answer || Date.now() > deadline) return;
+        nudge();
+        window.setTimeout(check, NUDGE_EVERY_MS);
+      };
+      window.setTimeout(check, NUDGE_EVERY_MS);
+      return answer;
+    },
+    [action],
+  );
+
+  // React reads the action a dispatch calls from its latest render, so the
+  // switch to `settled` after hydration needs no new dispatch.
+  const [state, dispatch, pending] = useActionState<ActionState, FormData>(hydrated ? settled : action, initial);
+  useEffect(() => {
+    if (unseen.current === state) unseen.current = null;
+  }, [state]);
+  return [state, dispatch, pending];
+}
 
 /**
  * The dispatch for an `AdminForm`'s second action, for `AlternateSubmit`.
@@ -82,14 +161,11 @@ export function AdminForm({
   onSaved?: (state: ActionState) => void;
   successMessage?: string;
 }) {
-  const [primary, formAction] = useActionState<ActionState, FormData>(action, EMPTY);
+  const [primary, formAction] = useSettledActionState(action, EMPTY);
   // Called unconditionally — hooks cannot be conditional — and harmlessly bound
   // to the primary action on the screens that declare no second one, where
   // nothing ever dispatches it.
-  const [secondary, alternateAction] = useActionState<ActionState, FormData>(
-    alternate ?? action,
-    EMPTY,
-  );
+  const [secondary, alternateAction] = useSettledActionState(alternate ?? action, EMPTY);
   const [state, setState] = useState<ActionState>(EMPTY);
   const [dirty, setDirty] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
@@ -289,7 +365,7 @@ export function InlineAction({
   className?: string;
   onResult?: (state: ActionState) => void;
 }) {
-  const [state, formAction] = useActionState<ActionState, FormData>(action, EMPTY);
+  const [state, formAction] = useSettledActionState(action, EMPTY);
   const seen = useRef<ActionState | null>(null);
 
   useEffect(() => {

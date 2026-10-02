@@ -38,6 +38,13 @@ export type AdminSession = {
   csrfToken: string;
   user: { id: number; name: string; email: string; roleKey: string; roleName: string };
   permissions: Set<PermissionKey>;
+  /**
+   * The account is on a temporary password and must choose its own before it
+   * may do anything else (19C). Read from `users` on every request, never from
+   * the cookie or anything the browser sends. A session carrying it holds no
+   * permissions, and `getSession()` does not return it at all.
+   */
+  mustChangePassword: boolean;
 };
 
 export async function createSession(userId: number): Promise<void> {
@@ -82,10 +89,14 @@ export async function destroyUserSessions(userId: number): Promise<void> {
 }
 
 /**
- * Resolves the caller once per request. Returns null for anonymous visitors;
- * never throws, so a layout can render the login screen instead of a 500.
+ * Who holds this cookie — whatever state their account is in. **Not authority.**
+ *
+ * Read by the few places that must recognise an account on a temporary
+ * password: the password-change page and its action, sign-out, the sign-in
+ * page, and the two guards deciding where to send a refused request. Every
+ * other caller asks `getSession()`, which never returns such a session.
  */
-export const getSession = cache(async (): Promise<AdminSession | null> => {
+export const readSession = cache(async (): Promise<AdminSession | null> => {
   const raw = (await cookies()).get(SESSION_COOKIE)?.value;
   if (!raw) return null;
   const [id, secret] = raw.split(".");
@@ -122,11 +133,17 @@ export const getSession = cache(async (): Promise<AdminSession | null> => {
       .where(eq(sessions.id, found.session.id));
   }
 
-  const granted = await db
-    .select({ key: permissionsTable.key })
-    .from(rolePermissions)
-    .innerJoin(permissionsTable, eq(permissionsTable.id, rolePermissions.permissionId))
-    .where(eq(rolePermissions.roleId, found.role.id));
+  // An account on a temporary password holds nothing until it has chosen its
+  // own, so its grants are not even read: a caller that reached for this
+  // session by mistake would still find every permission check refusing it.
+  const mustChangePassword = found.user.mustChangePassword;
+  const granted = mustChangePassword
+    ? []
+    : await db
+        .select({ key: permissionsTable.key })
+        .from(rolePermissions)
+        .innerJoin(permissionsTable, eq(permissionsTable.id, rolePermissions.permissionId))
+        .where(eq(rolePermissions.roleId, found.role.id));
 
   return {
     sessionId: found.session.id,
@@ -139,8 +156,34 @@ export const getSession = cache(async (): Promise<AdminSession | null> => {
       roleName: found.role.name,
     },
     permissions: new Set(granted.map((g) => g.key as PermissionKey)),
+    mustChangePassword,
   };
 });
+
+/**
+ * The caller's authority, resolved once per request — what every admin page,
+ * loader, action and route asks for. Returns null for anonymous visitors;
+ * never throws, so a layout can render the login screen instead of a 500.
+ *
+ * It is also null for an account that must change its password (19C). That is
+ * the enforcement, and it is here rather than at each door because there are
+ * a hundred doors: every Server Action reaches its session through
+ * `guardAction` or this function, every page through `requireSession`, and
+ * the export route, the editor's loaders and the draft preview call it
+ * directly. Refusing the session at its source closes all of them at once, and
+ * a door added later is closed before anybody thinks about it. The guards then
+ * send such a caller to the password-change page rather than the login form.
+ */
+export const getSession = cache(async (): Promise<AdminSession | null> => {
+  const session = await readSession();
+  return session && !session.mustChangePassword ? session : null;
+});
+
+/** The session of an account that must choose a new password, or null. */
+export async function getPasswordChangeSession(): Promise<AdminSession | null> {
+  const session = await readSession();
+  return session?.mustChangePassword ? session : null;
+}
 
 /** Replaces a role's grants wholesale. Used by the seed and the roles screen. */
 export async function setRolePermissions(roleId: number, keys: string[]): Promise<void> {

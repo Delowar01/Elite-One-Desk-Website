@@ -143,7 +143,7 @@ export function UsersClient({
                   <Field
                     label="Temporary password"
                     name="new-password"
-                    hint="At least 12 characters with upper case, lower case and a digit."
+                    hint="The user will be required to choose a new password at their next sign-in. At least 12 characters with upper case, lower case and a digit."
                   >
                     <input
                       id="new-password"
@@ -182,6 +182,16 @@ export function UsersClient({
                   {user.id === currentUserId ? (
                     <span className="admin-badge" style={{ color: "var(--text-muted)" }}>
                       You
+                    </span>
+                  ) : null}
+                  {user.mustChangePassword ? (
+                    <span
+                      className="admin-badge"
+                      style={{ color: "var(--color-peach)" }}
+                      data-temporary-password
+                      title="They will be required to choose a new password at their next sign-in."
+                    >
+                      Temporary password
                     </span>
                   ) : null}
                   <span className="ms-auto flex gap-1.5">
@@ -261,23 +271,40 @@ export function UsersClient({
                     <AdminForm action={resetUserPassword} successMessage="Password reset.">
                       <input type="hidden" name="_csrf" value={csrf} />
                       <input type="hidden" name="id" value={user.id} />
-                      <Field
-                        label="Set a new password"
-                        name={`password-${user.id}`}
-                        hint="Signs every session for this account out, including on other devices."
-                      >
-                        <input
-                          id={`password-${user.id}`}
-                          name="password"
-                          type="text"
-                          autoComplete="new-password"
-                          dir="ltr"
-                          className="admin-input"
-                        />
-                      </Field>
+                      {user.id === currentUserId ? (
+                        <Field
+                          label="Change your password"
+                          name={`password-${user.id}`}
+                          hint="Signs every session of yours out, this one included — sign in again with the new password."
+                        >
+                          <input
+                            id={`password-${user.id}`}
+                            name="password"
+                            type="text"
+                            autoComplete="new-password"
+                            dir="ltr"
+                            className="admin-input"
+                          />
+                        </Field>
+                      ) : (
+                        <Field
+                          label="Set a temporary password"
+                          name={`password-${user.id}`}
+                          hint="The user will be required to choose a new password at their next sign-in. Signs every session for this account out, including on other devices."
+                        >
+                          <input
+                            id={`password-${user.id}`}
+                            name="password"
+                            type="text"
+                            autoComplete="new-password"
+                            dir="ltr"
+                            className="admin-input"
+                          />
+                        </Field>
+                      )}
                       <div className="mt-3">
                         <SubmitButton className="admin-btn-sm" variant="ghost">
-                          Reset password
+                          {user.id === currentUserId ? "Change password" : "Reset password"}
                         </SubmitButton>
                       </div>
                     </AdminForm>

@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { ConfirmSubmit, InlineAction, SubmitButton } from "@/components/admin/form";
+import { ConfirmSubmit, InlineAction, SubmitButton, useSettledActionState } from "@/components/admin/form";
 import { Icon } from "@/components/ui/icon";
 import type { ActionState } from "@/lib/admin/actions";
 import type { BlockDef } from "@/lib/cms/blocks";
@@ -81,8 +81,9 @@ export function SectionList({
   /** What opening a section offers: its editor, or a read-only look at it. */
   sectionLink: "Edit" | "View";
 }) {
-  const [addState, addAction] = useActionState<ActionState, FormData>(addSection, EMPTY);
-  const [reorderState, reorderAction] = useActionState<ActionState, FormData>(reorderSections, EMPTY);
+  // `useSettledActionState`, like every admin form: both actions revalidate this page (19C).
+  const [addState, addAction] = useSettledActionState(addSection, EMPTY);
+  const [reorderState, reorderAction] = useSettledActionState(reorderSections, EMPTY);
 
   // Local order, so a drag lands immediately rather than after a round trip.
   // The server is the authority: once it answers, the page revalidates and the

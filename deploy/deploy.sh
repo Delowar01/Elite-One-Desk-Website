@@ -2,7 +2,7 @@
 #
 # Elite One Desk — release script.
 #
-#   sudo /var/www/elite-one-desk/app/deploy/deploy.sh
+#   sudo RELEASE_SHA=<the approved 40-character sha> /var/www/elite-one-desk/app/deploy/deploy.sh
 #
 # Run it as root (or through sudo). Every git, npm and build command is dropped
 # to ${APP_USER} so nothing under the application ever becomes root-owned; only
@@ -26,7 +26,8 @@
 # Everything before the switch is reversible by doing nothing at all.
 #
 #   1  refuse to run unless the production tree is completely clean
-#   2  fetch; compare the checkout AND the running runtime against the target
+#   2  fetch; resolve TARGET_SHA once (RELEASE_SHA, or the branch tip); compare
+#      the checkout AND the running runtime against it
 #   3  build worktree at TARGET_SHA, with a copy of the production .env
 #   4  npm ci --include=dev, rebuild sharp, lint, typecheck, build
 #      (the build runs with PostgreSQL deliberately unreachable — see
@@ -39,6 +40,29 @@
 #   8  stage the new runtime, stop the service, rename it into place
 #   9  move the production tree to TARGET_SHA, start, health-check
 #  10  on any failure after the switch: restore the previous runtime
+#
+# ---------------------------------------------------------------------------
+# Which commit is released (19C)
+#
+# A release is approved as one exact commit, and the release must be that
+# commit — not whatever the branch says by the time somebody runs this. So:
+#
+#   RELEASE_SHA set    the release is that commit and nothing else. It must be
+#                      a full 40-character lowercase sha — no branch, tag,
+#                      abbreviation or revision expression (`main`, `HEAD~1`,
+#                      `abc1234`, `<sha>^`) is accepted, and the format is
+#                      checked before git, sudo or anything else sees the
+#                      value. After the fetch it must exist, be a commit, and
+#                      be on origin/${BRANCH} (an ancestor of its tip).
+#   RELEASE_SHA empty  the tip of origin/${BRANCH} as fetched — the behaviour
+#                      this script always had. Not for production releases:
+#                      the tip is whatever was pushed last, approved or not.
+#
+# Either way TARGET_SHA is resolved exactly once, straight after the fetch, and
+# is then read-only. The build worktree, the runtime marker, the production
+# checkout, the rollback bookkeeping and the final report all use it; nothing
+# after that point reads origin/${BRANCH} again, so a push that lands while a
+# release is running cannot change what that release deploys.
 #
 # ---------------------------------------------------------------------------
 # What is running, versus what git says is running
@@ -138,6 +162,10 @@ PUBLIC_HEALTHCHECK_REQUIRED="${PUBLIC_HEALTHCHECK_REQUIRED:-1}"
 # died partway through.
 FORCE_REDEPLOY="${FORCE_REDEPLOY:-0}"
 
+# The exact commit to release — see "Which commit is released" above. Empty
+# means the tip of origin/${BRANCH}.
+RELEASE_SHA="${RELEASE_SHA:-}"
+
 # ---------------------------------------------------------------------------
 # Not configuration. This one is a safety property, so it is not in the block
 # above and it does not read the environment.
@@ -176,6 +204,9 @@ FAILED_RUNTIME=""
 BUILD_DIR=""
 CURRENT_SHA=""
 TARGET_SHA=""
+TARGET_SOURCE=""
+BRANCH_TIP=""
+CHECKOUT_SHA=""
 CURRENT_RUNTIME_SHA=""
 BACKUP_FILES=""
 
@@ -518,6 +549,15 @@ trap on_err ERR
 # somebody, not to start changing the server.
 log "Preflight"
 
+# 0 — the release, when one is named. Its FORMAT is checked first, before any
+#     command runs: a full sha or nothing. A branch, a tag, an abbreviation or
+#     a revision expression is refused here, so the value never reaches git,
+#     sudo or a shell as anything but a string that has already been proved to
+#     be forty hex digits. Whether the commit exists is asked after the fetch.
+if [[ -n "${RELEASE_SHA}" && ! "${RELEASE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+  die "RELEASE_SHA must be a full 40-character lowercase commit sha — not a branch, tag, abbreviation or revision expression. Refusing $(printf '%q' "${RELEASE_SHA}"). Nothing has been fetched, built or changed."
+fi
+
 # 1 — privilege. systemctl, the backup and the moves inside /app need root.
 #     It has to be proven NOW and without a prompt: a password prompt that
 #     appears half-way through can land after the build, after the backup, or
@@ -574,6 +614,7 @@ systemctl cat "${SERVICE}" >/dev/null 2>&1 \
 
 info "running as ${RUN_USER}, building as ${APP_USER}"
 info "service ${SERVICE}, branch ${BRANCH}, backups in ${BACKUP_DIR}"
+info "release ${RELEASE_SHA:-<RELEASE_SHA not set — the tip of origin/${BRANCH}>}"
 
 # --- 1. the production tree must be completely clean -------------------------
 # ANY working-tree change cancels the release: modified, staged, deleted or
@@ -608,7 +649,30 @@ log "Fetching origin/${BRANCH}"
 as_app "${APP_DIR}" git fetch --prune origin "${BRANCH}"
 
 CURRENT_SHA="$(as_app "${APP_DIR}" git rev-parse HEAD)"
-TARGET_SHA="$(as_app "${APP_DIR}" git rev-parse "origin/${BRANCH}")"
+# The remote-tracking ref by its full name, so a local branch or tag that
+# happens to be called origin/${BRANCH} cannot stand in for it.
+BRANCH_TIP="$(as_app "${APP_DIR}" git rev-parse --verify --quiet "refs/remotes/origin/${BRANCH}^{commit}")" \
+  || die "origin/${BRANCH} does not name a commit after the fetch."
+
+# TARGET_SHA is decided here, once, and is read-only from the next line on.
+# Nothing below reads origin/${BRANCH} again.
+if [[ -z "${RELEASE_SHA}" ]]; then
+  TARGET_SHA="${BRANCH_TIP}"
+  TARGET_SOURCE="the tip of origin/${BRANCH}"
+else
+  # Already proved to be forty hex digits, which git reads as an object name
+  # and never as a ref or an expression.
+  RELEASE_TYPE="$(as_app "${APP_DIR}" git cat-file -t "${RELEASE_SHA}" 2>/dev/null || true)"
+  [[ -n "${RELEASE_TYPE}" ]] \
+    || die "RELEASE_SHA ${RELEASE_SHA} is not in this repository after fetching origin/${BRANCH}. Push it to ${BRANCH}, or check the sha. Nothing has been built or changed."
+  [[ "${RELEASE_TYPE}" == "commit" ]] \
+    || die "RELEASE_SHA ${RELEASE_SHA} names a ${RELEASE_TYPE}, not a commit. Nothing has been built or changed."
+  as_app "${APP_DIR}" git merge-base --is-ancestor "${RELEASE_SHA}" "${BRANCH_TIP}" \
+    || die "RELEASE_SHA ${RELEASE_SHA} is not on origin/${BRANCH} (it is not an ancestor of ${BRANCH_TIP}). Only a commit on the release branch is deployed. Nothing has been built or changed."
+  TARGET_SHA="${RELEASE_SHA}"
+  TARGET_SOURCE="RELEASE_SHA"
+fi
+readonly TARGET_SHA TARGET_SOURCE BRANCH_TIP
 SHORT_SHA="${TARGET_SHA:0:7}"
 
 # What is actually RUNNING, which is not the same question as what git says.
@@ -617,9 +681,14 @@ SHORT_SHA="${TARGET_SHA:0:7}"
 # cannot tell the difference.
 CURRENT_RUNTIME_SHA="$(runtime_marker "${STANDALONE_DIR}")"
 RUNTIME_DESC="${CURRENT_RUNTIME_SHA:-unmarked (legacy runtime, or none installed)}"
+info "branch  : origin/${BRANCH} fetched, tip ${BRANCH_TIP}"
 info "checkout: ${CURRENT_SHA}"
 info "runtime : ${RUNTIME_DESC}"
-info "target  : ${TARGET_SHA}"
+info "release : ${RELEASE_SHA:-<RELEASE_SHA not set>}"
+info "target  : ${TARGET_SHA} (${TARGET_SOURCE})"
+if [[ "${TARGET_SHA}" != "${BRANCH_TIP}" ]]; then
+  info "origin/${BRANCH} is ahead of the release; the commits after ${SHORT_SHA} are NOT part of it"
+fi
 
 if [[ "${CURRENT_SHA}" == "${TARGET_SHA}" && "${CURRENT_RUNTIME_SHA}" == "${TARGET_SHA}" ]]; then
   # A — checkout and runtime both already at the target.
@@ -800,8 +869,15 @@ info "live runtime marked ${DEPLOYED_MARKER}"
 # installed, or the uploads directory (which lives outside /app entirely).
 # There is no `git clean` here, deliberately.
 log "Updating ${APP_DIR} to ${TARGET_SHA}"
-as_app "${APP_DIR}" git checkout --quiet "${BRANCH}"
-as_app "${APP_DIR}" git reset --hard --quiet "${TARGET_SHA}"
+# One step, from the sha itself: ${BRANCH} is created or moved to TARGET_SHA
+# and checked out together. The old `git checkout ${BRANCH}` first would, when
+# the local branch did not exist yet, have created it from origin/${BRANCH} —
+# for a moment the production tree was the branch tip, not the release.
+as_app "${APP_DIR}" git checkout --quiet --force -B "${BRANCH}" "${TARGET_SHA}"
+CHECKOUT_SHA="$(as_app "${APP_DIR}" git rev-parse HEAD)"
+if [[ "${CHECKOUT_SHA}" != "${TARGET_SHA}" ]]; then
+  rollback "${APP_DIR} is at ${CHECKOUT_SHA} after the checkout, expected ${TARGET_SHA}"
+fi
 [[ -f "${APP_DIR}/.env" ]] || rollback ".env disappeared from ${APP_DIR}"
 
 # --- 14. ownership ----------------------------------------------------------
@@ -852,7 +928,10 @@ printf '\n'
 log "Deployed"
 info "previous sha  : ${CURRENT_SHA}"
 info "previous rt   : ${RUNTIME_DESC}"
-info "deployed sha  : ${TARGET_SHA}"
+info "branch tip    : ${BRANCH_TIP} (origin/${BRANCH} when fetched)"
+info "requested     : ${RELEASE_SHA:-<RELEASE_SHA not set — the tip of origin/${BRANCH}>}"
+info "deployed sha  : ${TARGET_SHA} (${TARGET_SOURCE})"
+info "checkout      : ${CHECKOUT_SHA}"
 info "runtime marker: ${DEPLOYED_MARKER}"
 info "service       : $(service_state)"
 info "local         : ${LOCAL_CODE}"

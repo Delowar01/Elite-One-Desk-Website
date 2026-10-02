@@ -4,9 +4,10 @@ import { eq, sql } from "drizzle-orm";
 import { redirect } from "next/navigation";
 
 import { logActivity } from "@/lib/activity";
+import { CHANGE_PASSWORD_PATH } from "@/lib/auth/guard";
 import { verifyPassword } from "@/lib/auth/password";
 import { checkLoginRate, recordLoginAttempt } from "@/lib/auth/rate-limit";
-import { clientIp, createSession, destroySession, getSession, hashIp } from "@/lib/auth/session";
+import { clientIp, createSession, destroySession, hashIp, readSession } from "@/lib/auth/session";
 import { db } from "@/lib/db";
 import { roles, users } from "@/lib/db/schema";
 import { type ActionState, fail, runAction } from "@/lib/admin/actions";
@@ -21,6 +22,9 @@ export async function signIn(_prev: ActionState, form: FormData): Promise<Action
   const email = String(form.get("email") ?? "").trim().toLowerCase().slice(0, 190);
   const password = String(form.get("password") ?? "");
   const next = safeNext(String(form.get("next") ?? "/admin"));
+  // Decided by the account row, after the password has been verified — never
+  // by anything in the request (19C).
+  let temporary = false;
 
   const result = await runAction("sign-in", async () => {
     if (!email || !password) return fail("Enter your email address and password.");
@@ -55,6 +59,7 @@ export async function signIn(_prev: ActionState, form: FormData): Promise<Action
     await recordLoginAttempt(email, ipHash, true);
     await createSession(found.user.id);
     await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, found.user.id));
+    temporary = found.user.mustChangePassword;
     await logActivity(
       {
         sessionId: "",
@@ -67,18 +72,31 @@ export async function signIn(_prev: ActionState, form: FormData): Promise<Action
           roleName: found.roleKey,
         },
         permissions: new Set(),
+        mustChangePassword: temporary,
       },
-      { action: "login", entityType: "user", entityId: found.user.id, summary: "Signed in" },
+      {
+        action: "login",
+        entityType: "user",
+        entityId: found.user.id,
+        summary: temporary ? "Signed in with a temporary password" : "Signed in",
+      },
     );
     return { ok: true };
   });
 
   if (!result.ok) return result;
-  redirect(next);
+  // An account on a temporary password goes to choose its own, wherever the
+  // form said it was going: `next` is the browser's word, the flag is ours.
+  redirect(temporary ? CHANGE_PASSWORD_PATH : next);
 }
 
+/**
+ * Never refused, whatever state the account is in — including one that must
+ * change its password, which is why the session is read with `readSession`:
+ * `getSession` would not return it, and the sign-out would go unrecorded.
+ */
 export async function signOut(): Promise<void> {
-  const session = await getSession();
+  const session = await readSession();
   if (session) {
     await logActivity(session, { action: "logout", entityType: "user", entityId: session.user.id });
   }

@@ -1,6 +1,6 @@
 # Browser QA — the tracked probes
 
-Thirty probes drive the real application in a real Chromium: the public pages,
+Thirty-one probes drive the real application in a real Chromium: the public pages,
 ordinary Preview and the Visual Editor, in English and Arabic, at Desktop,
 Tablet and Mobile widths. Each prints one `PASS` or `FAIL` line per check.
 Until Batch 19A they lived in a gitignored folder on one machine; they are now
@@ -8,7 +8,7 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty probes, one file each |
+| `probes/*.probe.mts` | the thirty-one probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -44,7 +44,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the thirty probes, once each
+npm run test:browser              # the thirty-one probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -92,8 +92,9 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,131 `PASS`
-across the thirty as of Batch 19B (1,089 at Batch 19A, 1,078 at Batch 18;
+Every probe clean, with the counts in `probes/expected.json` — 1,145 `PASS`
+across the thirty-one as of Batch 19C (1,131 across thirty at Batch 19B, 1,089
+at Batch 19A, 1,078 at Batch 18;
 `hardening` gained eleven checks in 19A: eight on where its own clicks land and
 what the canvas reported, three on the selection after a redraw on a slowed
 CPU).
@@ -112,6 +113,17 @@ the detach warning and the picker from the keyboard, the component screen's
 four confirmations opening on Cancel, and creating and deleting a component
 landing on the next page by a document load) and `undo-compare` (+2:
 the comparison's controls from the keyboard).
+
+Batch 19C added one probe and changed none: `password-change` (14 checks, port
+3731) walks a temporary password through the screens a person uses — an owner
+creates the account on the Users screen, the person signs in with it and is
+held on the password-change page however they try to leave, a weak or
+mismatched password is refused on the page, their own is accepted, the session
+it was changed from no longer works, the temporary password no longer signs in,
+the new one does, to where they asked to go, and the panel is theirs again by
+their role. It also found that an admin form could leave its button on
+"Saving…" after the server had saved — see `useSettledActionState` in
+`src/components/admin/form.tsx` and the `admin-form-settle` stress script.
 
 ## Writing a probe
 

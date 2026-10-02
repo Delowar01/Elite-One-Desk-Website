@@ -38,6 +38,8 @@ const SENSITIVE = new Set([
   "user.deleted",
   "user.role_changed",
   "user.password_reset",
+  "user.password_self_reset",
+  "user.password_changed",
   "role.permissions_changed",
   "enquiry.exported",
 ]);

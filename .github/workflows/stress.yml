@@ -1,7 +1,7 @@
 # The stress suite (tests/stress) — by hand, or once a week (Batch 19A).
 #
 # Long and repetitive by design, so it is not part of every push: CI runs the
-# thirty probes on each one (.github/workflows/ci.yml). The same rules hold
+# tracked probes on each one (.github/workflows/ci.yml). The same rules hold
 # here: an ephemeral PostgreSQL service container is the only database, the
 # only credentials are that container's, nothing is deployed or published,
 # and a failing script fails the job — no continue-on-error, no retries.

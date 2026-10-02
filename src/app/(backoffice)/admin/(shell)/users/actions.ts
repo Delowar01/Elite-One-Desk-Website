@@ -54,6 +54,9 @@ export async function createUser(_prev: ActionState, form: FormData): Promise<Ac
         passwordHash: await hashPassword(password),
         roleId,
         isActive: true,
+        // A temporary password: whoever set it knows it, so the account
+        // chooses its own at its first sign-in and can do nothing until then
+        // (19C — `getSession` refuses the account while this is set).
         mustChangePassword: true,
       })
       .returning({ id: users.id });
@@ -62,10 +65,12 @@ export async function createUser(_prev: ActionState, form: FormData): Promise<Ac
       action: "user.created",
       entityType: "user",
       entityId: row!.id,
-      summary: `Created the ${role.name} account for ${email}`,
+      summary: `Created the ${role.name} account for ${email} with a temporary password`,
     });
     refresh();
-    return ok(`Account created. Give ${name} the password you just set — they should change it.`);
+    return ok(
+      `Account created with a temporary password. Give it to ${name} — they will be required to choose a new password at their next sign-in.`,
+    );
   });
 }
 
@@ -142,30 +147,49 @@ export async function resetUserPassword(_prev: ActionState, form: FormData): Pro
     const problem = passwordProblem(password);
     if (problem) return fail("That password is not strong enough.", { password: problem });
 
+    // Somebody else's password, set by an admin, is temporary: the admin knows
+    // it, so its owner must choose their own at the next sign-in (19C). Your
+    // own is yours already — you chose it — so it is not.
+    const self = target.user.id === session.user.id;
     await db
       .update(users)
       .set({
         passwordHash: await hashPassword(password),
-        mustChangePassword: target.user.id !== session.user.id,
+        mustChangePassword: !self,
         updatedAt: new Date(),
       })
       .where(eq(users.id, id));
 
     // Every existing session for that account is ended, including any an
-    // attacker might be holding.
+    // attacker might be holding — and, for your own, this one.
     await destroyUserSessions(id);
 
-    await logActivity(session, {
-      action: "user.password_reset",
-      entityType: "user",
-      entityId: id,
-      summary: `Reset the password for ${target.user.email}`,
-    });
+    // Recorded as what it is. Changing your own password from this screen is
+    // not the same act as setting a temporary one for somebody else, and the
+    // log says which, so neither can be read as the other.
+    await logActivity(
+      session,
+      self
+        ? {
+            action: "user.password_self_reset",
+            entityType: "user",
+            entityId: id,
+            summary: "Changed their own password from Users & roles; every session was signed out",
+            metadata: { self: true, temporary: false },
+          }
+        : {
+            action: "user.password_reset",
+            entityType: "user",
+            entityId: id,
+            summary: `Set a temporary password for ${target.user.email}; every session was signed out`,
+            metadata: { self: false, temporary: true },
+          },
+    );
     refresh();
     return ok(
-      target.user.id === session.user.id
+      self
         ? "Password changed. Sign in again with the new one."
-        : "Password reset. Every session for that account has been signed out.",
+        : "Temporary password set and every session for that account signed out. They will be required to choose a new password at their next sign-in.",
     );
   });
 }

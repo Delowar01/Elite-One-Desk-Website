@@ -8,7 +8,7 @@ import {
   type PermissionKey,
   type PermissionRequirement,
 } from "./permissions";
-import { getSession, type AdminSession } from "./session";
+import { getPasswordChangeSession, getSession, type AdminSession } from "./session";
 
 export class AccessError extends Error {
   constructor(message = "You do not have permission to do that.") {
@@ -17,10 +17,26 @@ export class AccessError extends Error {
   }
 }
 
-/** For pages: bounce anonymous callers to the login screen, keeping their target. */
+/**
+ * Where an account on a temporary password is sent, whatever it asked for
+ * (19C) — the one admin page it may open until it has chosen its own.
+ */
+export const CHANGE_PASSWORD_PATH = "/admin/change-password";
+
+/** What a refused write says to an account that must change its password first. */
+export const MUST_CHANGE_PASSWORD_MESSAGE =
+  "Choose a new password before you do anything else. Nothing was changed.";
+
+/**
+ * For pages: bounce anonymous callers to the login screen, keeping their
+ * target. A caller who is signed in but must change their password goes to
+ * the password-change page instead, and keeps no target: it is the only
+ * place they are going until it is done.
+ */
 export async function requireSession(returnTo?: string): Promise<AdminSession> {
   const session = await getSession();
   if (!session) {
+    if (await getPasswordChangeSession()) redirect(CHANGE_PASSWORD_PATH);
     redirect(returnTo ? `/admin/login?next=${encodeURIComponent(returnTo)}` : "/admin/login");
   }
   return session;
@@ -65,6 +81,27 @@ function tokensMatch(a: string, b: string): boolean {
 }
 
 /**
+ * The guard of the one write an account on a temporary password may make —
+ * choosing its own (19C). `guardAction` refuses such an account, so this is
+ * its counterpart: the session must be one that must change its password, and
+ * the form must carry that session's token. It asks for no permission because
+ * there is nothing to permit: the action changes the caller's own password and
+ * reads no account id from the request.
+ */
+export async function guardPasswordChange(formData: FormData): Promise<AdminSession> {
+  const session = await getPasswordChangeSession();
+  if (!session) {
+    if (await getSession()) throw new AccessError("There is no password change waiting for this account.");
+    throw new AccessError("Your session has expired. Sign in again.");
+  }
+  const token = String(formData.get("_csrf") ?? "");
+  if (!token || !tokensMatch(token, session.csrfToken)) {
+    throw new AccessError("This form expired. Reload the page and try again.");
+  }
+  return session;
+}
+
+/**
  * Every admin mutation runs through here. Server Actions already reject
  * cross-origin POSTs, but a synchroniser token tied to the session row is the
  * check that does not depend on a header an intermediary might rewrite — and it
@@ -82,7 +119,12 @@ export async function guardAction(
   denied?: string,
 ): Promise<AdminSession> {
   const session = await getSession();
-  if (!session) throw new AccessError("Your session has expired. Sign in again.");
+  if (!session) {
+    // Signed in on a temporary password: refused like anybody without a
+    // session, before the token or a single field is read (19C).
+    if (await getPasswordChangeSession()) throw new AccessError(MUST_CHANGE_PASSWORD_MESSAGE);
+    throw new AccessError("Your session has expired. Sign in again.");
+  }
 
   const token = String(formData.get("_csrf") ?? "");
   if (!token || !tokensMatch(token, session.csrfToken)) {

@@ -201,8 +201,12 @@ tar -xzf /var/backups/elite-one-desk/uploads-YYYYMMDD-HHMMSS.tar.gz -C /var/www/
 ## 9. Updating
 
 ```bash
-sudo /var/www/elite-one-desk/app/deploy/deploy.sh
+sudo RELEASE_SHA=<the approved 40-character commit sha> /var/www/elite-one-desk/app/deploy/deploy.sh
 ```
+
+A production release names the exact commit that was approved — see *Which
+commit is released* below. Without `RELEASE_SHA` the script releases whatever
+`origin/main` holds when it fetches, which is the last push, approved or not.
 
 Run it as root, or through `sudo`. Every git, npm and build command is dropped
 to `eliteonedesk`, so nothing under the application becomes root-owned; only
@@ -219,9 +223,11 @@ complete, verified runtime exists on disk.
    step 13 can delete an untracked file that stands where the target commit
    needs to write, so "clean" here means spotless. The script never stashes,
    never runs `git clean`, and never deletes anything to get out of the way.
-2. `git fetch origin main`, then compare **both** the checkout and the live
-   runtime against the target — see *The release marker* below. Only when both
-   are already at the target does it report "already deployed" and exit 0.
+2. `git fetch origin main`, then the target is decided **once**: `RELEASE_SHA`
+   when it is set (checked as below), otherwise the tip of `origin/main`. It is
+   read-only from then on. Then **both** the checkout and the live runtime are
+   compared against it — see *The release marker* below. Only when both are
+   already at the target does it report "already deployed" and exit 0.
 3. `git worktree add --detach` at the target commit, into
    `/var/www/elite-one-desk/build-<short-sha>-<timestamp>` (mode 0700).
 4. The production `.env` is installed into that worktree, mode 0600, owned by
@@ -249,7 +255,9 @@ complete, verified runtime exists on disk.
 13. The switch is two renames, not a copy into a live directory:
     `mv -T .next/standalone → /var/www/elite-one-desk/standalone.rollback-<old-sha>-<timestamp>`
     (mode 0700), then `mv -T .next/standalone.incoming → .next/standalone`.
-14. `git checkout main && git reset --hard <target>` in `app/`. `.env`,
+14. `git checkout --force -B main <target>` in `app/` — one step, from the
+    sha itself, so the tree never passes through the branch tip on its way —
+    and the checkout is read back: anything but the target rolls back. `.env`,
     `.next/` and `node_modules/` are gitignored, so tracked files move and
     nothing else does. Uploads live outside `app/` and are never touched.
 15. `chown -R eliteonedesk:eliteonedesk` the new runtime, then
@@ -260,9 +268,38 @@ complete, verified runtime exists on disk.
     `http://127.0.0.1:3000/` with `Host: eliteonedesk.com` and
     `X-Forwarded-Proto: https`, then `https://eliteonedesk.com/` and
     `https://eliteonedesk.com/admin/login`.
-18. It prints the previous SHA and its runtime marker, the deployed SHA and
-    its marker, the service state, all three health results, the backup
-    filenames, the rollback runtime and the build worktree.
+18. It prints the previous SHA and its runtime marker, the branch tip it
+    fetched, the requested `RELEASE_SHA`, the deployed SHA, the checkout and
+    the runtime marker, the service state, all three health results, the
+    backup filenames, the rollback runtime and the build worktree.
+
+### Which commit is released — `RELEASE_SHA`
+
+A release is approved as one exact commit, and `deploy.sh` deploys that commit
+or nothing:
+
+- **The format is checked first**, before git, sudo or anything else sees the
+  value: a full 40-character lowercase sha. A branch (`main`), a tag, an
+  abbreviation (`3d98b81`), an upper-case sha or a revision expression
+  (`<sha>^`, `HEAD~1`, `:/message`) is refused, and nothing is fetched, built or
+  changed.
+- **After the fetch** the commit must exist in the checkout, must be a commit
+  (not a tree or a tag object), and must be on `origin/main` — an ancestor of
+  its tip. A commit pushed only to another branch, or made on the server, is
+  refused the same way.
+- **The target is then fixed.** `TARGET_SHA` is read-only from the line after
+  it is decided; the build worktree, the runtime marker, the checkout, the
+  rollback bookkeeping and the report all use it, and nothing afterwards reads
+  `origin/main` again — a push that lands while a release is running does not
+  change what it deploys. When `origin/main` is ahead of the release, the log
+  says so: those commits are not part of it.
+- The output names all four: the branch tip it fetched, the checkout and the
+  runtime it found, the requested release and the target.
+
+`tests/deploy-target.test.ts` runs this very script against throwaway git
+fixtures to hold each of those rules. `RELEASE_SHA` empty keeps the old
+behaviour (the tip of `origin/main`) for development servers; a production
+release should never rely on it.
 
 ### 9.1 The service restructure (one-off)
 
@@ -606,6 +643,37 @@ validator drops every key it does not declare: the section then becomes a
 detached copy of what it showed. Nothing else depends on the new tables, and a
 later forward deploy finds them as they were left.
 
+### Temporary passwords
+
+An account an admin creates, and a password an admin sets for somebody else,
+is a **temporary password**: whoever set it knows it. From Visual Editor V1 on
+it is enforced — such an account can sign in, and is then held on
+`/admin/change-password` until it has chosen its own: no other admin page,
+Server Action, export or draft preview answers it, whatever address it asks
+for. Choosing a password there needs the temporary one again, follows the usual
+policy, signs every session of the account out and sends the person to sign in
+with the new one. A password you change for yourself from your own row on
+Users & roles is not temporary.
+
+Earlier releases stored the flag and never read it, so production may already
+hold accounts that carry it. They are honoured as they are — nothing clears the
+flag silently. Before the first release that enforces it, an authorised
+operator finds out how many accounts that is, and tells those people what will
+happen at their next sign-in. The check is part of the release, not of the one
+running now, so it runs from the release's own checkout — against the restored
+copy of the pre-deploy backup, the same scratch database the CTA audit reads
+(`docs/release/cta-audit.md`):
+
+```bash
+npm run db:check-password-flags              # counts only — fit for a release record
+npm run db:check-password-flags -- --list    # and id, email and role, for the operator
+```
+
+It opens one `READ ONLY` transaction and reads the account id, email, role,
+active and flag columns — no password hash, no session — and it changes
+nothing. Nobody is locked out by the flag: the change page is always open to a
+flagged account, the owner's included.
+
 ## 10. After the first deployment
 
 1. Sign in at `https://eliteonedesk.com/admin` with the owner account.
@@ -623,7 +691,9 @@ later forward deploy finds them as they were left.
 9. **Media library** — replace the generated artwork with photography when you
    have it. Nothing in code refers to those files by name.
 10. **Users & roles** — create accounts for the team. Give the smallest role that
-    does the job; it can always be raised.
+    does the job; it can always be raised. Each new account starts on a
+    temporary password: the person chooses their own at their first sign-in
+    (see *Temporary passwords* above).
 
 ## Troubleshooting
 

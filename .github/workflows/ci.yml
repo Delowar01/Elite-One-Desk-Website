@@ -5,7 +5,7 @@
 #              no database to reach
 #   tests    — the tracked suite (`npm test`) on an ephemeral PostgreSQL 16:
 #              migrations, seed, fixtures, every *.test.ts
-#   browser  — the thirty tracked browser probes against isolated databases on
+#   browser  — every tracked browser probe against isolated databases on
 #              that same kind of ephemeral server, and a production build
 #   compat   — schema compatibility with the release in production
 #              (deploy/previous-release), the permission upgrade and its
@@ -101,7 +101,7 @@ jobs:
       - run: npm test
 
   browser:
-    name: Browser QA — thirty probes on isolated databases
+    name: Browser QA — the tracked probes on isolated databases
     runs-on: ubuntu-24.04
     # About 45 minutes on a 4-core machine; the bound leaves room for a slower
     # hosted runner. It is a limit, not a retry — nothing here runs twice.
@@ -140,7 +140,7 @@ jobs:
         env:
           DATABASE_URL: postgresql://invalid:invalid@127.0.0.1:1/invalid
         run: npm run build
-      - name: Thirty tracked probes, once each
+      - name: Every tracked probe, once each
         run: npm run test:browser -- --timeout-min 30
       - name: Keep the probe logs
         if: always()

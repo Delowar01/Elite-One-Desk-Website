@@ -16,7 +16,7 @@ proof restructures a live database underneath a running server.
 |---|---|
 | PostgreSQL | reachable, with a role that may `CREATE DATABASE` |
 | `psql`, `pg_dump` | on `PATH` — the fixtures are built and compared with them |
-| A production build | `npm run build`, for the four files that start a server |
+| A production build | `npm run build`, for the files that start a server |
 | Git history | the pre-restructure catalogue is checked out from a commit |
 
 Every database is created and dropped by the tests, named `eodt_*`. Nothing
@@ -88,6 +88,8 @@ directory lock.
 | `mutation-audit.test.ts` | the Batch 19B write-path audit against the running app: a content, style, motion, layout or component write that names no revision is refused, even on a row still at revision 0 · moving a section asks who is moving it before it reads the layout · a reorder is logged and a move at the edge is not, a save naming a row that no longer exists is refused and logs nothing, a new row is logged under the id it was given, clearing an SEO override that is not there leaves no entry, and a copy of a linked section records the new link · a service group belongs to its service's category and keeps it, and an enquiry is assigned only to an active account · sign-in throttling, the activity log's address hash and the enquiry limiter count the address the proxy vouches for, however the client rewrites `X-Forwarded-For` · an enquiry keeps only the detail and campaign keys a form can send · a session without `content.view` asking for a preview or the canvas is shown the published page |
 | `media-pipeline.test.ts` | the media library on the release's `sharp` (0.35.4 or later, the libvips and libheif fixes): JPG, PNG, WebP, AVIF and GIF are decoded and stored as WebP with their derivatives · a TIFF or a HEIF is refused by its bytes and nothing is stored · an SVG never reaches the decoder and is stored sanitised, without its script |
 | `dependency-advisories.test.ts` | the advisories the release keeps unreachable, held in the source rather than in a note: no `drizzle-orm` identifier, alias or CTE is built at runtime, and the one raw identifier outside the application is a fixed column name in a maintenance script · `postcss` and `brace-expansion` run only in the build — nothing in the application imports them and the standalone runtime ships neither |
+| `password-change.test.ts` | temporary passwords (Batch 19C), against the running app through the real sign-in, change and Users actions: a new account and a password an admin sets for somebody else are temporary, a self-reset is not and is logged as one · the temporary password signs in, and the session is sent to `/admin/change-password` whatever `next` said · `/admin`, the Visual Editor, Version Compare, every other admin screen, the enquiry export and a draft preview refuse it, and so does every Server Action — with the session's own token — while the same request succeeds once the password is changed · the change needs that session, its token, the current password, the policy, a matching confirmation and a different password · success stores a new hash, clears the flag, moves `updated_at`, ends every session of the account and drops the cookie, and touches nobody else's account · the old password fails and the new one signs in to where it asked · ordinary and inactive accounts, throttling and the return-address check behave as before · sign-out is never refused · a flag set before this release is honoured mid-session · nothing about the flag reaches anyone who has not proved the password · the read-only pre-deployment check counts, lists only on request and writes nothing |
+| `deploy-target.test.ts` | `deploy/deploy.sh` releases the commit it was told to (19C), run for real — the repository's own script — against a throwaway git origin, production checkout and runtime, with `systemctl`, `sudo`, `curl`, `npm` and the backup replaced by stand-ins that only record: no `RELEASE_SHA` releases the branch tip as before · a full sha releases exactly that commit though the branch is ahead · an abbreviation or a malformed value is refused before anything is fetched · a sha naming nothing, a commit on another branch or only in the checkout, and a tree are refused after the fetch · the runtime marker and the checkout are the release · a push landing mid-release changes nothing · no revision syntax or shell text reaches git, and the target is resolved once and read-only |
 
 ## Server Actions
 
@@ -113,7 +115,7 @@ back by calling `emit(value)`; nothing in between is mocked.
 
 ## Ports
 
-The server tests bind `3411`–`3414`, `3421`, `3431`, `3441`–`3451`, `3461`, `3471`, `3502`, `3503` —
+The server tests bind `3411`–`3414`, `3421`, `3431`, `3441`–`3451`, `3461`, `3471`, `3502`–`3504` —
 one port per file, never shared. `node --test` runs the files in parallel, so
 two files on one port is not a style point: whichever starts second fails to
 bind, or worse, answers the first one's questions. `build-isolation.test.ts`

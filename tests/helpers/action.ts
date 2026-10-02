@@ -155,7 +155,13 @@ export function actionResult<T>(payload: Buffer): T | null {
   return resolveRefs(rows.get(pointer), rows) as T;
 }
 
-export type ActionResponse<T> = { status: number; value: T | null; text: string };
+export type ActionResponse<T> = {
+  status: number;
+  value: T | null;
+  text: string;
+  /** What the browser is told besides the value — a redirect, a cookie set or cleared. */
+  headers: Headers;
+};
 
 export async function callAction<T>(options: {
   origin: string;
@@ -190,5 +196,6 @@ export async function callAction<T>(options: {
     status: response.status,
     value: actionResult<T>(payload),
     text: payload.toString("utf8"),
+    headers: response.headers,
   };
 }
