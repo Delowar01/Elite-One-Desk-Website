@@ -1030,6 +1030,28 @@
 }
 
 /* ==========================================================================
+   Visual Editor canvas — dynamic routes (Batch 21)
+   ==========================================================================
+
+   Only ever in an authorised editor canvas: the renderer writes these marks
+   for nothing else. A region publishing would leave off the page — a hidden
+   card, group or question — stays drawn so it can be selected and shown
+   again, dimmed and outlined so it is never mistaken for a live one; and an
+   empty category body says it is there. */
+[data-eod-hidden] {
+  opacity: 0.45;
+  outline: 1px dashed color-mix(in oklab, var(--color-peach) 70%, transparent);
+  outline-offset: 4px;
+}
+.route-placeholder {
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.25rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* ==========================================================================
    Version Compare — the still presentation (Batch 16)
    ==========================================================================
 

@@ -4,8 +4,20 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useId, useState } from "react";
 
 import { Icon } from "@/components/ui/icon";
+import type { NodeAttrs } from "@/lib/cms/node";
 
-export type FaqEntry = { id: number; question: string; answer: string };
+export type FaqEntry = {
+  id: number;
+  question: string;
+  answer: string;
+  /**
+   * The question's node attributes on an editable route (Batch 21): the
+   * editor's selection marks in the canvas, its published styles everywhere.
+   * Plain data, so it crosses into this client component. Absent, the markup
+   * is exactly what it always was.
+   */
+  marks?: { item: NodeAttrs; question: NodeAttrs; answer: NodeAttrs };
+};
 
 /**
  * Accordion built on real buttons and `aria-expanded`, with the answer kept in
@@ -24,7 +36,7 @@ export function FaqAccordion({ entries }: { entries: FaqEntry[] }) {
       {entries.map((entry) => {
         const open = openId === entry.id;
         return (
-          <li key={entry.id} className="border-b border-line">
+          <li key={entry.id} {...entry.marks?.item} className="border-b border-line">
             <h3>
               <button
                 type="button"
@@ -33,7 +45,7 @@ export function FaqAccordion({ entries }: { entries: FaqEntry[] }) {
                 aria-controls={`${uid}-${entry.id}`}
                 className="group flex w-full items-start gap-4 py-5 text-start"
               >
-                <span className="flex-1 font-display text-[1rem] font-semibold text-strong">
+                <span {...entry.marks?.question} className="flex-1 font-display text-[1rem] font-semibold text-strong">
                   {entry.question}
                 </span>
                 <span
@@ -60,6 +72,7 @@ export function FaqAccordion({ entries }: { entries: FaqEntry[] }) {
                   className="overflow-hidden"
                 >
                   <div
+                    {...entry.marks?.answer}
                     className="prose-eod max-w-2xl pb-6 pe-10 text-small"
                     dangerouslySetInnerHTML={{ __html: entry.answer }}
                   />

@@ -1,0 +1,290 @@
+import type { BlockDef, FieldDef } from "@/lib/cms/blocks";
+import { ICON_NAMES } from "@/lib/icons";
+
+import type { RouteOwnerType } from "./owners";
+
+/**
+ * The block definitions of a category route's regions (Batch 21).
+ *
+ * The same `BlockDef` vocabulary page sections use, on purpose: the Content
+ * tab draws them with `BlockEditor`, the Style and Motion panels read their
+ * capabilities from them, Layers names their nodes from them and direct
+ * editing decides from them which text may be typed into. One description per
+ * region, read by every part of the editor — none of which has to know it is
+ * looking at a category rather than a page.
+ *
+ * They are **not** page blocks. `getBlock()` — what the page CMS adds, saves,
+ * publishes and restores sections with — does not know them; only
+ * `getEditorBlock()` does. A route block can therefore never become a page
+ * section, and a page section can never be saved as one.
+ *
+ * Values here are the editor's view of a resource, not its storage: the
+ * adapter (`lib/routes/category.ts`) maps `title` to `title_en` / `title_ar`,
+ * `group` to `subcategory_id` and so on, and validates every one of them with
+ * the rules the resource's own admin form applies. Two reserved keys ride
+ * beside the declared fields, as `_id` and `_reuse` do on page sections:
+ *
+ *   · `_order` — the order of a region's children, as record ids per list
+ *     (`{ services: [12, 15, 13] }`). It is edited from Layers, never typed.
+ *   · nothing else. A key the adapter does not know is dropped on save.
+ *
+ * A field marked `generated` is drawn from somewhere other than the region's
+ * values — a route-derived link, a count, a name from another screen. It is
+ * selectable and styleable like any field, never typed into and never part of
+ * a draft; the Inspector shows its explanation and links to the screen that
+ * controls it.
+ */
+
+const text = (name: string, label: string, extra: Partial<FieldDef> = {}): FieldDef => ({
+  name,
+  label,
+  type: "text",
+  localised: true,
+  ...extra,
+});
+
+const area = (name: string, label: string, rows = 3, extra: Partial<FieldDef> = {}): FieldDef => ({
+  name,
+  label,
+  type: "textarea",
+  localised: true,
+  rows,
+  ...extra,
+});
+
+const STANDARD = "Leave empty to use the standard wording.";
+
+const ICON_OPTIONS = ICON_NAMES.map((name) => ({
+  value: name,
+  label: name.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, (first) => first.toUpperCase()),
+}));
+
+/** The admin screens a generated node's explanation links to. */
+const SOURCE = {
+  whatsapp: { label: "Globals › WhatsApp", href: "/admin/settings" },
+  services: { label: "Services", href: "/admin/services" },
+  destinations: { label: "Packages › Destinations", href: "/admin/packages/destinations" },
+  packages: { label: "Packages", href: "/admin/packages" },
+  categories: { label: "Service Categories", href: "/admin/categories" },
+} as const;
+
+export const ROUTE_BLOCKS: BlockDef[] = [
+  {
+    type: "route-category-hero",
+    name: "Category hero",
+    description: "The category's own introduction: icon, tagline, title, summary, picture and calls to action.",
+    scope: "any",
+    fields: [
+      { name: "icon", label: "Icon", type: "select", options: ICON_OPTIONS },
+      text("tagline", "Tagline", { help: "The short line above the title." }),
+      text("title", "Title", {
+        help: "Changing the title never changes the page address.",
+      }),
+      area("summary", "Summary", 3),
+      { name: "image", label: "Background image", type: "media", surface: "backdrop" },
+      text("ctaLabel", "Primary button — text", {
+        surface: "button",
+        placeholder: "Request a Service",
+        help: "Leave empty to use “Request a Service”.",
+      }),
+      {
+        name: "ctaHref",
+        label: "Primary button — link",
+        type: "link",
+        placeholder: "/contact",
+        help: "A site path such as /contact, or a full https:// address. Empty goes to /contact.",
+      },
+      {
+        name: "whatsapp",
+        label: "WhatsApp button",
+        type: "link",
+        surface: "button",
+        generated: {
+          explain:
+            "Shown when WhatsApp is switched on. The number and the switch are site settings, and the message names this category automatically.",
+          source: SOURCE.whatsapp,
+        },
+      },
+    ],
+  },
+  {
+    type: "route-category-crumbs",
+    name: "Breadcrumbs",
+    description: "Where this page sits in the site, built from the category's title.",
+    scope: "any",
+    still: true,
+    fields: [
+      {
+        name: "trail",
+        label: "Trail",
+        type: "text",
+        generated: {
+          explain:
+            "Built from the site structure and the category's title. Change the title in the hero; the other steps are the site's own navigation.",
+        },
+      },
+    ],
+  },
+  {
+    type: "route-category-body",
+    name: "Category body",
+    description: "Longer text about the category, below the hero.",
+    scope: "any",
+    fields: [{ name: "body", label: "Body", type: "richtext", localised: true }],
+  },
+  {
+    type: "route-category-services",
+    name: "Services",
+    description: "The category's services, in their groups.",
+    scope: "any",
+    fields: [
+      text("eyebrow", "Eyebrow", { placeholder: "In this category", help: STANDARD }),
+      text("heading", "Heading", { placeholder: "Services", help: STANDARD }),
+    ],
+  },
+  {
+    type: "route-subcategory",
+    name: "Service group",
+    description: "One group of services in this category.",
+    scope: "any",
+    fields: [
+      text("title", "Title"),
+      area("summary", "Summary", 2),
+      {
+        name: "published",
+        label: "Show this group on the website",
+        type: "boolean",
+        help: "A hidden group's services are hidden with it.",
+      },
+    ],
+  },
+  {
+    type: "route-service-card",
+    name: "Service card",
+    description: "One service, as its card on the category page.",
+    scope: "any",
+    fields: [
+      text("title", "Title", { help: "Changing the title never changes the service's address." }),
+      area("intro", "Short introduction", 3),
+      { name: "image", label: "Card picture", type: "media" },
+      // Options are this category's groups, supplied with the region.
+      { name: "group", label: "Group", type: "select", options: [] },
+      { name: "featured", label: "Featured", type: "boolean", help: "Featured services come first in their group." },
+      { name: "published", label: "Show this service on the website", type: "boolean" },
+      {
+        name: "link",
+        label: "Link",
+        type: "link",
+        surface: "card",
+        generated: {
+          explain:
+            "The card opens the service's own page. Its address is the service's address, which titles never change.",
+          source: SOURCE.services,
+        },
+      },
+      {
+        name: "badge",
+        label: "Badge icon",
+        type: "text",
+        generated: {
+          explain: "Chosen automatically from the kind of service, falling back to the category's icon.",
+        },
+      },
+      {
+        name: "action",
+        label: "“Learn more”",
+        type: "text",
+        generated: { explain: "The site's standard wording, translated with the rest of the site." },
+      },
+    ],
+  },
+  {
+    type: "route-category-hub",
+    name: "Tour packages",
+    description: "The panel that leads to the package catalogue, by destination.",
+    scope: "any",
+    fields: [
+      text("eyebrow", "Eyebrow", { placeholder: "Tour Packages", help: STANDARD }),
+      text("heading", "Heading", { placeholder: "Choose your destination", help: STANDARD }),
+      area("description", "Description", 2, {
+        placeholder: "Prepared programmes for every destination — take one as it stands, or ask us to change it.",
+        help: STANDARD,
+      }),
+      text("ctaLabel", "Button — text", { surface: "button", placeholder: "View packages", help: STANDARD }),
+      {
+        name: "destinations",
+        label: "Destinations",
+        type: "text",
+        box: "flex",
+        generated: {
+          explain:
+            "One button per published destination with published packages, and how many it has. Destinations and packages are managed on their own screens.",
+          source: SOURCE.destinations,
+        },
+      },
+    ],
+  },
+  {
+    type: "route-category-faqs",
+    name: "Questions",
+    description: "The category's frequently asked questions.",
+    scope: "any",
+    fields: [
+      text("eyebrow", "Eyebrow", { placeholder: "Questions", help: STANDARD }),
+      text("heading", "Heading", { placeholder: "Frequently asked questions", help: STANDARD }),
+    ],
+  },
+  {
+    type: "route-faq",
+    name: "Question",
+    description: "One frequently asked question.",
+    scope: "any",
+    fields: [
+      text("question", "Question"),
+      { name: "answer", label: "Answer", type: "richtext", localised: true },
+      { name: "published", label: "Show this question on the website", type: "boolean" },
+    ],
+  },
+];
+
+export const ROUTE_BLOCK_MAP = new Map(ROUTE_BLOCKS.map((block) => [block.type, block]));
+
+/** Which block each owner type is drawn as. */
+export const ROUTE_BLOCK_OF: Record<RouteOwnerType, string> = {
+  category: "route-category-hero",
+  categoryCrumbs: "route-category-crumbs",
+  categoryBody: "route-category-body",
+  categoryServices: "route-category-services",
+  subcategory: "route-subcategory",
+  service: "route-service-card",
+  categoryHub: "route-category-hub",
+  categoryFaqs: "route-category-faqs",
+  faq: "route-faq",
+};
+
+export const isRouteBlockType = (type: string): boolean => ROUTE_BLOCK_MAP.has(type);
+
+/** The fields of a block the Content tab draws as inputs — never a generated one. */
+export const generatedFieldsOf = (block: BlockDef): FieldDef[] => block.fields.filter((field) => field.generated);
+
+/** The reserved key a region's child order rides under. */
+export const ORDER_KEY = "_order";
+
+/**
+ * Fields that decide whether and where something appears rather than what it
+ * says: layout, so `content.structure` (Batch 18) as well as the record's own
+ * capability. The adapter marks the same fields `structural`.
+ */
+export const ROUTE_STRUCTURAL_FIELDS: ReadonlySet<string> = new Set(["published", "group"]);
+
+/**
+ * The list a region is a member of, by its block: groups and ungrouped cards
+ * are ordered by the services section, cards in a group by the group, and
+ * questions by the questions section. The names are the `_order` keys the
+ * containers store.
+ */
+export const ROUTE_LIST_OF: Readonly<Record<string, "groups" | "services" | "faqs">> = {
+  "route-subcategory": "groups",
+  "route-service-card": "services",
+  "route-faq": "faqs",
+};

@@ -83,11 +83,12 @@ function bodyOf(source: string, declaration: string): string {
 /* -------------------------------------------------------------------------- */
 
 describe("the vocabulary makes asking and beginning two different things", () => {
-  test("this build speaks version 6", () => {
+  test("this build speaks version 7", () => {
     // Version 4 made asking and beginning two messages; version 5 (Batch 15b)
-    // kept both unchanged and added Replay beside them, and version 6 (Batch
-    // 16) added the forwarded Undo/Redo shortcut.
-    assert.equal(PROTOCOL_VERSION, 6);
+    // kept both unchanged and added Replay beside them, version 6 (Batch 16)
+    // added the forwarded Undo/Redo shortcut, and version 7 (Batch 21) let an
+    // owner be a dynamic route's region. Asking and beginning are unchanged.
+    assert.equal(PROTOCOL_VERSION, 7);
   });
 
   test("a canvas may ask to edit, and asking carries nothing but the address", () => {
@@ -354,6 +355,10 @@ describe("one section is loaded once, whoever asked", () => {
     // The import, and the one call inside this primitive.
     assert.equal(calls.length, 1, `${calls.length} call sites load a section`);
     assert.ok(ensure.includes("loadVisualSection("), "the one call site is not inside ensureSectionBuffer");
+    // A route region (Batch 21) is held to the same rule: one call, in the same primitive.
+    const routeCalls = [...code(SHELL_SOURCE).matchAll(/loadRouteRegion\(/g)];
+    assert.equal(routeCalls.length, 1, `${routeCalls.length} call sites load a route region`);
+    assert.ok(ensure.includes("loadRouteRegion("), "the route region's call site is not inside ensureSectionBuffer");
   });
 
   test("a failure stays retryable and installs nothing", () => {

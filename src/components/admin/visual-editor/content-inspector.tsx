@@ -3,6 +3,7 @@
 import { BlockEditor } from "@/components/admin/block-editor";
 import type { MediaOption } from "@/components/admin/media-picker";
 import type { BlockDef } from "@/lib/cms/blocks";
+import { ROUTE_STRUCTURAL_FIELDS } from "@/lib/routes/blocks";
 import { readReuse, slotDef } from "@/lib/cms/reuse/reference";
 import type { Locale } from "@/lib/i18n/config";
 import { focusOf } from "@/lib/visual-editor/content";
@@ -26,6 +27,7 @@ export function ContentBody({
   media,
   locale,
   canContent,
+  canStructure = true,
   onValues,
   reuse,
 }: {
@@ -36,6 +38,12 @@ export function ContentBody({
   locale: Locale;
   /** `content.edit` (Batch 18). Without it the fields show the real content, switched off. */
   canContent: boolean;
+  /**
+   * `content.structure`, for a dynamic route's region (Batch 21): whether a
+   * service, group or question may be shown, hidden or moved to another
+   * group. Without it those fields are not offered as inputs here.
+   */
+  canStructure?: boolean;
   onValues: (values: Record<string, unknown>) => void;
   /** Reusable components (Batch 17): the catalogue and the instance actions. */
   reuse?: ReuseControls;
@@ -50,6 +58,33 @@ export function ContentBody({
     Object.keys(links).flatMap((slot) => slotDef(block.type, slot)?.fields.map((field) => field.name) ?? []),
   );
   const focus = focusOf(node.relativePath);
+
+  /**
+   * A dynamic route's region (Batch 21). Generated fields are drawn as the
+   * sentence that says where they come from, never as inputs; visibility and
+   * grouping are offered only to a role that may change the page's structure;
+   * and a choice only the route can supply — a card's groups — is filled in
+   * from the region the server sent.
+   */
+  const route = buffer.data.route;
+  const hidden = new Set(linked);
+  const notes: Record<string, string> = {};
+  let shown = block;
+  if (route) {
+    for (const field of block.fields) {
+      if (field.generated) {
+        hidden.add(field.name);
+        notes[field.name] = field.generated.explain;
+      } else if (!canStructure && ROUTE_STRUCTURAL_FIELDS.has(field.name)) {
+        hidden.add(field.name);
+        notes[field.name] = "Your role does not allow showing, hiding or moving parts of this page.";
+      }
+    }
+    shown = {
+      ...block,
+      fields: block.fields.map((field) => (route.options[field.name] ? { ...field, options: route.options[field.name] } : field)),
+    };
+  }
   return (
     <div className="flex min-w-0 flex-col gap-3">
       {reuse ? (
@@ -75,13 +110,14 @@ export function ContentBody({
       )}
       <fieldset disabled={!canContent} className="min-w-0 border-0 p-0">
         <BlockEditor
-          block={block}
+          block={shown}
           value={buffer.values}
           onChange={onValues}
           media={media}
           locale={locale}
           focus={focus}
-          hidden={linked}
+          hidden={hidden}
+          notes={route ? notes : undefined}
         />
       </fieldset>
     </div>

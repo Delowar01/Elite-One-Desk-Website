@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { Locale } from "@/lib/i18n/config";
-import { previewPagePath } from "@/lib/page-path";
+import { previewPagePath, previewRoutePath } from "@/lib/page-path";
 import { describeAddress } from "@/lib/visual-editor/labels";
 import { intersectsViewport, toOverlayRect, type Rect } from "@/lib/visual-editor/overlay";
 import {
@@ -89,6 +89,7 @@ const GIVE_UP_AFTER_MS = 20_000;
  */
 export function VisualCanvas({
   slug,
+  publicPath,
   locale,
   device,
   canvasKey,
@@ -106,6 +107,12 @@ export function VisualCanvas({
   onShortcut,
 }: {
   slug: string;
+  /**
+   * A dynamic route's own public path (Batch 21) — `/services/<slug>`
+   * — when the document is a route rather than a CMS page. The canvas then
+   * loads that address; `slug` is still what the handshake must answer with.
+   */
+  publicPath?: string;
   locale: Locale;
   device: DeviceKey;
   /** Changes whenever a genuinely new document is wanted: page, language, reload. */
@@ -364,7 +371,11 @@ export function VisualCanvas({
   // Never scaled up: a 390px page blown up to fill a 1200px stage would be a
   // picture of a phone, not a phone.
   const scale = stage.width > 0 ? Math.min(1, stage.width / logical) : 1;
-  const src = bridgeId ? previewPagePath(slug, locale, { nonce: canvasKey, editor: { bridgeId } }) : undefined;
+  const src = bridgeId
+    ? publicPath
+      ? previewRoutePath(publicPath, locale, { nonce: canvasKey, editor: { bridgeId } })
+      : previewPagePath(slug, locale, { nonce: canvasKey, editor: { bridgeId } })
+    : undefined;
   // The overlays share this box with the frame, so their offset within it is
   // zero — passed explicitly rather than assumed, because a ruler or a toolbar
   // between them would make it something else and a hidden zero would be wrong

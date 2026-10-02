@@ -7,6 +7,8 @@ import { blocksForPage, type BlockDef } from "@/lib/cms/blocks";
 import { db } from "@/lib/db";
 import { media, pages } from "@/lib/db/schema";
 import { localeOrDefault, publicPathForPage } from "@/lib/page-path";
+import { listCategoryDocuments } from "@/lib/routes/category";
+import { documentEditorKey, parseRouteKey, routeKeyOf } from "@/lib/routes/owners";
 import { globalsCapabilities } from "@/lib/visual-editor/globals";
 import { deviceOrDefault } from "@/lib/visual-editor/viewport";
 
@@ -90,12 +92,33 @@ export default async function VisualEditorPage({
     title: row.titleEn,
     path: publicPathForPage(row.slug),
     isPublished: row.isPublished,
+    kind: "page",
   }));
+
+  /**
+   * Every service category, as a document of its own (Batch 21). Read from the
+   * table like the pages are, so a category created tomorrow is in this list
+   * the moment it exists — named by its own title, opened by its id, and
+   * drawn at its real public address. No category is named in code.
+   */
+  const categories = await listCategoryDocuments();
+  for (const row of categories) {
+    const document = { kind: "category" as const, id: row.id };
+    editable.push({
+      id: documentEditorKey(document),
+      slug: routeKeyOf(document),
+      title: row.titleEn,
+      path: `/services/${row.slug}`,
+      isPublished: row.isPublished,
+      kind: "category",
+    });
+  }
 
   // The address can say anything. The canvas URL is always built from a row we
   // found, never from the query string, so no value here can become an iframe
   // src of its own devising.
-  const asked = typeof query.page === "string" ? query.page : "";
+  const askedRoute = typeof query.route === "string" && parseRouteKey(query.route) ? query.route : "";
+  const asked = askedRoute || (typeof query.page === "string" ? query.page : "");
   const chosen = editable.find((row) => row.slug === asked) ?? editable[0];
 
   /**
@@ -117,6 +140,10 @@ export default async function VisualEditorPage({
         device: deviceOrDefault(query.device),
       }}
       can={capabilitiesOf(session.permissions)}
+      domains={{
+        services: session.permissions.has("services.manage"),
+        faqs: session.permissions.has("faqs.manage"),
+      }}
       canManageNavigation={capabilities.canManageNavigation}
       canManageSettings={capabilities.canManageSettings}
       csrf={session.csrfToken}

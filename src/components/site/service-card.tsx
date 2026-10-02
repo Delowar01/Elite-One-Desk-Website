@@ -3,6 +3,7 @@ import Link from "next/link";
 import { MediaImage } from "@/components/site/media-image";
 import { Reveal } from "@/components/site/reveal";
 import { Icon } from "@/components/ui/icon";
+import type { MediaNode, NodeAttrs, NodeText } from "@/lib/cms/node";
 import { toPlainText } from "@/lib/cms/sanitize";
 import type { Locale } from "@/lib/i18n/config";
 import { localeHref, pick } from "@/lib/i18n/config";
@@ -86,6 +87,23 @@ export function serviceIcon(slug: string, categoryIcon: string): string {
  */
 const tintOf = (id: number) => String(((id % 4) + 4) % 4);
 
+/**
+ * What one card carries when its page is a Visual Editor route (Batch 21):
+ * each part's node attributes — the editor's selection marks in the canvas,
+ * and the card's published styles and motion everywhere. Supplied by the
+ * category page; absent, the markup is exactly what it always was.
+ */
+export type CardMarks = {
+  /** The card's own region root, on the `<li>`. */
+  item: NodeAttrs;
+  link: NodeAttrs;
+  badge: NodeAttrs;
+  title: NodeText;
+  intro: NodeText | null;
+  action: NodeAttrs;
+  image: MediaNode;
+};
+
 type Props = {
   rows: ServiceRow[];
   locale: Locale;
@@ -95,6 +113,8 @@ type Props = {
   /** Already loaded by the page — no card fetches anything of its own. */
   media: Map<number, MediaRef>;
   learnMore: string;
+  /** Per-card node attributes on an editable route; see `CardMarks`. */
+  marks?: (service: ServiceRow, intro: string) => CardMarks;
 };
 
 /**
@@ -116,6 +136,7 @@ export function ServiceCardGrid({
   categoryIcon,
   media,
   learnMore,
+  marks,
 }: Props) {
   if (!rows.length) return null;
 
@@ -125,21 +146,28 @@ export function ServiceCardGrid({
         {rows.map((service) => {
           const image = service.imageId ? media.get(service.imageId) ?? null : null;
           const intro = toPlainText(pick(locale, service.introEn, service.introAr), 150);
+          const title = pick(locale, service.titleEn, service.titleAr);
+          const mark = marks?.(service, intro);
           return (
-            <li key={service.id} className="min-w-0">
+            <li key={service.id} {...mark?.item} className="min-w-0">
               <Link
                 href={localeHref(locale, `/services/${categorySlug}/${service.slug}`)}
+                {...mark?.link}
                 className="svc-card"
               >
                 <span className="svc-card-body">
-                  <span className="svc-card-badge">
+                  <span {...mark?.badge} className="svc-card-badge">
                     <Icon name={serviceIcon(service.slug, categoryIcon)} size={17} />
                   </span>
-                  <span className="svc-card-title">
-                    {pick(locale, service.titleEn, service.titleAr)}
+                  <span {...mark?.title.attrs} className="svc-card-title">
+                    {mark ? mark.title.content : title}
                   </span>
-                  {intro ? <span className="svc-card-intro">{intro}</span> : null}
-                  <span className="svc-card-action">
+                  {intro ? (
+                    <span {...mark?.intro?.attrs} className="svc-card-intro">
+                      {mark?.intro ? mark.intro.content : intro}
+                    </span>
+                  ) : null}
+                  <span {...mark?.action} className="svc-card-action">
                     {learnMore}
                     <Icon name="arrowRight" size={13} className="svc-card-arrow" />
                   </span>
@@ -147,7 +175,13 @@ export function ServiceCardGrid({
 
                 {/* Decorative: the service is already named beside it, so the
                     picture is never the only copy of anything. */}
-                <span className="svc-wedge" data-tint={tintOf(service.id)} data-image={image ? "true" : "false"} aria-hidden>
+                <span
+                  {...mark?.image.box}
+                  className="svc-wedge"
+                  data-tint={tintOf(service.id)}
+                  data-image={image ? "true" : "false"}
+                  aria-hidden
+                >
                   <span className="svc-wedge-fill">
                     {image ? (
                       <MediaImage
@@ -156,6 +190,7 @@ export function ServiceCardGrid({
                         alt=""
                         sizes="(max-width: 640px) 28vw, (max-width: 1280px) 15vw, 10vw"
                         className="svc-wedge-img"
+                        {...mark?.image.image}
                       />
                     ) : null}
                   </span>

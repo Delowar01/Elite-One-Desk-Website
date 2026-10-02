@@ -504,11 +504,11 @@ export function LayersPanel({
  * decided it from the block registry at the moment it drew the page, and a
  * second opinion computed in the panel is a second thing to keep in step.
  */
-const editableOf = (section: EditorSectionMeta): Set<string> =>
+export const editableOf = (section: EditorSectionMeta): Set<string> =>
   new Set(section.nodes.filter((node) => node.edit).map((node) => node.address));
 
 /** For a reader who may not edit text: no row offers to (Batch 18). */
-const NO_ADDRESSES: Set<string> = new Set();
+export const NO_ADDRESSES: Set<string> = new Set();
 
 /** What each kind of node is called, in words, beside its icon. */
 const GROUP: Record<LayerNode["group"], { icon: string; word: string }> = {
@@ -526,7 +526,7 @@ const GROUP: Record<LayerNode["group"], { icon: string; word: string }> = {
  * names what it would open, because a screen reader gets nothing from a tint
  * and neither does a greyscale screenshot.
  */
-function LayerRow({
+export function LayerRow({
   node,
   open,
   lockSet,
@@ -658,7 +658,7 @@ function LayerRow({
  * node, and it is not a permission — the server's checks are unchanged and the
  * node is still selectable from this panel.
  */
-function LockButton({
+export function LockButton({
   address,
   locked,
   label,
@@ -770,7 +770,7 @@ function BlockPicker({
   );
 }
 
-function RowButton({
+export function RowButton({
   label,
   icon,
   rotate,
@@ -797,7 +797,7 @@ function RowButton({
   );
 }
 
-function Badge({ tone, children }: { tone: "draft" | "new" | "muted" | "reuse"; children: React.ReactNode }) {
+export function Badge({ tone, children }: { tone: "draft" | "new" | "muted" | "reuse"; children: React.ReactNode }) {
   const colour =
     tone === "new"
       ? "#5ad19a"

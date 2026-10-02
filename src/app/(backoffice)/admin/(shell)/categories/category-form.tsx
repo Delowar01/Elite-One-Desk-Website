@@ -26,6 +26,8 @@ export type CategoryValues = {
   bodyAr: string;
   ctaLabelEn: string;
   ctaLabelAr: string;
+  /** Batch 21: where the hero's primary button goes. Empty means /contact. */
+  ctaHref: string;
   icon: string;
   imageId: number | null;
   sortOrder: number;
@@ -107,6 +109,20 @@ export function CategoryForm({
         {bilingual("Summary", "summary", values, "textarea", 3)}
         {bilingual("Body", "body", values, "textarea", 8)}
         {bilingual("Call-to-action label", "ctaLabel", values)}
+        <Field
+          label="Call-to-action link"
+          name="ctaHref"
+          hint="A site path such as /contact, or a full https:// address. Leave empty for /contact."
+        >
+          <input
+            id="ctaHref"
+            name="ctaHref"
+            defaultValue={category.ctaHref ?? ""}
+            placeholder="/contact"
+            dir="ltr"
+            className="admin-input"
+          />
+        </Field>
 
         <div className="grid gap-4 sm:grid-cols-3">
           <Field

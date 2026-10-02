@@ -175,7 +175,8 @@ export async function selectFromLayers(page: Page, address: string, timeoutMs = 
 /** The address the Inspector is showing, exactly — never a prefix of it. */
 export async function inspectorAddress(page: Page): Promise<string> {
   const codes = await page.locator("aside[aria-label='Inspector'] code").allTextContents();
-  return codes.map((text) => text.trim()).find((text) => text.startsWith("section:")) ?? "";
+  // A page section's address, or a dynamic route region's (Batch 21): `service:12/field:intro`.
+  return codes.map((text) => text.trim()).find((text) => /^[A-Za-z]+:[1-9][0-9]*(\/|$)/.test(text)) ?? "";
 }
 
 /** Waits, bounded, for the Inspector to show `address`. Returns what it shows at the end. */

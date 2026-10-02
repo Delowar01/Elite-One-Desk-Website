@@ -11,6 +11,7 @@
   "replay-selection": 12,
   "restore-selection": 7,
   "reusable": 7,
+  "route-concurrency": 8,
   "smooth-scroll-wheel": 2,
   "undo": 10
 }

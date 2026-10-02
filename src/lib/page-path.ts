@@ -44,6 +44,26 @@ export function previewPagePath(
 }
 
 /**
+ * The same, for a dynamic route (Batch 21): its own public path — a category
+ * page is `/services/<slug>`, not a CMS slug — in the edition asked for, with
+ * the same preview flags. The path always comes from a row the server found,
+ * never from the query string.
+ */
+export function previewRoutePath(
+  path: string,
+  locale: Locale,
+  options: { nonce?: number | string; editor?: { bridgeId: string } } = {},
+): string {
+  const params = new URLSearchParams({ preview: "1" });
+  if (options.editor) {
+    params.set("editor", "1");
+    params.set("bridge", options.editor.bridgeId);
+  }
+  if (options.nonce !== undefined) params.set("r", String(options.nonce));
+  return `${localeHref(locale, path)}?${params}`;
+}
+
+/**
  * One pane of Version Compare (Batch 16): the page's own address, asking for
  * one state of it — `published`, or a version by id. Nothing else travels: no
  * snapshot, no JSON, nothing the server did not store itself. The server

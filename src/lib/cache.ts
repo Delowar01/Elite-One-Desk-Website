@@ -18,6 +18,8 @@ export const TAGS = {
   testimonials: "testimonials",
   faqs: "faqs",
   seo: "seo",
+  /** Published presentation of dynamic routes: styles, motion, template copy (Batch 21). */
+  routes: "routes",
 } as const;
 
 export type CacheTag = (typeof TAGS)[keyof typeof TAGS];

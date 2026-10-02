@@ -1158,9 +1158,10 @@ describe("shortcuts: the editor's keys, except where a text field owns them", ()
     assert.match(SHELL, /onShortcut=\{onShortcut\}/);
   });
 
-  test("the forwarded key is one word from a closed list, in protocol version 6", () => {
+  test("the forwarded key is one word from a closed list, since protocol version 6", () => {
     const bridgeId = "0123456789abcdef0123456789abcdef";
-    assert.equal(PROTOCOL_VERSION, 6);
+    // Introduced in 6 (Batch 16); 7 (Batch 21) left the shortcut unchanged.
+    assert.equal(PROTOCOL_VERSION, 7);
     assert.deepEqual([...SHORTCUT_COMMANDS], ["undo", "redo"]);
     for (const command of SHORTCUT_COMMANDS) {
       assert.deepEqual(

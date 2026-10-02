@@ -109,9 +109,16 @@ export function middleware(request: NextRequest) {
      *
      * A reusable component's own preview (Batch 17) is the same kind of
      * thing — a signed-in editor looking at content that is not live — and
-     * gets the same headers, for the same reasons.
+     * gets the same headers, for the same reasons. So does a draft preview,
+     * the Visual Editor's canvas included (Batch 21): a page asked for with
+     * `?preview` may be showing unpublished drafts, and nothing between the
+     * server and the editor should keep a copy of it.
      */
-    if (request.nextUrl.searchParams.has("compare") || request.nextUrl.searchParams.has("component")) {
+    if (
+      request.nextUrl.searchParams.has("compare") ||
+      request.nextUrl.searchParams.has("component") ||
+      request.nextUrl.searchParams.has("preview")
+    ) {
       response.headers.set("X-Robots-Tag", "noindex, nofollow, noarchive");
       response.headers.set("Cache-Control", "private, no-store, max-age=0");
     }

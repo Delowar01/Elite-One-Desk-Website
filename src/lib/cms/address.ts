@@ -8,6 +8,11 @@
  *     What the editor and the canvas pass to each other. It names a section by
  *     its database id, which only makes sense while that row exists.
  *
+ *     On a dynamic route (Batch 21) the owner is the resource instead —
+ *     `service:12/field:intro`, `category:3/field:title` — named by the owner
+ *     vocabulary in `lib/routes/owners.ts`. Everything after the owner is the
+ *     same relative path, with the same grammar.
+ *
  *   Relative node path   `field:links/item:i_8Gk3pZmQ2v/field:label`
  *     What is persisted, inside the row that is already the section. It carries
  *     no section id at all — and it must not, because `duplicateSection`
@@ -22,6 +27,12 @@
  * Nothing here is a selector. No `nth-child`, no XPath, no CSS. A path is a
  * list of named, typed segments and it is validated as one.
  */
+
+import {
+  editorKeyOf,
+  ownerKeyOfEditorKey,
+  parseOwnerKey,
+} from "@/lib/routes/owners";
 
 import { ITEM_ID_PATTERN } from "./item-id";
 
@@ -107,29 +118,53 @@ export function normalizeNodePath(input: unknown): string | null {
 /* Runtime addresses                                                          */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A parsed runtime address.
+ *
+ * `sectionId` is the owner's **editor key**: a page section's id, or — for an
+ * owner on a dynamic route — the negative key `lib/routes/owners.ts` encodes
+ * losslessly from `type:id`. One numeric identity is what lets the editor's
+ * buffers, Undo and Layers treat a service card exactly like a section, while
+ * every address on the wire stays the readable `service:12/…` form. Server
+ * code that acts on page sections refuses any id that is not a positive
+ * integer, so a route key can never be mistaken for a section.
+ */
 export type NodeAddress = { sectionId: number; path: NodePath };
 
 const SECTION_PREFIX = "section:";
 
+/** `section:42` or a route owner (`service:12`), as an editor key. */
+function parseOwnerPart(part: string): number | null {
+  if (part.startsWith(SECTION_PREFIX)) {
+    const idPart = part.slice(SECTION_PREFIX.length);
+    return /^[1-9][0-9]{0,9}$/.test(idPart) ? Number(idPart) : null;
+  }
+  const owner = parseOwnerKey(part);
+  return owner ? editorKeyOf(owner) : null;
+}
+
 export function parseAddress(input: unknown): NodeAddress | null {
   if (typeof input !== "string") return null;
   const raw = input.trim();
-  if (!raw.startsWith(SECTION_PREFIX)) return null;
 
-  const rest = raw.slice(SECTION_PREFIX.length);
-  const slash = rest.indexOf("/");
-  const idPart = slash === -1 ? rest : rest.slice(0, slash);
-  if (!/^[1-9][0-9]{0,9}$/.test(idPart)) return null;
-  const sectionId = Number(idPart);
+  const slash = raw.indexOf("/");
+  const sectionId = parseOwnerPart(slash === -1 ? raw : raw.slice(0, slash));
+  if (sectionId === null) return null;
 
   if (slash === -1) return { sectionId, path: [] };
-  const path = parseNodePath(rest.slice(slash + 1));
+  const path = parseNodePath(raw.slice(slash + 1));
   return path ? { sectionId, path } : null;
+}
+
+/** The owner half of an address: `section:42`, or `service:12` for a route owner. */
+export function formatOwner(sectionId: number): string {
+  return ownerKeyOfEditorKey(sectionId) ?? `${SECTION_PREFIX}${sectionId}`;
 }
 
 /** `section:42`, or `section:42/<relative path>`. Never `section:42/root`. */
 export function formatAddress(sectionId: number, path: NodePath = []): string {
-  return path.length ? `${SECTION_PREFIX}${sectionId}/${formatNodePath(path)}` : `${SECTION_PREFIX}${sectionId}`;
+  const owner = formatOwner(sectionId);
+  return path.length ? `${owner}/${formatNodePath(path)}` : owner;
 }
 
 /** Runtime address from a section id and a persisted relative path. */

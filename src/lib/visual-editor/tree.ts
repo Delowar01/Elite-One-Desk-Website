@@ -5,7 +5,7 @@ import {
   parseNodePath,
   type NodePath,
 } from "@/lib/cms/address";
-import { getBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
+import { getEditorBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
 import { ITEM_ID_KEY } from "@/lib/cms/item-id";
 import type { Locale } from "@/lib/i18n/config";
 
@@ -58,7 +58,7 @@ function declarationAt(
   blockType: string,
   path: NodePath,
 ): FieldDef | ItemFieldDef | null {
-  const block = getBlock(blockType);
+  const block = getEditorBlock(blockType);
   if (!block) return null;
 
   let fields: readonly (FieldDef | ItemFieldDef)[] = block.fields;
@@ -141,6 +141,9 @@ export function directEditAt(blockType: string, relativePath: string): DirectEdi
 
   const declared = declarationAt(blockType, path);
   if (!declared) return null;
+  // Text a route draws from somewhere else (Batch 21) is shown, not stored:
+  // typing into it would be typing into nothing.
+  if ("generated" in declared && declared.generated) return null;
   const type = declared.type ?? "text";
   if (type !== "text" && type !== "textarea") return null;
   return { multiline: type === "textarea", localised: declared.localised === true };

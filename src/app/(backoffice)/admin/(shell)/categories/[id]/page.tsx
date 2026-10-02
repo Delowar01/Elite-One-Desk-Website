@@ -28,6 +28,7 @@ const BLANK: CategoryValues = {
   bodyAr: "",
   ctaLabelEn: "",
   ctaLabelAr: "",
+  ctaHref: "",
   icon: "desk",
   imageId: null,
   sortOrder: 0,

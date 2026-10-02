@@ -1,4 +1,4 @@
-import { getBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
+import { getEditorBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
 import { formatNodePath, parseNodePath, type NodePath } from "@/lib/cms/address";
 import {
   DIRECTIONAL,
@@ -67,7 +67,7 @@ import type { Breakpoint } from "@/lib/cms/styles";
 export type MotionKind = "section" | "list" | "item" | "text" | "media" | "slot";
 
 /** Why a node offers nothing, in words the panel can repeat. */
-export type MotionRefusal = "own" | "inline" | "glyph" | "unaddressable";
+export type MotionRefusal = "own" | "inline" | "glyph" | "unaddressable" | "still";
 
 export type MotionCapability =
   | {
@@ -132,12 +132,15 @@ function fieldCapability(field: FieldDef | ItemFieldDef | undefined): MotionCapa
  * refuses offers nothing rather than guessing at segments.
  */
 export function motionTargetFor(blockType: string, path: string | undefined): MotionCapability {
+  // A block that is the site's own chrome — a dynamic route's breadcrumbs —
+  // never moves, at its root or anywhere inside it (Batch 21).
+  if (getEditorBlock(blockType)?.still) return refuse("still");
   if (path === undefined || path === "root") return SECTION;
   const parsed: NodePath | null = parseNodePath(path);
   if (!parsed) return refuse("unaddressable");
   if (parsed.length === 0) return SECTION;
 
-  const block = getBlock(blockType);
+  const block = getEditorBlock(blockType);
   const [first, second, third] = parsed;
 
   if (first!.kind === "slot") return SLOT;
@@ -288,7 +291,9 @@ export function motionForBlock(input: unknown, blockType: string): MotionDocumen
     return out;
   };
 
-  const section = keep(document.section, SECTION);
+  // The section's own capability: a still block's root takes nothing (Batch 21).
+  const root = motionTargetFor(blockType, undefined);
+  const section = root.kind === null ? {} : keep(document.section, root);
   const nodes: Record<string, MotionTarget> = {};
   for (const [path, target] of Object.entries(document.nodes)) {
     const capability = motionTargetFor(blockType, path);
@@ -401,4 +406,5 @@ export const MOTION_REFUSAL_LABELS: Record<MotionRefusal, string> = {
   inline: "This is an inline piece of a sentence; move the sentence instead.",
   glyph: "Icons move with the element around them.",
   unaddressable: "This element cannot carry motion of its own.",
+  still: "This is the site's navigation, generated for every page; it does not move.",
 };

@@ -1,5 +1,5 @@
 import { parseNodePath } from "@/lib/cms/address";
-import { getBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
+import { getEditorBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
 import { ITEM_ID_KEY } from "@/lib/cms/item-id";
 import { pick, type Locale } from "@/lib/i18n/config";
 
@@ -47,7 +47,7 @@ export function describeAddress(
   relativePath: string,
   text?: string,
 ): AddressDescription {
-  const block = getBlock(blockType);
+  const block = getEditorBlock(blockType);
   const blockName = block?.name ?? humanise(blockType);
   const path = parseNodePath(relativePath);
 
@@ -85,7 +85,7 @@ const truncate = (value: string, max = 42): string =>
 
 /** The registry's name for a block, for Layers rows. */
 export const blockNameOf = (blockType: string): string =>
-  getBlock(blockType)?.name ?? humanise(blockType);
+  getEditorBlock(blockType)?.name ?? humanise(blockType);
 
 /**
  * The same description, for a path nothing on screen is showing.
@@ -118,7 +118,7 @@ function rowText(
   const path = parseNodePath(relativePath);
   if (!path) return undefined;
 
-  const block = getBlock(blockType);
+  const block = getEditorBlock(blockType);
   let fields: readonly (FieldDef | ItemFieldDef)[] = block?.fields ?? [];
   let list: unknown = undefined;
   let text: string | undefined;

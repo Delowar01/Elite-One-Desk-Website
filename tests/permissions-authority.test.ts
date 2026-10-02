@@ -247,6 +247,11 @@ describe("12, 14, 16 · the places that must ask, as the source states them", ()
     assert.ok(structureGate > 0 && structureGate < step.indexOf("runLayoutStep(step)"));
     const contentGate = step.indexOf('if (!allowed("editContent")) {');
     assert.ok(contentGate > 0 && contentGate < step.indexOf('setDomainValue(change.sectionId, "content", values)'));
+    // Batch 21: a route step made only of order and visibility is layout, and asks for
+    // content.structure — before the same write, and instead of the content check.
+    const layoutGate = step.indexOf("if (layoutOnly) {");
+    assert.ok(layoutGate > 0 && layoutGate < contentGate);
+    assert.ok(step.indexOf('if (!allowed("editStructure")) {', layoutGate) < contentGate);
     assert.ok(step.indexOf('refuse("viewComponents")') < step.indexOf('setDomainValue(change.sectionId, "content", values)'));
     assert.ok(step.indexOf('refuse("editAdvancedStyle")') < step.indexOf("setDomainValue(change.sectionId, change.domain, target)"));
     // A refused step is not taken off the history.

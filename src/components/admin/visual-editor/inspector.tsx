@@ -2,7 +2,7 @@
 
 import { Icon } from "@/components/ui/icon";
 import type { MediaOption } from "@/components/admin/media-picker";
-import { getBlock } from "@/lib/cms/blocks";
+import { getEditorBlock } from "@/lib/cms/blocks";
 import { DRAFT_LABEL, draftKindOf, type DraftKind } from "@/lib/cms/drafts";
 import type { MotionDocument } from "@/lib/cms/motion-doc";
 import type { Breakpoint, StyleDocument } from "@/lib/cms/styles";
@@ -12,6 +12,7 @@ import { describeAddress } from "@/lib/visual-editor/labels";
 import type { EditorNodeMeta, EditorSectionMeta } from "@/lib/visual-editor/protocol";
 
 import { ContentBody } from "./content-inspector";
+import { RouteSource, type RouteControls } from "./route-source";
 import { MotionInspector, type ReplayControl } from "./motion-inspector";
 import type { ReuseControls } from "./reuse-panel";
 import { StyleInspector } from "./style-inspector";
@@ -140,6 +141,7 @@ export function InspectorPanel({
   onSelect,
   replay,
   reuse,
+  route,
 }: {
   node: EditorNodeMeta | null;
   sections: EditorSectionMeta[];
@@ -166,10 +168,12 @@ export function InspectorPanel({
   replay: ReplayControl;
   /** Reusable components, for the Content tab (Batch 17). */
   reuse?: ReuseControls;
+  /** A dynamic route's region (Batch 21): its record, its conflicts, its resource authority. */
+  route?: RouteControls;
 }) {
   const section = node ? sections.find((row) => row.sectionId === node.sectionId) : undefined;
   const described = node ? describeAddress(node.blockType, node.relativePath, node.text) : null;
-  const block = node ? getBlock(node.blockType) : null;
+  const block = node ? getEditorBlock(node.blockType) : null;
   const pending = buffer ? draftKindOfData(buffer.data) : "none";
   /**
    * One step out: the same address with its last segment dropped. `null` on a
@@ -248,6 +252,10 @@ export function InspectorPanel({
 
             {!access.content && !access.style && !access.motion ? <ReadOnlyNote /> : null}
 
+            {buffer?.data.route && route ? (
+              <RouteSource info={buffer.data.route} node={node} block={block ?? null} controls={route} />
+            ) : null}
+
             {buffer ? (
               <>
                 <Tabs tab={tab} onTab={onTab} buffer={buffer} />
@@ -264,9 +272,10 @@ export function InspectorPanel({
                       buffer={buffer}
                       media={media}
                       locale={locale}
-                      canContent={access.content}
+                      canContent={access.content && (!buffer.data.route || Boolean(route?.mayRecord(buffer.data.route)))}
+                      canStructure={Boolean(route?.canStructure)}
                       onValues={onValues}
-                      reuse={reuse}
+                      reuse={buffer.data.route ? undefined : reuse}
                     />
                   ) : (
                     <p className="text-[0.76rem] leading-relaxed text-muted">
@@ -316,8 +325,8 @@ export function InspectorPanel({
                 <Row label="Block">
                   {described.blockName} <span className="text-muted">({node.blockType})</span>
                 </Row>
-                <Row label="Section">
-                  #{node.sectionId}
+                <Row label={buffer?.data.route ? "Region" : "Section"}>
+                  {buffer?.data.route ? buffer.data.route.ownerKey : `#${node.sectionId}`}
                   {buffer ? ` · revision ${buffer.data.revision}` : ""}
                 </Row>
                 <Row label="Address">
@@ -526,8 +535,9 @@ function SaveBar({
         </p>
       ) : null}
       <p className="mt-1.5 text-[0.7rem] leading-relaxed text-muted">
-        Saving puts this in the page’s draft. Publish it from Pages &amp; sections when you are
-        ready.
+        {buffer.data.route
+          ? "Saving puts this in the page’s draft — the live page does not change. Publish it from the Publish button above when you are ready."
+          : "Saving puts this in the page’s draft. Publish it from Pages & sections when you are ready."}
       </p>
     </div>
   );

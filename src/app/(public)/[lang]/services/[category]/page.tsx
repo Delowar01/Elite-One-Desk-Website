@@ -2,31 +2,36 @@ import Link from "next/link";
 import { notFound, permanentRedirect } from "next/navigation";
 
 import { Breadcrumbs } from "@/components/site/breadcrumbs";
+import { EditorBridge } from "@/components/site/editor-bridge";
 import { FaqAccordion } from "@/components/site/faq-accordion";
 import { JsonLd } from "@/components/site/json-ld";
 import { MediaImage } from "@/components/site/media-image";
+import { MotionRuntime } from "@/components/site/motion-runtime";
+import { PreviewBanner } from "@/components/site/preview-banner";
 import { Reveal } from "@/components/site/reveal";
+import { motionSignature, needsRuntime, RegionRoot, regionOf, type Region } from "@/components/site/route-region";
 import { SectionHeading } from "@/components/site/section-heading";
-import { ServiceCardGrid } from "@/components/site/service-card";
+import { ServiceCardGrid, type CardMarks } from "@/components/site/service-card";
+import { StillPresentation } from "@/components/site/still-presentation";
 import { Icon } from "@/components/ui/icon";
-import { isLocale, localeHref, pick } from "@/lib/i18n/config";
+import { withNodeStyle } from "@/lib/cms/node";
+import { isLocale, localeHref, pick, type Locale } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n/dictionary";
-import { getCatalog, getCategoryBySlug, getFaqs, getPackageCatalog } from "@/lib/queries/catalog";
+import { getCategoryBySlug, getPackageCatalog, type ServiceRow } from "@/lib/queries/catalog";
 import { getMediaMap } from "@/lib/queries/site";
+import { resolveCategoryRender } from "@/lib/routes/category-view";
+import { documentEditorKey } from "@/lib/routes/owners";
+import { hasPackageHub } from "@/lib/routes/package-hub";
 import { breadcrumbJsonLd, buildMetadata, faqJsonLd } from "@/lib/seo";
 import { getSettings, whatsappLink } from "@/lib/settings";
 import { categoryMove } from "@/lib/taxonomy-moves";
 
-/**
- * The one category that fronts a package catalogue. A constant rather than a
- * column because exactly one does, and a column nobody would ever set twice is
- * a column that misleads the next reader.
- */
-const PACKAGE_HUB_CATEGORY = "travel-tourism";
+type Params = {
+  params: Promise<{ lang: string; category: string }>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
 
-type Params = { params: Promise<{ lang: string; category: string }> };
-
-export async function generateMetadata({ params }: Params) {
+export async function generateMetadata({ params }: Pick<Params, "params">) {
   const { lang, category: slug } = await params;
   if (!isLocale(lang)) return {};
   const category = await getCategoryBySlug(slug);
@@ -46,19 +51,41 @@ export async function generateMetadata({ params }: Params) {
   });
 }
 
-export default async function CategoryPage({ params }: Params) {
+/**
+ * The category's template wording (Batch 21): the region's own copy for this
+ * edition, else the site's standard wording *for this edition*. Never the
+ * other language's custom copy — an Arabic page whose Arabic was left empty
+ * reads the standard Arabic, not somebody's English.
+ */
+const copyOf = (region: Region, locale: Locale, field: string, standard: string): string =>
+  (locale === "ar" ? region.copy[`${field}Ar`] : region.copy[`${field}En`])?.trim() || standard;
+
+/** A call to action's destination: a site path in this edition, or an address as given. */
+const ctaTarget = (locale: Locale, href: string): { href: string; external: boolean } =>
+  href.startsWith("/") ? { href: localeHref(locale, href), external: false } : { href, external: true };
+
+/**
+ * A service category's page: hero, breadcrumbs, body, the services in their
+ * groups, the Tour Packages panel where the route has one, and the
+ * category's questions.
+ *
+ * Every region is drawn through `regionOf` (Batch 21), which gives it its
+ * styles and motion everywhere and its Visual Editor identity in an authorised
+ * editor canvas only — `resolveCategoryRender` decides which, from the
+ * session. A visitor's page carries no editor attribute, no draft and no
+ * bridge, and reads the same cached catalogue it always did.
+ */
+export default async function CategoryPage({ params, searchParams }: Params) {
   const { lang, category: slug } = await params;
   if (!isLocale(lang)) notFound();
 
-  const [catalog, media, allFaqs, settings] = await Promise.all([
-    getCatalog(),
+  const [view, media, settings] = await Promise.all([
+    resolveCategoryRender(slug, await searchParams),
     getMediaMap(),
-    getFaqs(),
     getSettings(),
   ]);
 
-  const category = catalog.categories.find((c) => c.slug === slug);
-  if (!category) {
+  if (!view) {
     // Absent from the database is the only condition under which a retired
     // address is recognised — so before the restructure these slugs resolve
     // normally and nothing here runs.
@@ -67,20 +94,33 @@ export default async function CategoryPage({ params }: Params) {
     notFound();
   }
 
+  const { category, groups, services, faqs: questions } = view.data;
   const dict = getDictionary(lang);
-  const services = catalog.byCategory.get(category.id) ?? [];
-  const subs = catalog.subcategories.filter((s) => s.categoryId === category.id);
+  const id = category.id;
   const image = category.imageId ? media.get(category.imageId) : null;
   const title = pick(lang, category.titleEn, category.titleAr);
   const whatsapp = whatsappLink(settings, lang, title);
 
-  const faqs = allFaqs
-    .filter((faq) => faq.scope === "category" && faq.categoryId === category.id)
-    .map((faq) => ({
+  const hero = regionOf(view, { type: "category", id });
+  const crumbs = regionOf(view, { type: "categoryCrumbs", id });
+  const body = regionOf(view, { type: "categoryBody", id });
+  const servicesRegion = regionOf(view, { type: "categoryServices", id });
+  const faqsRegion = regionOf(view, { type: "categoryFaqs", id });
+  const groupRegions = new Map(groups.map((group) => [group.id, regionOf(view, { type: "subcategory", id: group.id })]));
+  const cardRegions = new Map(services.map((service) => [service.id, regionOf(view, { type: "service", id: service.id })]));
+  const faqRegions = new Map(questions.map((faq) => [faq.id, regionOf(view, { type: "faq", id: faq.id })]));
+
+  const faqs = questions.map((faq) => {
+    const region = faqRegions.get(faq.id)!;
+    return {
       id: faq.id,
       question: pick(lang, faq.questionEn, faq.questionAr),
       answer: pick(lang, faq.answerEn, faq.answerAr),
-    }));
+      marks: { item: region.root, question: region.node("field:question"), answer: region.node("field:answer") },
+    };
+  });
+  // Structured data describes the page a visitor gets: only what is shown.
+  const shownFaqs = faqs.filter((faq) => !view.hidden.has(`faq:${faq.id}`));
 
   const trail = [
     { name: dict.nav.home, path: "/" },
@@ -90,27 +130,94 @@ export default async function CategoryPage({ params }: Params) {
 
   // Featured first inside each group, then the editor's order — so the two
   // services a customer most often wants lead the list they are in.
-  const featuredFirst = (rows: typeof services) =>
-    [...rows].sort((a, b) => Number(b.isFeatured) - Number(a.isFeatured));
+  const featuredFirst = (rows: ServiceRow[]) => [...rows].sort((a, b) => Number(b.isFeatured) - Number(a.isFeatured));
 
-  const grouped = subs
+  const grouped = groups
     .map((sub) => ({ sub, rows: featuredFirst(services.filter((s) => s.subcategoryId === sub.id)) }))
     .filter((group) => group.rows.length > 0);
   const ungrouped = featuredFirst(services.filter((s) => !s.subcategoryId));
 
   // The Tour Packages panel renders only where there is a catalogue to point
-  // at: the right category, and at least one destination that actually holds a
-  // published package. Before the data cutover that is false, so this page is
-  // unchanged.
-  const hub =
-    slug === PACKAGE_HUB_CATEGORY ? (await getPackageCatalog()).grouped : [];
+  // at: the route's own package-hub category, and at least one destination
+  // that actually holds a published package.
+  const hub = hasPackageHub(category) ? (await getPackageCatalog()).grouped : [];
+  const hubRegion = hub.length ? regionOf(view, { type: "categoryHub", id }) : null;
 
-  return (
+  const cardMarks = (service: ServiceRow, intro: string): CardMarks => {
+    const region = cardRegions.get(service.id)!;
+    return {
+      item: region.root,
+      link: region.node("field:link"),
+      badge: region.node("field:badge"),
+      title: region.node.text("field:title", pick(lang, service.titleEn, service.titleAr)),
+      intro: intro ? region.node.text("field:intro", intro) : null,
+      action: region.node("field:action"),
+      image: region.media("field:image"),
+    };
+  };
+
+  const tagline = pick(lang, category.taglineEn, category.taglineAr);
+  const summary = pick(lang, category.summaryEn, category.summaryAr);
+  const bodyHtml = pick(lang, category.bodyEn, category.bodyAr);
+  const cta = ctaTarget(lang, category.ctaHref || "/contact");
+  const ctaLabel = pick(lang, category.ctaLabelEn, category.ctaLabelAr) || dict.nav.primaryCta;
+  const iconAttrs = hero.node("field:icon");
+  const titlePart = hero.node.text("field:title", title);
+  const taglinePart = tagline ? hero.node.text("field:tagline", tagline) : null;
+  const summaryPart = summary ? hero.node.text("field:summary", summary) : null;
+  const backdrop = hero.media("field:image");
+
+  const hubEyebrow = hubRegion
+    ? hubRegion.node.text("field:eyebrow", copyOf(hubRegion, lang, "eyebrow", dict.common.tourPackages))
+    : null;
+  const hubHeading = hubRegion
+    ? hubRegion.node.text(
+        "field:heading",
+        copyOf(hubRegion, lang, "heading", lang === "ar" ? "اختر وجهتك" : "Choose your destination"),
+      )
+    : null;
+  const hubDescription = hubRegion
+    ? hubRegion.node.text(
+        "field:description",
+        copyOf(
+          hubRegion,
+          lang,
+          "description",
+          lang === "ar"
+            ? "برامج مُعدّة لكل وجهة — اختر واحداً كما هو أو اطلب تعديله."
+            : "Prepared programmes for every destination — take one as it stands, or ask us to change it.",
+        ),
+      )
+    : null;
+
+  const regions = [
+    hero,
+    crumbs,
+    body,
+    servicesRegion,
+    faqsRegion,
+    ...groupRegions.values(),
+    ...cardRegions.values(),
+    ...faqRegions.values(),
+    ...(hubRegion ? [hubRegion] : []),
+  ];
+
+  const page = (
     <>
-      <section className="relative overflow-clip pb-8 pt-[clamp(6.5rem,9vw,9rem)]">
+      {view.mode === "preview" ? <PreviewBanner /> : null}
+
+      <RegionRoot region={hero} className="relative overflow-clip pb-8 pt-[clamp(6.5rem,9vw,9rem)]">
         {image ? (
-          <div className="pointer-events-none absolute inset-0 -z-20">
-            <MediaImage media={image} locale={lang} alt="" sizes="100vw" priority className="size-full object-cover opacity-25" />
+          <div {...backdrop.box} className="pointer-events-none absolute inset-0 -z-20">
+            <MediaImage
+              media={image}
+              locale={lang}
+              alt=""
+              sizes="100vw"
+              priority
+              className="size-full object-cover opacity-25"
+              {...backdrop.image}
+            />
             <div
               className="absolute inset-0"
               style={{
@@ -126,102 +233,141 @@ export default async function CategoryPage({ params }: Params) {
         <div className="shell shell-wide">
           <div className="flex items-center gap-3">
             <span
+              {...iconAttrs}
               className="flex size-11 items-center justify-center rounded-[var(--radius-sm)] border border-line"
-              style={{ color: "var(--color-peach)" }}
+              style={withNodeStyle({ color: "var(--color-peach)" }, iconAttrs)}
             >
               <Icon name={category.icon} size={20} />
             </span>
-            {pick(lang, category.taglineEn, category.taglineAr) ? (
-              <p className="eyebrow">{pick(lang, category.taglineEn, category.taglineAr)}</p>
+            {taglinePart ? (
+              <p {...taglinePart.attrs} className="eyebrow">
+                {taglinePart.content}
+              </p>
             ) : null}
           </div>
 
-          <h1 className="mt-5 max-w-3xl text-[length:var(--text-h1)]">{title}</h1>
-          {pick(lang, category.summaryEn, category.summaryAr) ? (
-            <p className="lede mt-5 max-w-2xl">{pick(lang, category.summaryEn, category.summaryAr)}</p>
+          <h1 {...titlePart.attrs} className="mt-5 max-w-3xl text-[length:var(--text-h1)]">
+            {titlePart.content}
+          </h1>
+          {summaryPart ? (
+            <p {...summaryPart.attrs} className="lede mt-5 max-w-2xl">
+              {summaryPart.content}
+            </p>
           ) : null}
 
           <div className="mt-8 flex flex-wrap gap-3">
-            <Link href={localeHref(lang, "/contact")} className="btn btn-primary">
-              {pick(lang, category.ctaLabelEn, category.ctaLabelAr) || dict.nav.primaryCta}
-              <Icon name="arrowRight" size={16} className="flip-rtl" />
-            </Link>
+            {cta.external ? (
+              <a href={cta.href} {...hero.node("field:ctaLabel")} className="btn btn-primary">
+                {ctaLabel}
+                <Icon name="arrowRight" size={16} className="flip-rtl" />
+              </a>
+            ) : (
+              <Link href={cta.href} {...hero.node("field:ctaLabel")} className="btn btn-primary">
+                {ctaLabel}
+                <Icon name="arrowRight" size={16} className="flip-rtl" />
+              </Link>
+            )}
             {whatsapp ? (
-              <a href={whatsapp} target="_blank" rel="noopener noreferrer" className="btn btn-ghost">
+              <a
+                href={whatsapp}
+                target="_blank"
+                rel="noopener noreferrer"
+                {...hero.node("field:whatsapp")}
+                className="btn btn-ghost"
+              >
                 <Icon name="whatsapp" size={16} strokeWidth={1.6} />
                 {dict.common.whatsappUs}
               </a>
             ) : null}
           </div>
         </div>
-      </section>
+      </RegionRoot>
 
-      <Breadcrumbs locale={lang} label={dict.nav.breadcrumb} trail={trail} />
+      <Breadcrumbs
+        locale={lang}
+        label={dict.nav.breadcrumb}
+        trail={trail}
+        marks={{ nav: crumbs.root, list: crumbs.node("field:trail") }}
+      />
 
-      {pick(lang, category.bodyEn, category.bodyAr) ? (
-        <section className="section-tight">
+      {bodyHtml || view.editor ? (
+        <RegionRoot region={body} className="section-tight">
           <div className="shell">
             <Reveal className="max-w-3xl">
-              <div
-                className="prose-eod"
-                dangerouslySetInnerHTML={{ __html: pick(lang, category.bodyEn, category.bodyAr) }}
-              />
+              {bodyHtml ? (
+                <div {...body.node("field:body")} className="prose-eod" dangerouslySetInnerHTML={{ __html: bodyHtml }} />
+              ) : (
+                // The editor canvas only: an empty body has nothing to click,
+                // so the region says it is there and empty.
+                <p className="route-placeholder">No category body yet. Select this region to write one.</p>
+              )}
             </Reveal>
           </div>
-        </section>
+        </RegionRoot>
       ) : null}
 
-      <section className="section-tight">
+      <RegionRoot region={servicesRegion} className="section-tight">
         <div className="shell shell-wide">
-          <SectionHeading eyebrow={dict.service.inThisCategory} title={dict.common.services} />
+          <SectionHeading
+            eyebrow={copyOf(servicesRegion, lang, "eyebrow", dict.service.inThisCategory)}
+            title={copyOf(servicesRegion, lang, "heading", dict.common.services)}
+            editor={servicesRegion.editor}
+            styles={servicesRegion.styles}
+            motion={servicesRegion.motion}
+            fields={{ eyebrow: "eyebrow", title: "heading" }}
+          />
 
           <div className="mt-10 space-y-14">
-            {grouped.map((group) => (
-              // The subcategory slug is the anchor the header dropdown points
-              // at, so a menu entry can land on a group rather than the top of
-              // a long page. scroll-padding-top on <html> keeps it clear of the
-              // fixed header.
-              <div key={group.sub.id} id={group.sub.slug} className="scroll-mt-28">
-                <div className="mb-6">
-                  <h3 className="text-[length:var(--text-h3)]">
-                    {pick(lang, group.sub.titleEn, group.sub.titleAr)}
-                  </h3>
-                  {pick(lang, group.sub.summaryEn, group.sub.summaryAr) ? (
-                    <p className="mt-2 max-w-2xl text-small text-muted">
-                      {pick(lang, group.sub.summaryEn, group.sub.summaryAr)}
-                    </p>
-                  ) : null}
-                </div>
-                <ServiceCardGrid
-                  rows={group.rows}
-                  locale={lang}
-                  categorySlug={slug}
-                  categoryIcon={category.icon}
-                  media={media}
-                  learnMore={dict.common.learnMore}
-                />
-              </div>
-            ))}
+            {grouped.map((group) => {
+              const region = groupRegions.get(group.sub.id)!;
+              const groupTitle = region.node.text("field:title", pick(lang, group.sub.titleEn, group.sub.titleAr));
+              const groupSummary = pick(lang, group.sub.summaryEn, group.sub.summaryAr);
+              const summaryText = groupSummary ? region.node.text("field:summary", groupSummary) : null;
+              return (
+                // The subcategory slug is the anchor the header dropdown points
+                // at, so a menu entry can land on a group rather than the top of
+                // a long page. scroll-padding-top on <html> keeps it clear of the
+                // fixed header.
+                <RegionRoot key={group.sub.id} region={region} as="div" id={group.sub.slug} className="scroll-mt-28">
+                  <div className="mb-6">
+                    <h3 {...groupTitle.attrs} className="text-[length:var(--text-h3)]">
+                      {groupTitle.content}
+                    </h3>
+                    {summaryText ? (
+                      <p {...summaryText.attrs} className="mt-2 max-w-2xl text-small text-muted">
+                        {summaryText.content}
+                      </p>
+                    ) : null}
+                  </div>
+                  <ServiceCardGrid
+                    rows={group.rows}
+                    locale={lang}
+                    categorySlug={slug}
+                    categoryIcon={category.icon}
+                    media={media}
+                    learnMore={dict.common.learnMore}
+                    marks={cardMarks}
+                  />
+                </RegionRoot>
+              );
+            })}
 
-            {hub.length ? (
+            {hubRegion && hubEyebrow && hubHeading && hubDescription ? (
               <Reveal>
-                <div className="panel p-7 sm:p-9">
-                  <p className="eyebrow">{dict.common.tourPackages}</p>
-                  <h3 className="mt-4 text-[length:var(--text-h3)]">
-                    {lang === "ar" ? "اختر وجهتك" : "Choose your destination"}
-                  </h3>
-                  <p className="lede mt-3 max-w-2xl">
-                    {lang === "ar"
-                      ? "برامج مُعدّة لكل وجهة — اختر واحداً كما هو أو اطلب تعديله."
-                      : "Prepared programmes for every destination — take one as it stands, or ask us to change it."}
+                <RegionRoot region={hubRegion} as="div" className="panel p-7 sm:p-9">
+                  <p {...hubEyebrow.attrs} className="eyebrow">
+                    {hubEyebrow.content}
                   </p>
-                  <ul className="mt-7 flex flex-wrap gap-2.5">
+                  <h3 {...hubHeading.attrs} className="mt-4 text-[length:var(--text-h3)]">
+                    {hubHeading.content}
+                  </h3>
+                  <p {...hubDescription.attrs} className="lede mt-3 max-w-2xl">
+                    {hubDescription.content}
+                  </p>
+                  <ul {...hubRegion.node("field:destinations")} className="mt-7 flex flex-wrap gap-2.5">
                     {hub.map(({ destination, packages }) => (
                       <li key={destination.id}>
-                        <Link
-                          href={localeHref(lang, `/packages/${destination.slug}`)}
-                          className="btn btn-ghost btn-sm"
-                        >
+                        <Link href={localeHref(lang, `/packages/${destination.slug}`)} className="btn btn-ghost btn-sm">
                           {pick(lang, destination.titleEn, destination.titleAr)}
                           <span className="text-muted">{packages.length}</span>
                         </Link>
@@ -229,12 +375,16 @@ export default async function CategoryPage({ params }: Params) {
                     ))}
                   </ul>
                   <div className="mt-7">
-                    <Link href={localeHref(lang, "/packages")} className="btn btn-primary btn-sm">
-                      {dict.common.viewPackages}
+                    <Link
+                      href={localeHref(lang, "/packages")}
+                      {...hubRegion.node("field:ctaLabel")}
+                      className="btn btn-primary btn-sm"
+                    >
+                      {copyOf(hubRegion, lang, "ctaLabel", dict.common.viewPackages)}
                       <Icon name="arrowRight" size={15} className="flip-rtl" />
                     </Link>
                   </div>
-                </div>
+                </RegionRoot>
               </Reveal>
             ) : null}
 
@@ -246,42 +396,68 @@ export default async function CategoryPage({ params }: Params) {
                 categoryIcon={category.icon}
                 media={media}
                 learnMore={dict.common.learnMore}
+                marks={cardMarks}
               />
             ) : null}
           </div>
         </div>
-      </section>
+      </RegionRoot>
 
       {faqs.length ? (
-        <section className="section-tight">
+        <RegionRoot region={faqsRegion} className="section-tight">
           <div className="shell shell-wide grid gap-10 lg:grid-cols-[0.75fr_1.25fr] lg:gap-16">
             <div className="lg:sticky lg:top-28 lg:self-start">
-              <SectionHeading eyebrow={dict.sections.faqEyebrow} title={dict.service.faq} />
+              <SectionHeading
+                eyebrow={copyOf(faqsRegion, lang, "eyebrow", dict.sections.faqEyebrow)}
+                title={copyOf(faqsRegion, lang, "heading", dict.service.faq)}
+                editor={faqsRegion.editor}
+                styles={faqsRegion.styles}
+                motion={faqsRegion.motion}
+                fields={{ eyebrow: "eyebrow", title: "heading" }}
+              />
             </div>
             <FaqAccordion entries={faqs} />
           </div>
-        </section>
+        </RegionRoot>
       ) : null}
 
       <JsonLd
         data={[
           breadcrumbJsonLd(lang, trail),
-          ...(faqJsonLd(faqs) ? [faqJsonLd(faqs)!] : []),
+          ...(faqJsonLd(shownFaqs) ? [faqJsonLd(shownFaqs)!] : []),
           {
             "@context": "https://schema.org",
             "@type": "ItemList",
             name: title,
-            itemListElement: services.map((service, index) => ({
-              "@type": "ListItem",
-              position: index + 1,
-              name: pick(lang, service.titleEn, service.titleAr),
-              url: `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}${localeHref(lang, `/services/${slug}/${service.slug}`)}`,
-            })),
+            itemListElement: services
+              .filter((service) => service.isPublished)
+              .map((service, index) => ({
+                "@type": "ListItem",
+                position: index + 1,
+                name: pick(lang, service.titleEn, service.titleAr),
+                url: `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}${localeHref(lang, `/services/${slug}/${service.slug}`)}`,
+              })),
           },
         ]}
       />
+
+      {needsRuntime(regions) ? (
+        // The server's decision, not the browser's: live parallax is paused in
+        // the Visual Editor's canvas and nowhere else.
+        <MotionRuntime signature={motionSignature(regions)} parallax={view.editor ? "paused" : "live"} />
+      ) : null}
+      {view.editor ? (
+        <EditorBridge
+          bridgeId={view.editor.bridgeId}
+          pageId={documentEditorKey({ kind: "category", id })}
+          slug={view.routeKey}
+          locale={lang}
+        />
+      ) : null}
     </>
   );
+
+  return view.still ? <StillPresentation>{page}</StillPresentation> : page;
 }
 
 /**

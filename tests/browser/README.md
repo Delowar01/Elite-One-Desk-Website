@@ -1,6 +1,6 @@
 # Browser QA — the tracked probes
 
-Thirty-one probes drive the real application in a real Chromium: the public pages,
+Thirty-two probes drive the real application in a real Chromium: the public pages,
 ordinary Preview and the Visual Editor, in English and Arabic, at Desktop,
 Tablet and Mobile widths. Each prints one `PASS` or `FAIL` line per check.
 Until Batch 19A they lived in a gitignored folder on one machine; they are now
@@ -8,7 +8,7 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty-one probes, one file each |
+| `probes/*.probe.mts` | the thirty-two probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -44,7 +44,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the thirty-one probes, once each
+npm run test:browser              # the thirty-two probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -92,8 +92,9 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,145 `PASS`
-across the thirty-one as of Batch 19C (1,131 across thirty at Batch 19B, 1,089
+Every probe clean, with the counts in `probes/expected.json` — 1,253 `PASS`
+across the thirty-two as of Batch 21 (1,145 across thirty-one at Batch 19C,
+1,131 across thirty at Batch 19B, 1,089
 at Batch 19A, 1,078 at Batch 18;
 `hardening` gained eleven checks in 19A: eight on where its own clicks land and
 what the canvas reported, three on the selection after a redraw on a slowed
@@ -124,6 +125,21 @@ the new one does, to where they asked to go, and the panel is theirs again by
 their role. It also found that an admin form could leave its button on
 "Saving…" after the server had saved — see `useSettledActionState` in
 `src/components/admin/form.tsx` and the `admin-form-settle` stress script.
+
+Batch 21 added one probe and changed none: `route-categories` (108 checks,
+port 3732) opens service-category pages in the Visual Editor. Travel & Tourism
+gets the full walk — the real route in the canvas, nested Layers, the title
+selected from the canvas, a direct edit taken back with Undo and put back with
+Redo, Escape abandoning a direct edit, a card's introduction, Arabic right to
+left, Desktop/Tablet/Mobile, a style draft, an entrance and its Replay, a card
+moved and hidden from Layers and both undone, Preview, Discard, and a public
+page that never moved — then the same page by keyboard, every editor control
+named, the generated breadcrumbs explained in a note and no control added
+inside the canvas. Business Setup and Iqama get the core of it;
+`license-renewal` and `government-relations`, which no editor code names, and
+a category the probe creates before the server starts prove the editor knows
+no category by slug. The created one is also published, compared, viewed as a
+version, restored to a draft and discarded.
 
 ## Writing a probe
 

@@ -25,6 +25,19 @@ import {
   setPageSectionVisibility,
 } from "@/app/(backoffice)/admin/visual-editor/actions";
 import {
+  discardRouteFromEditor,
+  loadRouteCompare,
+  loadRouteHistory,
+  loadRouteRegion,
+  loadRouteSummary,
+  publishRouteFromEditor,
+  resolveRouteConflict,
+  restoreRouteFromEditor,
+  saveRouteRegionDraft,
+  saveRouteRegionMotion,
+  saveRouteRegionStyles,
+} from "@/app/(backoffice)/admin/visual-editor/route-actions";
+import {
   createReusableFromSection,
   loadReusableCatalog,
 } from "@/app/(backoffice)/admin/(shell)/components/actions";
@@ -48,8 +61,11 @@ import type { ReuseCatalogEntry } from "@/lib/cms/reuse/view";
 import { advancedStylesDiffer, type StyleDocument } from "@/lib/cms/styles";
 import { removedSections, type PageStructure } from "@/lib/cms/structure";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
-import { previewPagePath } from "@/lib/page-path";
-import type { VisualSectionData, VisualStructureResult } from "@/lib/visual-editor/content";
+import { previewPagePath, previewRoutePath } from "@/lib/page-path";
+import { ORDER_KEY, ROUTE_LIST_OF, ROUTE_STRUCTURAL_FIELDS } from "@/lib/routes/blocks";
+import { isRouteEditorKey, parseOwnerKey } from "@/lib/routes/owners";
+import type { RouteActionResult, RouteHistoryView, RouteSummaryView } from "@/lib/routes/views";
+import type { RouteOwnerInfo, VisualSectionData, VisualStructureResult } from "@/lib/visual-editor/content";
 import {
   describePending,
   describeRemoval,
@@ -104,14 +120,22 @@ import { isTextTarget, shortcutFor, type ShortcutCommand } from "@/lib/visual-ed
 import { withDomainValue } from "@/lib/visual-editor/buffer-state";
 import { LayersPanel, type StructuralOps } from "./layers";
 import { PagePanel } from "./page-panel";
+import { RouteLayersPanel } from "./route-layers";
+import { RoutePanel } from "./route-panel";
+import type { RouteControls } from "./route-source";
 import type { ReuseControls, ReuseNotice } from "./reuse-panel";
 
 export type EditablePage = {
+  /** A page's id, or a dynamic route's document key (Batch 21, `lib/routes/owners.ts`). */
   id: number;
+  /** A page's slug, or a route's key — `category:3`. Never a path. */
   slug: string;
   title: string;
+  /** The public address, without a language prefix. */
   path: string;
   isPublished: boolean;
+  /** What the document is: a CMS page, or a service category's route (Batch 21). */
+  kind: "page" | "category";
 };
 
 const STATUS: Record<CanvasState["status"], { label: string; tone: string }> = {
@@ -184,6 +208,7 @@ export function VisualEditorShell({
   pages,
   initial,
   can,
+  domains,
   canManageNavigation,
   canManageSettings,
   csrf,
@@ -200,6 +225,13 @@ export function VisualEditorShell({
    * one of them is checked again by the action it calls.
    */
   can: Capabilities;
+  /**
+   * The resource capabilities a dynamic route's records need beside the page
+   * ones (Batch 21): `services.manage` for a category, its groups, services
+   * and template wording, `faqs.manage` for its questions. The route actions
+   * check them again on every write.
+   */
+  domains: { services: boolean; faqs: boolean };
   /** `navigation.manage` — may edit the header and footer menus. */
   canManageNavigation: boolean;
   /** `settings.manage` — may edit brand, contact, WhatsApp, disclaimers, features, social. */
@@ -282,6 +314,13 @@ export function VisualEditorShell({
   const [componentDrawer, setComponentDrawer] = useState<{ id: number; focus: "edit" | "usage" } | null>(null);
   /** The catalogue re-read, reachable from the save queue that is declared above it. */
   const refreshCatalogRef = useRef<() => void>(() => {});
+  /**
+   * The page drawer's summary re-read, reachable from the save queue (Batch
+   * 21). A page's saves revalidate the admin and hand the editor a new page
+   * object, which re-reads its summary; a route's saves change nothing an
+   * admin screen lists, so the queue asks for the route's summary itself.
+   */
+  const refreshPageStateRef = useRef<() => void>(() => {});
   /** Sections already asked for, so a re-render does not ask again. */
   /**
    * Loads that have been started and not yet answered, by section.
@@ -391,11 +430,29 @@ export function VisualEditorShell({
   const [globalsLoading, setGlobalsLoading] = useState(false);
   const [summary, setSummary] = useState<PageSummaryView | null>(null);
   const [history, setHistory] = useState<PageHistoryView | null>(null);
+  /** The same two answers for a dynamic route (Batch 21), from its own actions. */
+  const [routeSummary, setRouteSummary] = useState<RouteSummaryView | null>(null);
+  const [routeHistory, setRouteHistory] = useState<RouteHistoryView | null>(null);
+  /** The fields a refused route publication named, so the drawer can list them. */
+  const [pageErrorDetails, setPageErrorDetails] = useState<string[]>([]);
+  /** A field conflict is being settled with the server. */
+  const [resolving, setResolving] = useState(false);
   const [pageBusy, setPageBusy] = useState(false);
   const [pageMessage, setPageMessage] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
 
   const page = useMemo(() => pages.find((row) => row.slug === slug) ?? pages[0], [pages, slug]);
+  /**
+   * A service category's route rather than a CMS page (Batch 21). The editor
+   * is the same editor; what differs is underneath — where a region's data is
+   * read and saved, what the page drawer publishes, and what Layers may do.
+   */
+  const isRoute = page?.kind === "category";
+  /** Whether this session may change a route region's record — its resource's own capability. */
+  const mayRecord = useCallback(
+    (info: RouteOwnerInfo): boolean => (info.resource.kind === "faq" ? domains.faqs : domains.services),
+    [domains],
+  );
   /** Which page is being edited, as a value — `page` itself is a new object on every refresh. */
   const pageId = page?.id ?? null;
   pageRef.current = page?.id ?? null;
@@ -590,7 +647,11 @@ export function VisualEditorShell({
    */
   useEffect(() => {
     if (!page) return;
-    const params = new URLSearchParams({ page: page.slug, lang: locale, device });
+    const params = new URLSearchParams(
+      page.kind === "category"
+        ? { route: page.slug, lang: locale, device }
+        : { page: page.slug, lang: locale, device },
+    );
     // Only when it changes. Every save that revalidates hands this effect a new
     // `page` object with the same slug, and Next.js turns each `replaceState`
     // into a router action that preempts the server action in flight and forces
@@ -659,6 +720,8 @@ export function VisualEditorShell({
     // would be meaningless at best and would silently lock a section of the
     // new page that happens to share an id at worst.
     setLocks([]);
+    // A route's regions are the template's: there is no layout draft to read.
+    if (page.kind === "category") return;
     loadPageStructure(page.id).then((next) => {
       if (!cancelled) setStructure(next);
     });
@@ -744,7 +807,10 @@ export function VisualEditorShell({
 
       setLoadingId(sectionId);
       setLoadError(null);
-      const load = loadVisualSection(sectionId, pageId)
+      // A route region is read through its route's actions (Batch 21); its
+      // editor key says which it is, and the server checks it again.
+      const request = isRouteEditorKey(sectionId) ? loadRouteRegion(sectionId, pageId) : loadVisualSection(sectionId, pageId);
+      const load = request
         .then((result) => {
           inflight.current.delete(sectionId);
           setLoadingId((current) => (current === sectionId ? null : current));
@@ -957,6 +1023,9 @@ export function VisualEditorShell({
       // A section that has lost a race is not edited on top of: the existing
       // Reload latest workflow wins, as it does for every other write.
       if (buffer.status === "conflict") return;
+      // A route region's record has its own authority (Batch 21): no session
+      // begins on text the server would refuse to save.
+      if (buffer.data.route && !mayRecord(buffer.data.route)) return;
       if (!directEditAt(buffer.data.blockType, relative)) return;
 
       /**
@@ -1000,7 +1069,7 @@ export function VisualEditorShell({
       };
       setEditRequest({ kind: "begin", address, token, text });
     },
-    [allowed, ensureSectionBuffer],
+    [allowed, ensureSectionBuffer, mayRecord],
   );
 
 
@@ -1408,8 +1477,15 @@ export function VisualEditorShell({
       const entry = buffersRef.current[sectionId];
       if (!entry || entry.saving !== null) return "error";
       if (!dirtyOf(entry)[domain]) return "ok";
-      // Not this session's to save any more (Batch 18): kept, never sent.
-      if (!allowed(DOMAIN_CAPABILITY[domain])) return "denied";
+      // Not this session's to save any more (Batch 18): kept, never sent. A
+      // route region's content may be order and visibility alone, which is
+      // layout — the server decides field by field (Batch 21).
+      const permitted =
+        domain === "content" && entry.data.route
+          ? allowed("editContent") || allowed("editStructure")
+          : allowed(DOMAIN_CAPABILITY[domain]);
+      if (!permitted) return "denied";
+      const routeRegion = isRouteEditorKey(sectionId);
 
       const sent = canonical(
         domain === "content" ? entry.values : domain === "style" ? entry.styles : entry.motion,
@@ -1469,7 +1545,7 @@ export function VisualEditorShell({
       };
       try {
         if (domain === "content") {
-          const answer = await saveVisualSectionDraft(form);
+          const answer = await (routeRegion ? saveRouteRegionDraft : saveVisualSectionDraft)(form);
           if (!answer.ok) {
             if (answer.reason === "conflict") {
               settle({ status: "conflict", message: answer.message, latest: answer.section });
@@ -1489,7 +1565,7 @@ export function VisualEditorShell({
             refreshCatalogRef.current();
           }
         } else if (domain === "style") {
-          const answer = await saveVisualSectionStyles(form);
+          const answer = await (routeRegion ? saveRouteRegionStyles : saveVisualSectionStyles)(form);
           if (!answer.ok) {
             if (answer.reason === "conflict") {
               settle({ status: "conflict", message: answer.message, latest: answer.section });
@@ -1501,7 +1577,7 @@ export function VisualEditorShell({
           }
           accepted = { revision: answer.revision, styles: answer.styles };
         } else {
-          const answer = await saveVisualSectionMotion(form);
+          const answer = await (routeRegion ? saveRouteRegionMotion : saveVisualSectionMotion)(form);
           if (!answer.ok) {
             if (answer.reason === "conflict") {
               settle({ status: "conflict", message: answer.message, latest: answer.section });
@@ -1650,6 +1726,7 @@ export function VisualEditorShell({
       }
 
       if (!wrote) return;
+      if (isRouteEditorKey(sectionId)) refreshPageStateRef.current();
       // Only the page being looked at: a debounce that fired for a section on
       // another page has nothing to say about this canvas.
       if (buffersRef.current[sectionId]?.data.pageId !== pageRef.current) return;
@@ -2320,7 +2397,17 @@ export function VisualEditorShell({
         return;
       }
       if (change.domain === "content") {
-        if (!allowed("editContent")) {
+        // Order and visibility on a dynamic route are layout, not words (Batch 21):
+        // a step made only of them asks for the structure capability instead.
+        const layoutOnly =
+          Boolean(buffer.data.route) &&
+          change.changes.every((item) => item.path.field === ORDER_KEY || ROUTE_STRUCTURAL_FIELDS.has(item.path.field));
+        if (layoutOnly) {
+          if (!allowed("editStructure")) {
+            refuse("editStructure");
+            return;
+          }
+        } else if (!allowed("editContent")) {
           refuse("editContent");
           return;
         }
@@ -2486,6 +2573,12 @@ export function VisualEditorShell({
 
   const refreshPageState = useCallback(async () => {
     if (!page) return;
+    if (page.kind === "category") {
+      const [next, past] = await Promise.all([loadRouteSummary(page.slug), loadRouteHistory(page.slug)]);
+      setRouteSummary(next);
+      setRouteHistory(past);
+      return;
+    }
     const [next, past] = await Promise.all([loadPageSummary(page.id), loadPageHistory(page.id)]);
     setSummary(next);
     setHistory(past);
@@ -2496,11 +2589,25 @@ export function VisualEditorShell({
     }
   }, [page]);
 
+  refreshPageStateRef.current = () => void refreshPageState();
+
   useEffect(() => {
     if (!page) return;
     let cancelled = false;
     setSummary(null);
     setHistory(null);
+    setRouteSummary(null);
+    setRouteHistory(null);
+    if (page.kind === "category") {
+      void Promise.all([loadRouteSummary(page.slug), loadRouteHistory(page.slug)]).then(([next, past]) => {
+        if (cancelled) return;
+        setRouteSummary(next);
+        setRouteHistory(past);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
     void Promise.all([loadPageSummary(page.id), loadPageHistory(page.id)]).then(([next, past]) => {
       if (cancelled) return;
       setSummary(next);
@@ -2527,6 +2634,7 @@ export function VisualEditorShell({
   useEffect(() => {
     setPageMessage(null);
     setPageError(null);
+    setPageErrorDetails([]);
     // A reset reported on one page says nothing about the next one.
     setHistoryNotice(null);
   }, [pageId]);
@@ -2588,7 +2696,8 @@ export function VisualEditorShell({
       });
       for (const id of mine) inflight.current.delete(id);
 
-      const latest = await loadPageStructure(pageId);
+      // A route has no layout to re-read; its regions are the template's.
+      const latest = page.kind === "category" ? null : await loadPageStructure(pageId);
       if (latest) setStructure(latest);
       setStructureFailure(null);
       await refreshPageState();
@@ -2597,7 +2706,7 @@ export function VisualEditorShell({
       const survives =
         keepSelection &&
         selected &&
-        latest?.structure.sections.some((entry) => entry.sectionId === selected.sectionId);
+        (page.kind === "category" || latest?.structure.sections.some((entry) => entry.sectionId === selected.sectionId));
       restoreTo.current = survives
         ? { address: selected.address, fallback: `section:${selected.sectionId}` }
         : null;
@@ -2753,6 +2862,276 @@ export function VisualEditorShell({
       );
     },
     [runPageAction],
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Dynamic routes: publish, order, visibility, conflicts (Batch 21)     */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * A route-wide act — publish, discard, restore — through the route's own
+   * actions. The same shape as `runPageAction`: the session's token, what the
+   * drawer reviewed (the summary's token, so what is published is exactly what
+   * was shown), and afterwards everything this editor believed about the page
+   * is re-read.
+   */
+  const runRouteAction = useCallback(
+    async (
+      operate: (form: FormData) => Promise<RouteActionResult>,
+      fill: (form: FormData) => void,
+      keepSelection: boolean,
+      historyNotice: string,
+    ) => {
+      if (!page || page.kind !== "category" || !allowed("publish") || pageBusy) return;
+      setPageBusy(true);
+      setPageMessage(null);
+      setPageError(null);
+      setPageErrorDetails([]);
+
+      const form = new FormData();
+      form.set("_csrf", csrf);
+      form.set("routeKey", page.slug);
+      form.set("token", routeSummary?.token ?? "");
+      fill(form);
+
+      let answer: RouteActionResult;
+      try {
+        answer = await operate(form);
+      } catch {
+        setPageBusy(false);
+        setPageError("That could not be sent. Try again.");
+        return;
+      }
+      if (!answer.ok) {
+        setPageBusy(false);
+        setPageError(answer.message);
+        setPageErrorDetails(answer.details ?? []);
+        noteRefusal(answer.message);
+        await refreshPageState();
+        return;
+      }
+      await afterPageAction(keepSelection, historyNotice);
+      setPageBusy(false);
+      setPageMessage(answer.message);
+    },
+    [afterPageAction, allowed, csrf, noteRefusal, page, pageBusy, refreshPageState, routeSummary],
+  );
+
+  const publishRoute = useCallback(() => {
+    const lines = (routeSummary?.owners ?? []).map((owner) => `${owner.label}: ${[...owner.fields, owner.style ? "Style" : null, owner.motion ? "Motion" : null].filter(Boolean).join(", ")}`);
+    const question = ["Publish the saved changes on this category page?", lines.slice(0, 12).join("\n")]
+      .filter(Boolean)
+      .join("\n\n");
+    if (!window.confirm(question)) return;
+    void runRouteAction(
+      publishRouteFromEditor,
+      () => undefined,
+      true,
+      "Undo history was cleared: this page was published. Version History keeps the state before it.",
+    );
+  }, [routeSummary, runRouteAction]);
+
+  const discardRoute = useCallback(() => {
+    if (!window.confirm("Discard every saved change on this category page? The live page does not change.")) return;
+    void runRouteAction(
+      discardRouteFromEditor,
+      () => undefined,
+      false,
+      "Undo history was cleared: the saved changes were discarded, and Redo cannot bring them back.",
+    );
+  }, [runRouteAction]);
+
+  const restoreRouteVersion = useCallback(
+    (versionId: number) => {
+      void runRouteAction(
+        restoreRouteFromEditor,
+        (form) => form.set("versionId", String(versionId)),
+        false,
+        "Undo history was cleared: a version was restored into saved changes. Version History is how a restore is reversed.",
+      );
+    },
+    [runRouteAction],
+  );
+
+  /**
+   * Order and visibility on a dynamic route: an edit of the records' drafts,
+   * through the ordinary buffer, history and autosave — one Undo takes a move
+   * back. The container's `_order` holds a list's order; a record's own
+   * `published` holds whether it is shown.
+   */
+  const routeStructural = useCallback(
+    (sectionId: number, values: Record<string, unknown>, label: string) => {
+      const held = buffersRef.current[sectionId];
+      if (!held || held.status === "conflict") return;
+      const changes = diffContent(held.data.blockType, held.values, values);
+      if (!changes.length) return;
+      closeHistoryGroup();
+      recordChange(held.data.pageId, { domain: "content", sectionId, blockType: held.data.blockType, changes }, label);
+      writeBuffers((prev) => {
+        const entry = prev[sectionId];
+        if (!entry) return prev;
+        return {
+          ...prev,
+          [sectionId]: {
+            ...entry,
+            values,
+            contentDirty: !sameValues(values, entry.data.values),
+            status: "idle",
+            statusDomain: null,
+            message: undefined,
+          },
+        };
+      });
+      scheduleAutosave(sectionId);
+    },
+    [closeHistoryGroup, recordChange, scheduleAutosave, writeBuffers],
+  );
+
+  /**
+   * Moves a group, a card or a question one place within its list.
+   *
+   * Who is in the list, and in what order, is what the canvas draws: the
+   * regions it reports under the same parent, of the same kind — the canvas
+   * draws the drafts, so that is the order this editor is holding, including
+   * a card moved into the group a moment ago. The list itself is the parent
+   * region's stored order, read from its buffer. Every region is read through
+   * the one loading primitive, once. Featured cards lead their group whatever
+   * their order, so a card only trades places with a neighbour on the same
+   * side of that line; a move across it would change nothing a visitor sees.
+   */
+  const routeMove = useCallback(
+    async (section: EditorSectionMeta, direction: "up" | "down") => {
+      if (!allowed("editStructure") || !section.parent) return;
+      const parentKey = parseAddress(section.parent)?.sectionId;
+      const listName = ROUTE_LIST_OF[section.blockType];
+      if (parentKey === undefined || !listName) return;
+      const idOf = (entry: EditorSectionMeta) => parseOwnerKey(entry.address)?.id ?? null;
+      const siblings = sections.filter((entry) => entry.parent === section.parent && entry.blockType === section.blockType);
+      const display = siblings.map(idOf).filter((id): id is number => id !== null);
+      const mine = idOf(section);
+      const at = mine === null ? -1 : display.indexOf(mine);
+      const neighbour = display[direction === "up" ? at - 1 : at + 1];
+      const other = siblings.find((entry) => idOf(entry) === neighbour);
+      if (mine === null || at < 0 || neighbour === undefined || !other) return;
+      const [container, own, theirs] = await Promise.all([
+        ensureSectionBuffer(parentKey),
+        ensureSectionBuffer(section.sectionId),
+        ensureSectionBuffer(other.sectionId),
+      ]);
+      if (!container || !own || !theirs) return;
+      if (Boolean(own.values.featured) !== Boolean(theirs.values.featured)) {
+        setHistoryNotice("Featured services always come first in their group. Change Featured to move past that line.");
+        return;
+      }
+      const held = (container.values[ORDER_KEY] ?? {}) as Record<string, number[]>;
+      const kept = held[listName] ?? [];
+      // The order this editor holds, completed against who is in the list now.
+      const order = [...kept.filter((id) => display.includes(id)), ...display.filter((id) => !kept.includes(id))];
+      const from = order.indexOf(mine);
+      const to = order.indexOf(neighbour);
+      [order[from], order[to]] = [order[to]!, order[from]!];
+      routeStructural(
+        parentKey,
+        { ...container.values, [ORDER_KEY]: { ...held, [listName]: order } },
+        `Move “${own.data.route?.label ?? "this part"}” ${direction}`,
+      );
+    },
+    [allowed, ensureSectionBuffer, routeStructural, sections],
+  );
+
+  /** Shows or hides a group, a card or a question when the page is published. */
+  const routeVisibility = useCallback(
+    async (section: EditorSectionMeta, visible: boolean) => {
+      if (!allowed("editStructure")) return;
+      const buffer = await ensureSectionBuffer(section.sectionId);
+      if (!buffer || buffer.status === "conflict") return;
+      routeStructural(
+        section.sectionId,
+        { ...buffer.values, published: visible },
+        `${visible ? "Show" : "Hide"} “${buffer.data.route?.label ?? "this part"}”`,
+      );
+    },
+    [allowed, ensureSectionBuffer, routeStructural],
+  );
+
+  /**
+   * Settles one field changed outside the Visual Editor since its draft began.
+   * The region is saved first, so the choice is made against what is stored;
+   * then the server keeps the draft (re-based on the live value) or drops it.
+   * Taking the live value changes what the draft says, so the history that
+   * described the old value goes with it.
+   */
+  const resolveConflict = useCallback(
+    async (field: string, choice: "mine" | "live") => {
+      if (activeId === null) return;
+      const sectionId = activeId;
+      setResolving(true);
+      try {
+        const entry = await settleSection(sectionId);
+        if (!entry || isDirty(entry) || entry.status === "conflict") {
+          setLoadError("Save or reload this part of the page first — conflicts are settled against what is saved.");
+          return;
+        }
+        const form = new FormData();
+        form.set("_csrf", csrf);
+        form.set("sectionId", String(sectionId));
+        form.set("pageId", String(entry.data.pageId));
+        form.set("expectedRevision", String(entry.data.revision));
+        form.set("field", field);
+        form.set("choice", choice);
+        const answer = await resolveRouteConflict(form);
+        if (!answer.ok) {
+          if (answer.reason === "conflict") {
+            writeBuffers((prev) => {
+              const live = prev[sectionId];
+              if (!live) return prev;
+              return {
+                ...prev,
+                [sectionId]: { ...live, status: "conflict", statusDomain: "content", message: answer.message, latest: answer.section },
+              };
+            });
+          }
+          if (answer.reason === "denied") noteRefusal(answer.message);
+          setLoadError(answer.message);
+          return;
+        }
+        if (choice === "live") {
+          resetHistory(entry.data.pageId, "Undo history was reset because a field now follows its live value.");
+        }
+        writeBuffers((prev) => {
+          const live = prev[sectionId];
+          if (!live) return prev;
+          return {
+            ...prev,
+            [sectionId]: {
+              ...live,
+              data: { ...answer.section, styles: live.data.styles, hasStyleDraft: live.data.hasStyleDraft, motionDocument: live.data.motionDocument, hasMotionDraft: live.data.hasMotionDraft },
+              values: answer.section.values,
+              contentDirty: false,
+              status: "saved",
+              statusDomain: "content",
+              message: undefined,
+            },
+          };
+        });
+        setLoadError(null);
+        void refreshPageState();
+        redrawKeeping(sectionId);
+      } finally {
+        setResolving(false);
+      }
+    },
+    [activeId, csrf, noteRefusal, redrawKeeping, refreshPageState, resetHistory, settleSection, writeBuffers],
+  );
+
+  const routeControls: RouteControls = useMemo(
+    () => ({
+      mayRecord,
+      canStructure: can.editStructure && !revoked.has("editStructure"),
+      busy: resolving,
+      onResolve: (field, choice) => void resolveConflict(field, choice),
+    }),
+    [can, mayRecord, resolveConflict, resolving, revoked],
   );
 
   /**
@@ -2944,12 +3323,28 @@ export function VisualEditorShell({
             }}
             className="admin-input h-[1.9rem] max-w-[19rem] py-0 text-[0.8rem]"
           >
-            {pages.map((row) => (
-              <option key={row.slug} value={row.slug}>
-                {row.title} — {row.path}
-                {row.isPublished ? "" : " (unpublished)"}
-              </option>
-            ))}
+            {/*
+              Two groups when there is anything but pages (Batch 21): the CMS
+              pages, and every service category — named by the database and
+              listed by it, so a category created tomorrow is here tomorrow.
+            */}
+            {(["page", "category"] as const).map((kind) => {
+              const rows = pages.filter((row) => row.kind === kind);
+              if (!rows.length) return null;
+              const options = rows.map((row) => (
+                <option key={row.slug} value={row.slug}>
+                  {row.title} — {row.path}
+                  {row.isPublished ? "" : " (unpublished)"}
+                </option>
+              ));
+              return pages.some((row) => row.kind !== kind) ? (
+                <optgroup key={kind} label={kind === "page" ? "Pages" : "Service Categories"}>
+                  {options}
+                </optgroup>
+              ) : (
+                options
+              );
+            })}
           </select>
         </div>
 
@@ -3060,31 +3455,37 @@ export function VisualEditorShell({
           */}
           <button
             type="button"
-            onClick={() => setPagePanel((value) => !value)}
+            onClick={() =>
+              setPagePanel((value) => {
+                // A route's drawer reads what is waiting as it opens (Batch 21).
+                if (!value && isRoute) void refreshPageState();
+                return !value;
+              })
+            }
             aria-expanded={pagePanel}
-            aria-describedby={summary?.publishable ? "ve-publish-pending" : undefined}
+            aria-describedby={(isRoute ? routeSummary?.publishable : summary?.publishable) ? "ve-publish-pending" : undefined}
             className="admin-btn admin-btn-sm"
             style={
-              summary?.publishable
+              (isRoute ? routeSummary?.publishable : summary?.publishable)
                 ? { borderColor: "var(--color-orange)", color: "var(--color-strong)" }
                 : undefined
             }
           >
             <Icon name="check" size={12} />
             <span className="sr-only lg:not-sr-only">Publish</span>
-            {summary?.publishable ? (
+            {(isRoute ? routeSummary?.publishable : summary?.publishable) ? (
               <span aria-hidden className="inline-block size-1.5 rounded-full" style={{ background: "var(--color-orange)" }} />
             ) : null}
           </button>
           {/* The dot and the border are colour; this is the same fact in words —
               the button's description, so its name stays what it does (19B). */}
-          {summary?.publishable ? (
+          {(isRoute ? routeSummary?.publishable : summary?.publishable) ? (
             <span id="ve-publish-pending" className="sr-only">
               This page has unpublished changes.
             </span>
           ) : null}
           <a
-            href={previewPagePath(page.slug, locale)}
+            href={isRoute ? previewRoutePath(page.path, locale) : previewPagePath(page.slug, locale)}
             target="_blank"
             rel="noopener"
             className="admin-btn admin-btn-sm"
@@ -3100,6 +3501,27 @@ export function VisualEditorShell({
       {/* Body                                                              */}
       {/* ---------------------------------------------------------------- */}
       <div className="flex min-h-0 flex-1">
+        {isRoute ? (
+          <RouteLayersPanel
+            title={page.title}
+            sections={sections}
+            selectedSectionId={activeId}
+            selectedAddress={selected?.address ?? null}
+            locks={locks}
+            locale={locale}
+            valuesOf={valuesOf}
+            dirtyIds={dirtyIds}
+            ready={ready}
+            canStructure={may("editStructure") && (domains.services || domains.faqs)}
+            canEditText={may("editContent")}
+            onSelect={ask}
+            onToggleLock={toggleLock}
+            onEditText={requestDirectEdit}
+            onMove={(section, direction) => void routeMove(section, direction)}
+            onVisibility={(section, visible) => void routeVisibility(section, visible)}
+            busy={pageBusy}
+          />
+        ) : (
         <LayersPanel
           sections={sections}
           structure={structure}
@@ -3132,6 +3554,7 @@ export function VisualEditorShell({
               usage: usageHeadline(entry.usage),
             }))}
         />
+        )}
 
         <section
           className="relative flex min-w-0 flex-1 flex-col bg-[color-mix(in_oklab,#05070d_72%,var(--admin-bg))] p-4"
@@ -3140,6 +3563,7 @@ export function VisualEditorShell({
           <div className="min-h-0 flex-1">
             <VisualCanvas
               slug={page.slug}
+              publicPath={isRoute ? page.path : undefined}
               locale={locale}
               device={device}
               canvasKey={canvasKey}
@@ -3158,22 +3582,43 @@ export function VisualEditorShell({
             />
           </div>
 
-          <PagePanel
-            open={pagePanel}
-            onClose={() => setPagePanel(false)}
-            title={page.title}
-            summary={summary}
-            history={history}
-            canPublishPage={may("publish")}
-            busy={pageBusy}
-            blockedReason={publishBlocked}
-            message={pageMessage}
-            error={pageError}
-            onPublish={publishPage}
-            onDiscard={discardPage}
-            onRestore={restoreVersion}
-            onRefresh={() => void refreshPageState()}
-          />
+          {isRoute ? (
+            <RoutePanel
+              open={pagePanel}
+              onClose={() => setPagePanel(false)}
+              locale={locale}
+              summary={routeSummary}
+              history={routeHistory}
+              canPublish={may("publish")}
+              busy={pageBusy}
+              blockedReason={publishBlocked}
+              message={pageMessage}
+              error={pageError}
+              errorDetails={pageErrorDetails}
+              onPublish={publishRoute}
+              onDiscard={discardRoute}
+              onRestore={restoreRouteVersion}
+              onCompare={(versionId, against) => loadRouteCompare(page.slug, versionId, against)}
+              onRefresh={() => void refreshPageState()}
+            />
+          ) : (
+            <PagePanel
+              open={pagePanel}
+              onClose={() => setPagePanel(false)}
+              title={page.title}
+              summary={summary}
+              history={history}
+              canPublishPage={may("publish")}
+              busy={pageBusy}
+              blockedReason={publishBlocked}
+              message={pageMessage}
+              error={pageError}
+              onPublish={publishPage}
+              onDiscard={discardPage}
+              onRestore={restoreVersion}
+              onRefresh={() => void refreshPageState()}
+            />
+          )}
 
           <GlobalsPanel
             open={globalsPanel}
@@ -3282,6 +3727,7 @@ export function VisualEditorShell({
           onSelect={ask}
           replay={{ ready: canvas.status === "ready", status: replayStatus, onReplay: requestReplay }}
           reuse={reuseControls}
+          route={isRoute ? routeControls : undefined}
         />
       </div>
     </div>

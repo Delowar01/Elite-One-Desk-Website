@@ -1,4 +1,5 @@
 import { formatAddress, formatNodePath, parseAddress } from "@/lib/cms/address";
+import { documentOfEditorKey, isRouteEditorKey } from "@/lib/routes/owners";
 import { LOCALES, type Locale } from "@/lib/i18n/config";
 import { isUsableRect, type Rect } from "./overlay";
 import type { EditorNodeKind } from "./render";
@@ -68,12 +69,21 @@ export const EDITOR_CHANNEL = "eod.visual-editor";
  *     sent while a node is being typed into: that keystroke is the text
  *     field's own.
  *
+ * 7 — Dynamic routes (Batch 21). An owner may be a route resource
+ *     (`service:12/field:intro`) as well as a page section, and its editor key
+ *     is then the negative number `lib/routes/owners.ts` encodes; `canvas.ready`
+ *     may name a route document (`category:3`, with that document's key) as
+ *     well as a page; and a section in `canvas.structure` may carry `parent`,
+ *     the address of the region it is drawn inside — a service card inside its
+ *     group — so Layers can nest them. Every value is still an address, an
+ *     integer or a name the reader validates; nothing else travels.
+ *
  * Bumped rather than extended in place: a canvas document served by an older
  * build must not answer a newer editor with a message the editor will read
  * half of. The two simply do not recognise each other, which is the outcome
  * that cannot go subtly wrong.
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /* -------------------------------------------------------------------------- */
 /* Bridge ids                                                                 */
@@ -167,6 +177,12 @@ export type EditorSectionMeta = {
   isDraftOnly: boolean;
   /** The visibility this section would have once published. */
   visible: boolean;
+  /**
+   * The region this one is drawn inside, by address (protocol 7) — a service
+   * card's group, a group's services section. Absent for a top-level section,
+   * which is every page section.
+   */
+  parent?: string;
   /**
    * Every annotated node inside this section, in the order the document has
    * them — the material the Layers tree is built from.
@@ -475,7 +491,16 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 const isInt = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value >= 0;
 
-const isSectionId = (value: unknown): value is number => isInt(value) && value > 0;
+/**
+ * An owner's editor key: a page section's id, or a route owner's negative key
+ * (protocol 7). Anything else names nothing.
+ */
+const isSectionId = (value: unknown): value is number =>
+  (isInt(value) && value > 0) || isRouteEditorKey(value);
+
+/** A document the canvas may announce: a page id, or a route document's key. */
+const isDocumentId = (value: unknown): value is number =>
+  (isInt(value) && value > 0) || documentOfEditorKey(value) !== null;
 
 const NODE_KINDS = new Set<string>(["section", "field", "item", "slot"]);
 
@@ -588,6 +613,20 @@ function readSection(value: unknown): EditorSectionMeta | null {
     }
   }
 
+  /**
+   * The enclosing region, when there is one: an owner's root address, never
+   * a node inside one, and never the section itself. A parent the reader
+   * cannot use is dropped rather than the section — the row then sits at the
+   * top level, which is a worse tree but still a true one.
+   */
+  let parent: string | undefined;
+  if (typeof source.parent === "string") {
+    const outer = parseAddress(source.parent);
+    if (outer && !outer.path.length && outer.sectionId !== parsed.sectionId) {
+      parent = formatAddress(outer.sectionId, []);
+    }
+  }
+
   return {
     address: formatAddress(parsed.sectionId, []),
     sectionId: parsed.sectionId,
@@ -596,6 +635,7 @@ function readSection(value: unknown): EditorSectionMeta | null {
     isDraft: source.isDraft,
     isDraftOnly: source.isDraftOnly,
     visible: source.visible,
+    ...(parent ? { parent } : {}),
     nodes,
   };
 }
@@ -628,7 +668,7 @@ export function readCanvasMessage(
   switch (message.type) {
     case "canvas.ready": {
       const { pageId, slug, locale, innerWidth } = message;
-      if (!isInt(pageId) || pageId <= 0) return null;
+      if (!isDocumentId(pageId)) return null;
       if (typeof slug !== "string" || !slug) return null;
       if (typeof locale !== "string" || !(LOCALES as readonly string[]).includes(locale)) return null;
       if (!isInt(innerWidth) || innerWidth <= 0) return null;

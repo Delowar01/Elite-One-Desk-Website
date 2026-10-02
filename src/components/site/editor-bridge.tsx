@@ -138,14 +138,28 @@ function readNodes(root: Element): EditorTreeNode[] {
   return out;
 }
 
-/** Every section the page actually rendered, in the order it rendered them. */
+/**
+ * Every section the page actually rendered, in the order it rendered them.
+ *
+ * On a dynamic route (Batch 21) a "section" is one region — a hero, a group, a
+ * card — and regions nest: a card is drawn inside its group. Each still owns
+ * exactly the nodes no inner region claims (`readNodes`), and the region it is
+ * drawn inside travels as `parent`, read off the page the same way: the
+ * nearest enclosing root. A page section has none.
+ *
+ * The root's own address is the authority for its identity: the owner it
+ * names must be the one `data-eod-section` carries, or the root is skipped.
+ */
 function readStructure(): EditorSectionMeta[] {
   const out: EditorSectionMeta[] = [];
   document.querySelectorAll(SECTION).forEach((root, position) => {
     const address = root.getAttribute("data-eod-address");
     const sectionId = Number(root.getAttribute("data-eod-section"));
     const blockType = root.getAttribute("data-eod-block");
-    if (!address || !blockType || !Number.isInteger(sectionId) || sectionId <= 0) return;
+    if (!address || !blockType) return;
+    const parts = decomposeAddress(address);
+    if (!parts || parts.relative !== "root" || parts.sectionId !== sectionId) return;
+    const outer = root.parentElement?.closest(SECTION)?.getAttribute("data-eod-address") ?? null;
     out.push({
       address,
       sectionId,
@@ -154,6 +168,7 @@ function readStructure(): EditorSectionMeta[] {
       isDraft: root.getAttribute("data-eod-draft") === "true",
       isDraftOnly: root.getAttribute("data-eod-draft-only") === "true",
       visible: root.getAttribute("data-eod-visible") !== "false",
+      ...(outer ? { parent: outer } : {}),
       nodes: readNodes(root),
     });
   });

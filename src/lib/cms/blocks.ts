@@ -14,6 +14,8 @@
  *   · the renderer's prop types (`lib/cms/values.ts` reads by field name)
  */
 
+import { ROUTE_BLOCKS } from "@/lib/routes/blocks";
+
 export type FieldType =
   | "text"
   | "textarea"
@@ -131,7 +133,18 @@ export type FieldDef = {
   /** Repeatable lists only. Keeps a section from becoming a page of its own. */
   maxItems?: number;
   rows?: number;
+  /**
+   * Drawn from somewhere other than the block's values (Batch 21, route
+   * blocks only): a route-derived link, a count, a name managed on another
+   * screen. Selectable and styleable like any field; never an input, never
+   * typed into on the canvas and never part of a draft. `explain` is what the
+   * Inspector says about where it comes from, `source` the screen that
+   * controls it.
+   */
+  generated?: GeneratedSource;
 };
+
+export type GeneratedSource = { explain: string; source?: { label: string; href: string } };
 
 export type BlockDef = {
   type: string;
@@ -146,6 +159,12 @@ export type BlockDef = {
    * the editor after the type was renamed — a stored row outlives a rename.
    */
   deprecated?: boolean;
+  /**
+   * Never offered motion, at its root or anywhere inside it (Batch 21): the
+   * site's own chrome on a dynamic route — its breadcrumbs — is generated
+   * navigation, and an entrance on it would only delay the way back.
+   */
+  still?: true;
 };
 
 const localisedText = (name: string, label: string, extra: Partial<FieldDef> = {}): FieldDef => ({
@@ -605,6 +624,23 @@ export const BLOCKS: BlockDef[] = [
 export const BLOCK_MAP = new Map(BLOCKS.map((b) => [b.type, b]));
 
 export const getBlock = (type: string): BlockDef | undefined => BLOCK_MAP.get(type);
+
+const EDITOR_BLOCK_MAP = new Map<string, BlockDef>([
+  ...BLOCK_MAP,
+  ...ROUTE_BLOCKS.map((block) => [block.type, block] as const),
+]);
+
+/**
+ * A block as the Visual Editor knows it: a page block, or a dynamic route's
+ * region (Batch 21, `lib/routes/blocks.ts`).
+ *
+ * The editor's capability models — Layers labels, direct editing, the Style
+ * and Motion targets, Undo's descriptions — read this, so a service card is
+ * described exactly as a section is. The page CMS keeps reading `getBlock`,
+ * which does not know route blocks: nothing that adds, saves, publishes or
+ * restores a page section can be handed one.
+ */
+export const getEditorBlock = (type: string): BlockDef | undefined => EDITOR_BLOCK_MAP.get(type);
 
 /** What the editor offers when adding a block — deprecated types are not on it. */
 export const blocksForPage = (slug: string): BlockDef[] =>

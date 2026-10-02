@@ -1,4 +1,4 @@
-import { getBlock, type BoxKind, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
+import { getEditorBlock, type BoxKind, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
 import { parseNodePath, type NodePath } from "@/lib/cms/address";
 import type { StyleTokens } from "@/lib/cms/styles";
 
@@ -292,7 +292,7 @@ export function styleTargetFor(blockType: string, path: string | undefined): Sty
   const parsed: NodePath | null = parseNodePath(path === undefined ? "root" : path);
   if (!parsed || parsed.length === 0) return SECTION;
 
-  const block = getBlock(blockType);
+  const block = getEditorBlock(blockType);
   const [first, second, third] = parsed;
 
   // A slot is a place the block reserved for a control, and a laid-out one.

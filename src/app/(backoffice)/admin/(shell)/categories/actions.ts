@@ -17,7 +17,7 @@ import {
 } from "@/lib/admin/actions";
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
-import { sanitizeRichText } from "@/lib/cms/sanitize";
+import { sanitizeHref, sanitizeRichText } from "@/lib/cms/sanitize";
 import { db } from "@/lib/db";
 import { serviceCategories, serviceSubcategories } from "@/lib/db/schema";
 import { isIconName } from "@/lib/icons";
@@ -42,6 +42,8 @@ function readCategory(form: FormData) {
     bodyAr: sanitizeRichText(field(form, "bodyAr", 20000)),
     ctaLabelEn: field(form, "ctaLabelEn", 64),
     ctaLabelAr: field(form, "ctaLabelAr", 64),
+    // The page CMS's link rule (Batch 21): a site path or an https address.
+    ctaHref: sanitizeHref(field(form, "ctaHref", 255)),
     // The icon is a key into our own set — never markup from the panel.
     icon: isIconName(icon) ? icon : "desk",
     imageId: optionalId(form, "imageId"),
@@ -58,6 +60,9 @@ export async function createCategory(_prev: ActionState, form: FormData): Promis
     const values = readCategory(form);
 
     if (!values.titleEn) return fail("Give the category a title.", { titleEn: "Required." });
+    if (field(form, "ctaHref", 255) && !values.ctaHref) {
+      return fail("Use a site path such as /contact, or a full https:// address.", { ctaHref: "Not allowed." });
+    }
     if (!SLUG.test(slug)) {
       return fail("The address must be lower-case words joined by hyphens.", { slug: "Invalid." });
     }
@@ -94,6 +99,9 @@ export async function updateCategory(_prev: ActionState, form: FormData): Promis
     const id = Number(form.get("id"));
     const values = readCategory(form);
     if (!values.titleEn) return fail("Give the category a title.", { titleEn: "Required." });
+    if (field(form, "ctaHref", 255) && !values.ctaHref) {
+      return fail("Use a site path such as /contact, or a full https:// address.", { ctaHref: "Not allowed." });
+    }
 
     const [row] = await db
       .update(serviceCategories)

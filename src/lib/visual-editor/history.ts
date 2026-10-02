@@ -1,4 +1,4 @@
-import { getBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
+import { getEditorBlock, type FieldDef, type ItemFieldDef } from "@/lib/cms/blocks";
 import { ITEM_ID_KEY } from "@/lib/cms/item-id";
 import type { MotionBranch, MotionDocument } from "@/lib/cms/motion-doc";
 import { BREAKPOINTS, type Breakpoint, type StyleDocument, type StyleTokens } from "@/lib/cms/styles";
@@ -185,7 +185,7 @@ export function diffContent(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
 ): ContentChange[] {
-  const fields = getBlock(blockType)?.fields ?? [];
+  const fields = getEditorBlock(blockType)?.fields ?? [];
   const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
   const changes: ContentChange[] = [];
 
@@ -303,7 +303,7 @@ const LANGUAGE: Record<Locale, string> = { en: "English", ar: "Arabic" };
 
 /** A field a person types into — the only content that groups. */
 function typedField(blockType: string, path: ContentPath): boolean {
-  const block = getBlock(blockType);
+  const block = getEditorBlock(blockType);
   const field: FieldDef | undefined = block?.fields.find((candidate) => candidate.name === path.field);
   if (!field) return false;
   if (path.itemId !== undefined) {

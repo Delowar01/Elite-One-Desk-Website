@@ -77,7 +77,40 @@ export type VisualSectionData = {
    * exactly which entrance it is. See `legacyFallback`.
    */
   legacyEntrance: MotionPreset;
+  /**
+   * Present for a dynamic route's region (Batch 21) and only there: which
+   * resource it edits, where that resource is managed, the choices a field
+   * offers, and any field whose live value changed since its draft began.
+   * The section shape above is otherwise the same, so every part of the
+   * editor that edits a section edits a region too.
+   */
+  route?: RouteOwnerInfo;
 };
+
+/** What a dynamic route's region adds to the section shape (Batch 21). */
+export type RouteOwnerInfo = {
+  /** `service:12`. */
+  ownerKey: string;
+  /** `category:3`. */
+  routeKey: string;
+  /** "Service “Hotel Reservation”". */
+  label: string;
+  /** The record behind it; `template` for the route's own wording. */
+  resource: { kind: "category" | "subcategory" | "service" | "faq" | "template"; id: number };
+  /** The admin screen that manages the record, when there is one. */
+  adminHref: string | null;
+  /**
+   * Fields changed outside the Visual Editor since this draft began. Publishing
+   * is refused until each is resolved — keep the draft, or take the live value.
+   */
+  conflicts: RouteConflictView[];
+  /** Choices supplied with the region, by field (a card's groups). */
+  options: Record<string, { value: string; label: string }[]>;
+  /** Whether the region will be on the public page once its draft is published. */
+  visible: boolean;
+};
+
+export type RouteConflictView = { key: string; label: string; live: string; draft: string };
 
 /**
  * Why a section could not be read or written.

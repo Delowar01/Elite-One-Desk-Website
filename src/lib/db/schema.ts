@@ -541,6 +541,13 @@ export const serviceCategories = pgTable("service_categories", {
   imageId: integer("image_id").references(() => media.id, { onDelete: "set null" }),
   ctaLabelEn: varchar("cta_label_en", { length: 64 }).notNull().default(""),
   ctaLabelAr: varchar("cta_label_ar", { length: 64 }).notNull().default(""),
+  /**
+   * Where the hero's primary call to action goes (Batch 21). Empty means
+   * `/contact`, which is what the button always pointed at before the column
+   * existed — so every row written before it renders exactly as it did.
+   * Validated with the page CMS's link rule: a site path or an https address.
+   */
+  ctaHref: varchar("cta_href", { length: 255 }).notNull().default(""),
   sortOrder: integer("sort_order").notNull().default(0),
   isPublished: boolean("is_published").notNull().default(true),
   ...timestamps,
@@ -731,6 +738,74 @@ export const faqs = pgTable(
     ...timestamps,
   },
   (t) => [index("faqs_scope_idx").on(t.scope, t.categoryId, t.serviceId)],
+);
+
+/* -------------------------------------------------------------------------- */
+/* Dynamic routes in the Visual Editor (Batch 21)                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One editable region of a dynamic route — a category's hero, one service
+ * card, one FAQ — and only when it has something to hold.
+ *
+ * Two kinds of thing live here, and the split is the point:
+ *
+ *   · **Published presentation** — `styles`, `motion` and `copy` (the
+ *     template wording a category page used to hard-code). Nothing held these
+ *     before Batch 21, so this is their one home rather than a copy of
+ *     anything.
+ *   · **Unpublished changes** — `draft_content`, `draft_styles` and
+ *     `draft_motion`. `draft_content` is a patch of the fields an editor
+ *     changed, each with the published value it started from (`base`); the
+ *     published values of category, group, service and FAQ content stay in
+ *     their own tables and are never mirrored here.
+ *
+ * `owner_key` (`service:12`) names the region by resource identity, so a
+ * style or a draft follows the service, not a DOM position. `revision` guards
+ * every draft write, as `page_sections.revision` does for sections. See
+ * `docs/visual-editor/dynamic-routes.md`.
+ */
+export const routeNodes = pgTable(
+  "route_nodes",
+  {
+    ownerKey: varchar("owner_key", { length: 64 }).primaryKey(),
+    /** The route the region was last edited on, e.g. `category:3`. */
+    routeKey: varchar("route_key", { length: 64 }).notNull(),
+    styles: jsonb("styles").$type<Record<string, unknown>>(),
+    motion: jsonb("motion").$type<Record<string, unknown>>(),
+    copy: jsonb("copy").$type<Record<string, string>>(),
+    draftContent: jsonb("draft_content").$type<Record<string, { value: unknown; base: unknown }>>(),
+    draftStyles: jsonb("draft_styles").$type<Record<string, unknown>>(),
+    draftMotion: jsonb("draft_motion").$type<Record<string, unknown>>(),
+    revision: integer("revision").notNull().default(1),
+    createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+    updatedBy: integer("updated_by").references(() => users.id, { onDelete: "set null" }),
+    ...timestamps,
+  },
+  (t) => [index("route_nodes_route_idx").on(t.routeKey)],
+);
+
+/**
+ * One publication of a dynamic route: what it looked like afterwards
+ * (`snapshot`), what changed (`changes`, field by field, before and after),
+ * who and when. `kind` is `baseline` for the state recorded before a route's
+ * first publication, so the earliest state can be compared and restored too.
+ */
+export const routeVersions = pgTable(
+  "route_versions",
+  {
+    id: serial("id").primaryKey(),
+    routeKey: varchar("route_key", { length: 64 }).notNull(),
+    kind: varchar("kind", { length: 16 }).notNull().default("publish"),
+    summary: varchar("summary", { length: 255 }).notNull().default(""),
+    snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+    changes: jsonb("changes").$type<unknown[]>().notNull().default(sql`'[]'::jsonb`),
+    createdBy: integer("created_by").references(() => users.id, { onDelete: "set null" }),
+    /** Captured at write time so the row survives a deleted user. */
+    actorName: varchar("actor_name", { length: 120 }).notNull().default("System"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("route_versions_route_idx").on(t.routeKey, t.createdAt)],
 );
 
 /* -------------------------------------------------------------------------- */
