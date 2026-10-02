@@ -726,11 +726,12 @@ skips a level, except the legal pages' rich text under its title
   hover add no listener and no frame loop (P7, P8); one listener for every
   drifting element (S `entrance-parallax` E9). No React state update per frame.
 - **Editor (§32)** — S `editor-performance` on Home enlarged to 16 sections:
-  opens in ~3 s; all 61 Layers branches (199 rows) open with no long task;
-  a selection reaches the Inspector in ~0.3 s; forty selections leave the
-  heap flat (11.4 → 11.7 MB after collection); 300 typed characters cause no
-  task over ~70 ms and are all saved; style and motion changes are a few
-  hundred milliseconds for ten. Nothing obvious to report.
+  on the release candidate it opens in
+  3.1 s; all 61 Layers branches (199 rows) open with no long task; a
+  selection reaches the Inspector in a median 0.33 s; forty selections leave
+  the heap flat (11.4 → 11.8 MB after collection); 300 typed characters cause
+  no task over 62 ms and are all saved; ten style changes take 0.57 s and ten
+  entrance changes 0.54 s. Nothing obvious to report.
 - **Clean-up (§33)** — S `editor-cleanup`: page switches, canvas reloads,
   Replay with a parallax sweep, the component drawer and the comparison's
   controls, each repeated: no observer, window or document listener, pending

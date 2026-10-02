@@ -7,7 +7,7 @@ start Batch 20. The production-deployment decision is not made here.
 
 | | |
 |---|---|
-| Release-candidate SHA | *recorded in the documentation-only commit that follows the RC commit (this file's next revision)* |
+| Release-candidate SHA | `3d98b8173c3cadd73df90c75532ea46fa97091a7` — certified by the gate record below; the commit after it changes documentation only |
 | Date | 2026-10-01 |
 | Baseline | `5b6a275` (Batch 19A) |
 | Previous production release | `b807663` (`deploy/previous-release`, unchanged) |
@@ -174,7 +174,51 @@ are in the acceptance matrix.
 
 ## Gate record
 
-*Recorded in the documentation-only commit that follows the RC commit:* the
-fresh-clone result, `npm test` ×3, `npm run test:browser` ×3, the stress
-suite and the intermittent targets, the GitHub CI run and its jobs, and the
-manually dispatched Stress run — each on the RC SHA.
+The release candidate is `3d98b8173c3cadd73df90c75532ea46fa97091a7`, and
+every gate below ran on it. The commit that follows it changes documentation
+only: this record, and the editor's measured figures in the acceptance
+matrix, now quoted from this run.
+
+**How it got here.** The first candidate, `b9cefc5`, passed GitHub CI
+([36922104345](https://github.com/Delowar01/Elite-One-Desk-Website/actions/runs/36922104345))
+and the dispatched Stress run
+([36922126400](https://github.com/Delowar01/Elite-One-Desk-Website/actions/runs/36922126400)).
+The fresh-clone gate then found defect 6 in its second browser run: creating a
+component could leave the screen on the list. The gate was stopped, the defect
+root-caused and fixed in `3d98b81` with its regressions (acceptance matrix,
+defect 6), and the complete gate was run again on `3d98b81`.
+
+**Fresh clone (§37).** `git clone` of `origin/main`, checked out at the RC SHA,
+with nothing copied from a working checkout (no `.data`, `.env`, `node_modules`
+or `.next`). The one deviation, as in 19A: the sandbox cannot run
+`npx playwright install`, so Chromium came from
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE`; the GitHub workflows below install the
+Chromium `package-lock.json` pins and ran the same probes with it. The
+session's worker restarted once during step 4's build; the gate resumed from
+its step markers and ran step 4 again in full.
+
+| Gate | Result |
+|---|---|
+| The deploy's own install — `npm ci --include=dev --ignore-scripts`, `npm rebuild sharp`, `npm run build` | exit 0, 0, 0; `media-pipeline` and `dependency-advisories` on that install: 8 of 8 |
+| Clean `npm ci`, test settings from `tests/browser/.env.example` | exit 0; `sharp` 0.35.5, libvips 8.18.7, libheif 1.23.5; no application `.env` |
+| `npm run lint` · `npm run typecheck` · cold `npm run build` with no database | exit 0 · exit 0 · exit 0 |
+| `npm test` ×3 (§38) | 1,590 tests, 338 suites, 0 failed, 0 skipped — each run (181 s, 163 s, 167 s) |
+| `npm run test:browser` ×3 (§39) | 30/30 clean, 1,131 PASS, 0 FAIL — each run (1,264 s, 1,278 s, 1,283 s) |
+| `npm run test:stress`, complete (§40) | 13/13 clean, 114 PASS, 0 FAIL (1,131 s) |
+| The intermittent targets ×3 — `quick-links-selection`, `entrance-parallax`, `replay-selection`, `restore-selection`, and `create-navigation` (defect 6) | 15/15 clean, 123 PASS, 0 FAIL — three runs of each; with the complete run, `create-navigation` landed 360 of 360 creates and 120 of 120 deletes |
+| `npm run test:cleanup` | listed three databases left by runs stopped earlier in the session (none from this gate's scripts) and the staged server trees; `--yes` removed them; the clone's worktree had no changes |
+| `npm audit` | 8 vulnerable packages, 5 moderate and 3 high — the table above |
+| Evidence | every check the acceptance matrix cites (268 rows) and every citation in its prose (53) found, passing, in each browser run's own output, with `npm test` run 1 and the complete stress run; `editor-performance` on the RC: opens in 3.1 s, 199 Layers rows with no long task, a selection in a median 0.33 s, heap 11.4 → 11.8 MB after forty selections, worst typing task 62 ms |
+
+**GitHub (§41), on the same SHA:**
+
+| Workflow | Run | Jobs | Result |
+|---|---|---|---|
+| CI (push to `main`) | [36935649184](https://github.com/Delowar01/Elite-One-Desk-Website/actions/runs/36935649184) | Static — install, lint, typecheck, cold build (110615152624) · Tests — tracked suite on PostgreSQL 16 (110615152246) · Security and compatibility — schema, permission upgrade, isolation, DDL (110615152581) · Browser QA — thirty probes (110615152504): 30/30 clean, 1,131 PASS, 0 FAIL | success, all four |
+| Stress (dispatched by hand) | [36935656611](https://github.com/Delowar01/Elite-One-Desk-Website/actions/runs/36935656611) | Stress suite on isolated databases (110615182853): 13/13 clean, 114 PASS, 0 FAIL | success |
+
+**No ignored QA (§42).** All thirty probes and thirteen stress scripts are
+tracked and listed in their `expected.json`; the runner fails a script whose
+PASS count differs from it. Nothing imports from `.data/`, no Chromium path is
+committed, no workflow step continues on error, nothing is retried, and no
+check was removed or weakened.
