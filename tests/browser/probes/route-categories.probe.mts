@@ -11,7 +11,8 @@
  * canvas. Business Setup and Iqama get the core of it. Three more prove the
  * editor knows no category by name: two categories the seed ships that no
  * editor code mentions, and one created while the probe runs, which is also
- * published, compared, restored to a draft and discarded.
+ * published, compared, restored to a draft and discarded. Last, the Service
+ * Categories screen keeps a group's Arabic summary, which the editor can set.
  */
 
 import { editorIdle, editorSettled, selectCanvasNode, selectFromLayers } from "../canvas";
@@ -479,6 +480,30 @@ try {
     const dropped = await until(async () => (await pendingDrafts()) === 0, 20_000);
     say("Restore: Discard drops the restored draft and live stays published", discardReady && dropped && (await titleOf(created!.id)) === published);
     await closePanel();
+  }
+
+  /* ================================================================== */
+  /* The Service Categories screen keeps what the editor can set         */
+  /* ================================================================== */
+  // A group's Arabic summary is editable in the Visual Editor. The group form on
+  // the Service Categories screen saves both summaries, so it must show both: it
+  // used to have no Arabic field and emptied that summary on every save.
+  {
+    const [group] = await sql<{ id: number; title_en: string }[]>`
+      select id, title_en from service_subcategories where category_id = ${travel.id} order by sort_order, id limit 1`;
+    await sql`update service_subcategories set summary_ar = 'ملخص المجموعة' where id = ${group!.id}`;
+    await page.goto(`${server.origin}/admin/categories/${travel.id}`, { waitUntil: "load" });
+    await page.locator("li", { hasText: group!.title_en }).first().getByRole("button", { name: "Edit", exact: true }).click();
+    const arabic = page.locator(`#sub-sumAr-${group!.id}`);
+    const present = await arabic.waitFor({ timeout: 15_000 }).then(
+      () => true,
+      () => false,
+    );
+    say("Categories screen: a group's form shows its Arabic summary", present && (await arabic.inputValue()) === "ملخص المجموعة");
+    await page.getByRole("button", { name: "Save group" }).click();
+    const saved = await until(async () => (await page.getByText("Group saved.").count()) > 0, 15_000);
+    const [after] = await sql<{ summary_ar: string }[]>`select summary_ar from service_subcategories where id = ${group!.id}`;
+    say("Categories screen: saving the group keeps its Arabic summary", saved && after!.summary_ar === "ملخص المجموعة", after!.summary_ar);
   }
 
   say("no page errors in the editor or the canvas", errors.length === 0, errors.join(" | "));

@@ -217,7 +217,13 @@ what they do: they write live, immediately, as before. They never read or write
 | Visual Editor publishes | Writes only the patched columns, through one transaction. |
 
 A pending draft is never silently overwritten, and the rule is the same for
-every category. One case is the forms' own, unchanged: a form opened *before*
+every category.
+
+One form needed a field to keep this promise: the group form on the Service
+Categories screen saved both group summaries but showed only the English one,
+so every save emptied the Arabic summary. Harmless while nothing else could
+set it; the Visual Editor can, so the form now carries "Summary (العربية)"
+(browser-tested: shown, saved, kept). One case is the forms' own, unchanged: a form opened *before*
 a Visual Editor publication and saved *after* it writes every field it holds,
 as it always has — the same last-save-wins the forms have between two people
 using the forms. The admin forms carry no revision check today; adding one

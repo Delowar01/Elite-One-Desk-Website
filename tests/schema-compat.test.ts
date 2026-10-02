@@ -199,7 +199,11 @@ describe("the compatibility worktree is the release it claims to be", () => {
         "the worktree should have been rebuilt at the new ref, not reused",
       );
 
-      delete process.env.COMPAT_REF;
+      // Back to the ref the run started with — the documented default, or the
+      // one a `COMPAT_REF=<ref>` run named (Batch 21: deleting it here made
+      // every such run fail this check against a ref it never asked for).
+      if (original === undefined) delete process.env.COMPAT_REF;
+      else process.env.COMPAT_REF = original;
       assert.equal(headOf(worktreeAt(compatRef(), dir)), first, "and rebuilt again when the ref changes back");
     } finally {
       if (original === undefined) delete process.env.COMPAT_REF;

@@ -92,7 +92,7 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,253 `PASS`
+Every probe clean, with the counts in `probes/expected.json` — 1,255 `PASS`
 across the thirty-two as of Batch 21 (1,145 across thirty-one at Batch 19C,
 1,131 across thirty at Batch 19B, 1,089
 at Batch 19A, 1,078 at Batch 18;
@@ -126,7 +126,7 @@ their role. It also found that an admin form could leave its button on
 "Saving…" after the server had saved — see `useSettledActionState` in
 `src/components/admin/form.tsx` and the `admin-form-settle` stress script.
 
-Batch 21 added one probe and changed none: `route-categories` (108 checks,
+Batch 21 added one probe and changed none: `route-categories` (110 checks,
 port 3732) opens service-category pages in the Visual Editor. Travel & Tourism
 gets the full walk — the real route in the canvas, nested Layers, the title
 selected from the canvas, a direct edit taken back with Undo and put back with
@@ -139,7 +139,8 @@ inside the canvas. Business Setup and Iqama get the core of it;
 `license-renewal` and `government-relations`, which no editor code names, and
 a category the probe creates before the server starts prove the editor knows
 no category by slug. The created one is also published, compared, viewed as a
-version, restored to a draft and discarded.
+version, restored to a draft and discarded. Last, the Service Categories
+screen shows and keeps a group's Arabic summary, which the editor can set.
 
 ## Writing a probe
 

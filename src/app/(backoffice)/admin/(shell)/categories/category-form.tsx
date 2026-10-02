@@ -367,6 +367,19 @@ function SubcategoryForm({
             className="admin-textarea"
           />
         </Field>
+        {/* The save writes both summaries, so both are on the form: without this
+            one, every save of a group emptied its Arabic summary — which the
+            Visual Editor can set (Batch 21). */}
+        <Field label="Summary (العربية)" name={`sub-sumAr-${row?.id ?? "new"}`} className="sm:col-span-2">
+          <textarea
+            id={`sub-sumAr-${row?.id ?? "new"}`}
+            name="summaryAr"
+            rows={2}
+            defaultValue={row?.summaryAr ?? ""}
+            dir="rtl"
+            className="admin-textarea"
+          />
+        </Field>
       </div>
 
       <label className="mt-3 flex cursor-pointer items-center gap-2.5 text-[0.82rem]">
