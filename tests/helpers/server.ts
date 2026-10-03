@@ -66,12 +66,90 @@ export function stageServer(port: number, reuse: boolean): string {
   return root;
 }
 
+/** One line of a server's output, with the moment it arrived (Batch 21A). */
+export type ServerLine = { at: number; stream: "out" | "err"; text: string };
+
+/** How a server process ended, and whether `stop` was what ended it. */
+export type ServerExit = { at: number; code: number | null; signal: NodeJS.Signals | null; requested: boolean };
+
+/** The most lines a server keeps for `lines()`; `log()` keeps everything, as before. */
+export const SERVER_LINES_KEPT = 5_000;
+
 export type Server = {
   origin: string;
   stop: () => Promise<void>;
   /** Everything the server has written to stdout/stderr, for a failure message. */
   log: () => string;
+  /**
+   * The same output line by line, each with the time it arrived, so a failure
+   * in the browser can be printed beside what the server said in the seconds
+   * around it (Batch 21A: a stress failure whose server output was lost).
+   */
+  lines: () => readonly ServerLine[];
+  /** The process id, and how the process ended — null while it runs. */
+  pid: number | undefined;
+  exit: () => ServerExit | null;
 };
+
+/**
+ * Splits a child's output into timestamped lines as it arrives. A partial line
+ * waits for its end; `end` flushes whatever is left when the streams close.
+ */
+export function lineCollector(keep = SERVER_LINES_KEPT, now: () => number = Date.now) {
+  const lines: ServerLine[] = [];
+  const pending: Record<ServerLine["stream"], string> = { out: "", err: "" };
+  const push = (stream: ServerLine["stream"], text: string) => {
+    lines.push({ at: now(), stream, text });
+    if (lines.length > keep) lines.splice(0, lines.length - keep);
+  };
+  return {
+    lines: (): readonly ServerLine[] => lines,
+    write(stream: ServerLine["stream"], chunk: Buffer | string) {
+      const parts = (pending[stream] + chunk.toString()).split("\n");
+      pending[stream] = parts.pop() ?? "";
+      for (const part of parts) push(stream, part.replace(/\r$/, ""));
+    },
+    end() {
+      for (const stream of ["out", "err"] as const) {
+        if (pending[stream]) push(stream, pending[stream]);
+        pending[stream] = "";
+      }
+    },
+  };
+}
+
+/**
+ * What a test keeps of a child process: its whole output (`log`), the same
+ * output line by line with times (`lines`), and how it ended (`exit`) — with
+ * whether the test asked it to, which `stopping` records just before the test
+ * ends the process itself. A process that ends by any other route is a crash.
+ */
+export function watchProcess(child: ChildProcess) {
+  let log = "";
+  const collected = lineCollector();
+  let stopping = false;
+  let exited: ServerExit | null = null;
+  child.stdout?.on("data", (chunk: Buffer) => {
+    log += chunk;
+    collected.write("out", chunk);
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    log += chunk;
+    collected.write("err", chunk);
+  });
+  child.once("exit", (code, signal) => {
+    exited = { at: Date.now(), code, signal, requested: stopping };
+  });
+  child.once("close", () => collected.end());
+  return {
+    log: () => log,
+    lines: collected.lines,
+    exit: () => exited,
+    stopping: () => {
+      stopping = true;
+    },
+  };
+}
 
 export async function startServer(
   database: string,
@@ -94,13 +172,11 @@ export async function startServer(
     }),
   });
 
-  let log = "";
-  child.stdout?.on("data", (chunk) => (log += chunk));
-  child.stderr?.on("data", (chunk) => (log += chunk));
+  const watched = watchProcess(child);
 
   const deadline = Date.now() + 60_000;
   for (;;) {
-    if (child.exitCode !== null) throw new Error(`the server exited early:\n${log}`);
+    if (child.exitCode !== null) throw new Error(`the server exited early:\n${watched.log()}`);
     try {
       const response = await fetch(`${origin}/`, { redirect: "manual" });
       if (response.status < 500) {
@@ -110,16 +186,23 @@ export async function startServer(
     } catch {
       // not listening yet
     }
-    if (Date.now() > deadline) throw new Error(`the server never became ready:\n${log}`);
+    if (Date.now() > deadline) throw new Error(`the server never became ready:\n${watched.log()}`);
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
   return {
     origin,
-    log: () => log,
+    log: watched.log,
+    lines: watched.lines,
+    pid: child.pid,
+    exit: watched.exit,
     stop: () =>
       new Promise<void>((resolve) => {
-        if (child.exitCode !== null) return resolve();
+        // A process a signal killed has no exit code, only a signal; waiting
+        // for a `close` that has already happened would hang the script and
+        // hide the very exit a stress run needs to report (Batch 21A).
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        watched.stopping();
         child.once("close", () => resolve());
         child.kill("SIGTERM");
         setTimeout(() => child.kill("SIGKILL"), 5_000).unref();

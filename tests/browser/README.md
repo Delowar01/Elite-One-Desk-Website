@@ -1,14 +1,16 @@
 # Browser QA — the tracked probes
 
-Thirty-two probes drive the real application in a real Chromium: the public pages,
-ordinary Preview and the Visual Editor, in English and Arabic, at Desktop,
-Tablet and Mobile widths. Each prints one `PASS` or `FAIL` line per check.
+Thirty-three probes run in a real Chromium. Thirty-two drive the real application:
+the public pages, ordinary Preview and the Visual Editor, in English and Arabic,
+at Desktop, Tablet and Mobile widths. One, `stress-diagnostics`, proves the
+stress suite's failure recorder against a stub server. Each prints one `PASS`
+or `FAIL` line per check.
 Until Batch 19A they lived in a gitignored folder on one machine; they are now
 tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty-two probes, one file each |
+| `probes/*.probe.mts` | the thirty-three probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -44,7 +46,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the thirty-two probes, once each
+npm run test:browser              # the thirty-three probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -92,8 +94,9 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,255 `PASS`
-across the thirty-two as of Batch 21 (1,145 across thirty-one at Batch 19C,
+Every probe clean, with the counts in `probes/expected.json` — 1,265 `PASS`
+across the thirty-three as of Batch 21A (1,255 across thirty-two at Batch 21,
+1,145 across thirty-one at Batch 19C,
 1,131 across thirty at Batch 19B, 1,089
 at Batch 19A, 1,078 at Batch 18;
 `hardening` gained eleven checks in 19A: eight on where its own clicks land and
@@ -164,3 +167,17 @@ screen shows and keeps a group's Arabic summary, which the editor can set.
   (`window.scrollTo({ top, behavior: "instant" })`) and wait until it has
   arrived. A wheel sent while a smooth scroll is still gliding is dropped by
   Chromium (`tests/stress/smooth-scroll-wheel.stress.mts`).
+
+Batch 21A added one probe and changed none: `stress-diagnostics` (10 checks,
+ports 3733–3734) proves `tests/helpers/diagnostics.ts`, the recorder the
+stress suite's `create-navigation` now runs under, in a real Chromium. A stub
+server serves pages that throw (one with a digest and a message longer than
+the 160 characters the script used to keep), reject, complain on the console,
+call a "Server Action" that answers 500 with an error row, fetch an RSC payload
+with an error row and one whose only error is a notFound, lose a connection
+and cancel a request by navigating; the real application server is started
+and stopped; a child process writes a Next.js-style error and exits by itself.
+Each must be recorded whole, with its digest where it has one, attributed to
+its step, and printed without the session, the CSRF token or a database
+password. The page errors this probe records are provoked by its own stub
+pages; it visits no application page.

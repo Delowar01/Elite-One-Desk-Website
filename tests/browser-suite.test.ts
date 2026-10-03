@@ -40,7 +40,7 @@ describe("19A · the tracked browser suite", () => {
         assert.ok(Number.isInteger(count) && count > 0, `${name}: ${count} is not a PASS count`);
       }
     }
-    assert.equal(probes.length, 32, "the thirty probes Batch 19A tracked, 19C's temporary-password scenario and 21's category pages");
+    assert.equal(probes.length, 33, "the thirty probes Batch 19A tracked, 19C's temporary-password scenario, 21's category pages and 21A's stress diagnostics");
   });
 
   test("each script has a port of its own, apart from the automated suite's", () => {
