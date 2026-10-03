@@ -94,7 +94,7 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,265 `PASS`
+Every probe clean, with the counts in `probes/expected.json` — 1,266 `PASS`
 across the thirty-three as of Batch 21A (1,255 across thirty-two at Batch 21,
 1,145 across thirty-one at Batch 19C,
 1,131 across thirty at Batch 19B, 1,089
@@ -168,15 +168,15 @@ screen shows and keeps a group's Arabic summary, which the editor can set.
   arrived. A wheel sent while a smooth scroll is still gliding is dropped by
   Chromium (`tests/stress/smooth-scroll-wheel.stress.mts`).
 
-Batch 21A added one probe and changed none: `stress-diagnostics` (10 checks,
+Batch 21A added one probe and changed none: `stress-diagnostics` (11 checks,
 ports 3733–3734) proves `tests/helpers/diagnostics.ts`, the recorder the
 stress suite's `create-navigation` now runs under, in a real Chromium. A stub
 server serves pages that throw (one with a digest and a message longer than
 the 160 characters the script used to keep), reject, complain on the console,
-call a "Server Action" that answers 500 with an error row, fetch an RSC payload
-with an error row and one whose only error is a notFound, lose a connection
-and cancel a request by navigating; the real application server is started
-and stopped; a child process writes a Next.js-style error and exits by itself.
+throw as they navigate away, call a "Server Action" that answers 500 with an
+error row, fetch an RSC payload with an error row and one whose only error is a
+notFound, lose a connection and cancel a request of their own; the real
+application server is started and stopped; a child process writes a Next.js-style error and exits by itself.
 Each must be recorded whole, with its digest where it has one, attributed to
 its step, and printed without the session, the CSRF token or a database
 password. The page errors this probe records are provoked by its own stub

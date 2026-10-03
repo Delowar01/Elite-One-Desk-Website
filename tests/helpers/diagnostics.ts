@@ -587,6 +587,41 @@ export class StressDiagnostics {
   }
 }
 
+/**
+ * What the suite runner keeps of a script's `diag` output (Batch 21A): its
+ * `diag summary` line, and the other `diag` lines up to `limit`. The runner
+ * prints the summary for every run and the incident lines for an unclean one,
+ * so a CI job log carries the evidence by itself — the logs artifact may be
+ * out of reach of whoever reads the job.
+ */
+export function diagnosticCollector(limit = 400) {
+  const lines: string[] = [];
+  let total = 0;
+  let summary: string | null = null;
+  return {
+    /** Keeps the line if it is a `diag` line; says whether it was. */
+    take(line: string): boolean {
+      if (!line.startsWith("diag")) return false;
+      if (line.startsWith("diag summary ")) summary = line;
+      else {
+        total += 1;
+        if (lines.length < limit) lines.push(line);
+      }
+      return true;
+    },
+    summary: () => summary,
+    /** The summary, and for an unclean run every kept incident line and how many more the log holds. */
+    report(clean: boolean): string[] {
+      const out = summary ? [summary] : [];
+      if (!clean) {
+        out.push(...lines);
+        if (total > lines.length) out.push(`diag … ${total - lines.length} more diag lines in the log`);
+      }
+      return out;
+    },
+  };
+}
+
 /** Lines written within 100 ms of the one before, on the same stream, as one group. */
 export function bursts(lines: readonly ServerLine[], gapMs = 100): ServerLine[][] {
   const groups: ServerLine[][] = [];

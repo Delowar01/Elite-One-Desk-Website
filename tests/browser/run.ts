@@ -27,6 +27,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import { diagnosticCollector } from "../helpers/diagnostics";
 import { PG_BASE, REPO_ROOT } from "../helpers/env";
 import { BUILD_HINT, isBuilt } from "../helpers/server";
 
@@ -113,6 +114,9 @@ type Run = {
   seconds: number;
   clean: boolean;
   failures: string[];
+  /** A script's own `diag summary`, and for an unclean run its `diag` lines (Batch 21A). */
+  diag: string[];
+  diagSummary: string | null;
   log: string;
 };
 
@@ -126,6 +130,7 @@ function runOnce(name: string, run: number): Promise<Run> {
   const failures: string[] = [];
   /** The last lines that were neither PASS nor FAIL — a stack trace, when a script dies. */
   const tail: string[] = [];
+  const diag = diagnosticCollector();
   let pending = "";
   const read = (chunk: Buffer) => {
     sink.write(chunk);
@@ -137,6 +142,8 @@ function runOnce(name: string, run: number): Promise<Run> {
       else if (line.startsWith("FAIL")) {
         fail += 1;
         failures.push(line);
+      } else if (diag.take(line)) {
+        continue;
       } else if (line.trim()) {
         tail.push(line);
         if (tail.length > 12) tail.shift();
@@ -163,7 +170,20 @@ function runOnce(name: string, run: number): Promise<Run> {
       // its output goes into the summary instead, so the job log shows the reason
       // (19C: the first candidate's Stress run lost a script without a word).
       const reasons = !clean && fail === 0 ? tail.map((line) => `| ${line}`) : failures;
-      resolve({ name, run, pass, fail, exit: code, timedOut, seconds, clean, failures: reasons, log: path.relative(REPO_ROOT, log) });
+      resolve({
+        name,
+        run,
+        pass,
+        fail,
+        exit: code,
+        timedOut,
+        seconds,
+        clean,
+        failures: reasons,
+        diag: diag.report(clean),
+        diagSummary: diag.summary(),
+        log: path.relative(REPO_ROOT, log),
+      });
     });
   });
 }
@@ -188,6 +208,9 @@ async function main(): Promise<number> {
         `${result.clean ? "clean  " : "UNCLEAN"} ${name}${repeat > 1 ? ` #${run}` : ""}  PASS=${result.pass} FAIL=${result.fail}  ${result.seconds}s${why}`,
       );
       for (const line of result.failures.slice(0, 12)) console.log(`        ${line}`);
+      // What the script recorded about itself (create-navigation, 21A): its summary
+      // on every run, and on an unclean one each incident, here in the job log.
+      for (const line of result.diag) console.log(`        ${line}`);
       if (!result.clean) console.log(`        log: ${result.log}`);
     }
   }

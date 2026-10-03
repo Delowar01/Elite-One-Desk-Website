@@ -6,10 +6,11 @@
  *
  *  · a stub HTTP server (port 3734) serves pages that throw — one with a
  *    digest and a message longer than the 160 characters the stress script
- *    used to keep — reject, complain on the console, call a "Server Action"
+ *    used to keep — throw as they navigate away (the shape of the original
+ *    failure), reject, complain on the console, call a "Server Action"
  *    that answers 500 with an error row, fetch an RSC payload with an error
  *    row and one whose only error is a notFound, lose a connection, and cancel
- *    a request by navigating;
+ *    a request of their own;
  *  · the real application server (port 3733) is started and stopped, and its
  *    output is kept line by line;
  *  · a process that writes a Next.js-style error and exits by itself.
@@ -53,9 +54,16 @@ const PAGES: Record<string, string> = {
     `<script>Promise.all(["bad", "notfound"].map((kind) => fetch("/flight?" + kind, { headers: { RSC: "1" } }).then((r) => r.text()))).then(() => { document.title = "done"; });</script>`,
   ),
   "/page/reset": page(`<script>fetch("/reset").catch(() => { document.title = "done"; });</script>`),
-  "/page/cancel": page(`<script>fetch("/slow"); setTimeout(() => location.assign("/page/blank"), 150);</script>`),
+  // Cancelled in the page, not by navigating: whether a fetch of a document that is being navigated
+  // away is reported at all depends on timing (a CI runner reported none in 10 s; 21A, run 37141166443).
+  "/page/cancel": page(
+    `<script>const c = new AbortController(); fetch("/slow", { signal: c.signal }).catch(() => { document.title = "cancelled"; }); setTimeout(() => c.abort(), 150);</script>`,
+  ),
   "/page/secret": page(
     `<script>fetch("/echo?_csrf=${CSRF}").then((r) => r.text()).then(() => { throw new Error("cookie value ${SESSION} leaked into a message"); });</script>`,
+  ),
+  "/page/leave": page(
+    `<script>setTimeout(() => { const e = new Error("thrown as the page leaves"); e.digest = "5566778899"; setTimeout(() => location.assign("/page/blank"), 0); throw e; }, 0);</script>`,
   ),
   "/page/blank": page("<p>blank</p>"),
 };
@@ -128,6 +136,18 @@ try {
     rejected ? `${rejected.message} [${rejected.digests.join()}]` : "nothing recorded",
   );
 
+  /* 3b. an error thrown as the page navigates away — the shape of the original failure, where
+     the screen moves on by a document load right after the action's answer */
+  diag.at({ worker: 0, round: 21, step: "visit /page/leave" });
+  await tab.goto(`${STUB}/page/leave`, { waitUntil: "load" });
+  await until(async () => tab.url().endsWith("/page/blank") && has("pageerror", (incident) => incident.message === "thrown as the page leaves"), 10_000);
+  const [leaving] = diag.flush().filter((incident) => incident.kind === "pageerror");
+  say(
+    "an error thrown as the page navigates away is still recorded, with its digest and the page it was thrown on",
+    leaving?.message === "thrown as the page leaves" && leaving.digests.join() === "5566778899" && leaving.page?.endsWith("/page/leave") === true,
+    leaving ? `${leaving.message} [${leaving.digests.join()}] on ${leaving.page}` : "nothing recorded",
+  );
+
   /* 4. the console — the picture's 404, and the browser's own /favicon.ico */
   await visit(3, "/page/console", () => has("console") && diag.summary().console404 > 0);
   say(
@@ -160,10 +180,10 @@ try {
 
   /* 7. a dropped connection, and a cancelled request */
   await visit(6, "/page/reset", () => has("requestfailed"));
-  await visit(7, "/page/cancel", () => tab.url().endsWith("/page/blank") && diag.summary().cancelledRequests > 0);
+  await visit(7, "/page/cancel", () => diag.summary().cancelledRequests > 0);
   const dropped = diag.incidents.filter((incident) => incident.kind === "requestfailed");
   say(
-    "a connection the server dropped is an incident; a request the browser cancelled by navigating is only counted",
+    "a connection the server dropped is an incident; a request the page cancelled is only counted",
     dropped.length === 1 &&
       dropped[0]!.request?.url.endsWith("/reset") === true &&
       dropped[0]!.request.failure !== "net::ERR_ABORTED" &&

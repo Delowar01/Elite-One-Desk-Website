@@ -67,6 +67,10 @@ own evidence. Every incident is printed whole, on lines starting `diag` (never
   time, the requests of the five seconds before it and what its server wrote
   in the five seconds around it.
 
+The runner copies each run's `diag summary` into its own output, and for an
+unclean run every incident line as well (up to 400), so a CI job log carries
+the evidence even when its logs artifact cannot be fetched.
+
 Nothing secret is printed: the session cookie and CSRF token are removed by
 value, and cookies, tokens, passwords, credentials in URLs, `DATABASE_URL` and
 `AUTH_SECRET` by shape. `tests/stress-diagnostics.test.ts` and the

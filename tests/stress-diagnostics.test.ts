@@ -21,6 +21,7 @@ import {
   REDACTED,
   StressDiagnostics,
   bursts,
+  diagnosticCollector,
   digestsIn,
   formatIncident,
   isNavigationDigest,
@@ -478,6 +479,31 @@ describe("what a log keeps", () => {
     assert.deepEqual(merged.digests, ["1", "2"]);
     assert.equal(merged.serverStarts, 62);
     assert.equal(merged.slowestRoundMs, 9_000);
+  });
+});
+
+describe("the suite runner's copy", () => {
+  test("keeps the summary for every run, and an unclean run's incident lines, bounded", () => {
+    const collect = diagnosticCollector(2);
+    for (const line of ["PASS  N1", "diag w0 #1 pageerror · worker 0", "diag   error     boom", "diag   digest    1", "plain output", 'diag summary {"pageErrors":1}']) {
+      collect.take(line);
+    }
+    assert.equal(collect.summary(), 'diag summary {"pageErrors":1}');
+    assert.deepEqual(collect.report(true), ['diag summary {"pageErrors":1}']);
+    assert.deepEqual(collect.report(false), [
+      'diag summary {"pageErrors":1}',
+      "diag w0 #1 pageerror · worker 0",
+      "diag   error     boom",
+      "diag … 1 more diag lines in the log",
+    ]);
+  });
+
+  test("takes only diag lines, so PASS and FAIL are still the runner's to count", () => {
+    const collect = diagnosticCollector();
+    assert.equal(collect.take("PASS  N1. fine"), false);
+    assert.equal(collect.take("FAIL  N4. not fine — diag inside the detail"), false);
+    assert.equal(collect.take("diag summary {}"), true);
+    assert.deepEqual(diagnosticCollector().report(false), []);
   });
 });
 
