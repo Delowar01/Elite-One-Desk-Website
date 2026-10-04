@@ -13,6 +13,7 @@
   "reusable": 7,
   "route-concurrency": 8,
   "service-concurrency": 13,
+  "service-form-concurrency": 9,
   "smooth-scroll-wheel": 2,
   "undo": 10
 }
