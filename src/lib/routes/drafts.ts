@@ -1,76 +1,67 @@
 import "server-only";
 
-import { toPlainText } from "@/lib/cms/sanitize";
 import { emptyMotionDocument } from "@/lib/cms/motion-doc";
 import type { Executor } from "@/lib/db/revision";
 import type { RouteConflictView, VisualSectionData } from "@/lib/visual-editor/content";
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 
 import {
-  adminHrefOf,
-  applyOrder,
-  blockTypeOf,
-  conflictsOf,
-  effectiveData,
-  loadCategoryData,
-  membersOf,
-  ownerBelongs,
-  ownerLabel,
-  ownersOf,
-  pendingPatch,
-  resourceOf,
-  SPECS,
-  storedValuesOf,
-  valuesOf,
-  type CategoryData,
-  type FieldSpec,
-  type StoredPatch,
-} from "./category";
+  adapterOf,
+  categoryAdapter,
+  serviceAdapter,
+  type RouteAdapter,
+  type RouteContext,
+  type RouteData,
+} from "./adapter";
+import type { CategoryData } from "./category";
 import {
   documentEditorKey,
   editorKeyOf,
   ownerKeyOf,
   parseOwnerKey,
   parseRouteKey,
+  routeKeyOf,
   type RouteDocument,
   type RouteOwner,
 } from "./owners";
-import { draftPresentationOf, patchOf, publishedOf, readNodes, type NodeRow } from "./store";
+import type { ServiceData } from "./service";
+import {
+  applyOrder,
+  blockTypeOf,
+  conflictsOf,
+  nextPatchWith,
+  pendingPatch,
+  readSubmittedWith,
+  resourceOf,
+  SPECS,
+  valuesOf,
+  type FieldSpec,
+  type StoredPatch,
+} from "./specs";
+import { draftPresentationOf, patchOf, publishedOf, readNodes } from "./store";
+
+export type { RouteContext } from "./adapter";
 
 /**
- * One category route as the Visual Editor sees it at one moment (Batch 21):
- * the live rows, the stored regions, every pending patch, and the rows with
- * those patches laid over them.
+ * One dynamic route as the Visual Editor sees it at one moment (Batch 21,
+ * every route kind since Batch 22): the live rows, the stored regions, every
+ * pending patch, and the rows with those patches laid over them.
  *
- * Built in a fixed number of queries — the category's own four and one for
- * its regions — whatever the number of cards, and built the same way for an
- * Inspector load, a save, a summary and (locked) a publication, so none of
- * them can come to a different idea of what the draft says.
+ * Built in a fixed number of queries — the route's own rows and one read of
+ * its regions — whatever the number of cards or questions, and built the same
+ * way for an Inspector load, a save, a summary and (locked) a publication, so
+ * none of them can come to a different idea of what the draft says. Which
+ * rows those are is the route's adapter's business (`adapter.ts`).
  */
-export type RouteContext = {
-  document: RouteDocument;
-  routeKey: string;
-  data: CategoryData;
-  owners: RouteOwner[];
-  nodes: Map<string, NodeRow>;
-  /** Each owner's published stored values. */
-  live: Map<string, Record<string, unknown>>;
-  /** Each owner's pending patch — entries that still ask for something. */
-  patches: Map<string, StoredPatch>;
-  /** The rows as the draft would make them. */
-  effective: CategoryData;
-};
-
-export async function readRouteContext(
+async function buildContext<D extends RouteData>(
+  adapter: RouteAdapter<D>,
   on: Executor,
-  routeKey: string,
-  options: { lock?: boolean } = {},
-): Promise<RouteContext | null> {
-  const document = parseRouteKey(routeKey);
-  if (!document) return null;
-  const data = await loadCategoryData(on, document.id, options);
+  document: RouteDocument,
+  options: { lock?: boolean },
+): Promise<RouteContext<D> | null> {
+  const data = await adapter.load(on, document.id, options);
   if (!data) return null;
-  const owners = ownersOf(data);
+  const owners = adapter.owners(data);
   const nodes = await readNodes(on, owners.map(ownerKeyOf), options);
 
   const live = new Map<string, Record<string, unknown>>();
@@ -78,27 +69,47 @@ export async function readRouteContext(
   for (const owner of owners) {
     const key = ownerKeyOf(owner);
     const node = nodes.get(key);
-    const values = storedValuesOf(owner, data, publishedOf(node).copy);
+    const values = adapter.storedValues(owner, data, publishedOf(node).copy);
     live.set(key, values);
     const patch = pendingPatch(owner, patchOf(node), values);
     if (Object.keys(patch).length) patches.set(key, patch);
   }
   return {
+    adapter,
     document,
-    routeKey,
+    routeKey: routeKeyOf(document),
     data,
     owners,
     nodes,
     live,
     patches,
-    effective: effectiveData(data, patches),
+    effective: adapter.effective(data, patches),
   };
 }
+
+/** Any route the key names, through its own adapter — or null. */
+export async function readRouteContext(
+  on: Executor,
+  routeKey: string,
+  options: { lock?: boolean } = {},
+): Promise<RouteContext | null> {
+  const document = parseRouteKey(routeKey);
+  if (!document) return null;
+  return buildContext(adapterOf(document.kind), on, document, options);
+}
+
+/** A category's route, typed as one (the category page's own renderer reads its rows). */
+export const readCategoryContext = (on: Executor, categoryId: number, options: { lock?: boolean } = {}) =>
+  buildContext<CategoryData>(categoryAdapter, on, { kind: "category", id: categoryId }, options);
+
+/** A service's own page, typed as one (Batch 22). */
+export const readServiceContext = (on: Executor, serviceId: number, options: { lock?: boolean } = {}) =>
+  buildContext<ServiceData>(serviceAdapter, on, { kind: "service", id: serviceId }, options);
 
 /** The owner an address names, if it is drawn on this route. */
 export function ownerIn(context: RouteContext, ownerKey: unknown): RouteOwner | null {
   const owner = parseOwnerKey(ownerKey);
-  if (!owner || !ownerBelongs(owner, context.data)) return null;
+  if (!owner || !context.adapter.belongs(owner, context.data)) return null;
   return owner;
 }
 
@@ -115,7 +126,7 @@ export function effectiveStored(context: RouteContext, owner: RouteOwner): Recor
   for (const spec of SPECS[owner.type]) {
     const entry = patch[spec.key];
     if (spec.check === "order") {
-      const members = membersOf(owner, spec.list, context.effective);
+      const members = context.adapter.members(owner, spec.list, context.effective);
       out[spec.key] = applyOrder(entry ? entry.value : members, members);
     } else {
       out[spec.key] = entry ? entry.value : live[spec.key];
@@ -124,86 +135,51 @@ export function effectiveStored(context: RouteContext, owner: RouteOwner): Recor
   return out;
 }
 
+/**
+ * The Inspector's values read back into stored values with the record's own
+ * rules (`specs.ts`), the route supplying the one thing only it knows: which
+ * groups a card may be filed under.
+ */
+export function readSubmittedIn(
+  context: RouteContext,
+  owner: RouteOwner,
+  submitted: Record<string, unknown>,
+  mediaIds: ReadonlySet<number>,
+) {
+  return readSubmittedWith(owner, submitted, { mediaIds, groupIds: context.adapter.groupIds(context.data) });
+}
+
+/** The patch a save leaves, its orders completed against who is in each list after the route's drafts. */
+export function nextPatchIn(
+  context: RouteContext,
+  owner: RouteOwner,
+  previous: StoredPatch | null | undefined,
+  live: Record<string, unknown>,
+  stored: Record<string, unknown>,
+): StoredPatch {
+  return nextPatchWith(owner, previous, live, stored, (list) => context.adapter.members(owner, list, context.effective));
+}
+
 /* -------------------------------------------------------------------------- */
 /* Words for values                                                           */
 /* -------------------------------------------------------------------------- */
 
-const EMPTY = "(empty)";
-
 /**
  * A stored value as a person reads it, for a conflict card, a summary or a
- * comparison: text as text, rich text without its markup, an id by its name.
+ * comparison: text as text, rich text without its markup, a list by its
+ * entries, an id by its name — named from `data` (the live rows, or the
+ * draft's).
  */
-export function describeValue(spec: FieldSpec | undefined, value: unknown, data: CategoryData): string {
-  if (value === null || value === undefined || value === "") return EMPTY;
-  switch (spec?.check) {
-    case "rich": {
-      const text = toPlainText(String(value), 140);
-      return text || EMPTY;
-    }
-    case "flag":
-      return value === true ? (spec.key === "isPublished" ? "Shown" : "Yes") : spec.key === "isPublished" ? "Hidden" : "No";
-    case "media":
-      return `Picture #${String(value)}`;
-    case "group": {
-      const group = data.groups.find((row) => row.id === value);
-      return group ? group.titleEn : `Group #${String(value)}`;
-    }
-    case "order": {
-      if (!Array.isArray(value)) return EMPTY;
-      const names = (value as number[]).map((id) => {
-        if (spec.list === "groups") return data.groups.find((row) => row.id === id)?.titleEn ?? `#${id}`;
-        if (spec.list === "faqs") return data.faqs.find((row) => row.id === id)?.questionEn ?? `#${id}`;
-        return data.services.find((row) => row.id === id)?.titleEn ?? `#${id}`;
-      });
-      return names.length ? names.join(" → ") : EMPTY;
-    }
-    default: {
-      const text = String(value);
-      return text.length > 140 ? `${text.slice(0, 139)}…` : text;
-    }
-  }
-}
+export const describeValue = (context: RouteContext, spec: FieldSpec | undefined, value: unknown, data: RouteData = context.data) =>
+  context.adapter.describe(spec, value, data);
 
 /* -------------------------------------------------------------------------- */
 /* The Inspector's document                                                   */
 /* -------------------------------------------------------------------------- */
 
-/** The choices a field offers that only the route can supply. */
-function optionsOf(owner: RouteOwner, data: CategoryData): Record<string, { value: string; label: string }[]> {
-  if (owner.type !== "service") return {};
-  return {
-    group: [
-      { value: "", label: "No group" },
-      ...data.groups.map((group) => ({
-        value: String(group.id),
-        label: group.isPublished ? group.titleEn : `${group.titleEn} (hidden)`,
-      })),
-    ],
-  };
-}
-
 /** Whether a region would be on the public page with its drafts published. */
-export function visibleAfterPublish(owner: RouteOwner, effective: CategoryData): boolean {
-  switch (owner.type) {
-    case "subcategory":
-      return effective.groups.find((row) => row.id === owner.id)?.isPublished !== false;
-    case "service": {
-      const row = effective.services.find((service) => service.id === owner.id);
-      if (!row || !row.isPublished) return false;
-      if (row.subcategoryId === null) return true;
-      return effective.groups.find((group) => group.id === row.subcategoryId)?.isPublished === true;
-    }
-    case "faq":
-      return effective.faqs.find((row) => row.id === owner.id)?.isPublished !== false;
-    case "categoryBody":
-      return Boolean(effective.category.bodyEn.trim() || effective.category.bodyAr.trim());
-    case "categoryFaqs":
-      return effective.faqs.some((row) => row.isPublished);
-    default:
-      return true;
-  }
-}
+export const visibleAfterPublish = (context: RouteContext, owner: RouteOwner): boolean =>
+  context.adapter.visible(owner, context.effective);
 
 /**
  * One region in the shape the editor's section buffer takes.
@@ -227,8 +203,8 @@ export function ownerData(context: RouteContext, owner: RouteOwner): VisualSecti
     return {
       key: conflict.key,
       label: conflict.label,
-      live: describeValue(spec, conflict.live, context.data),
-      draft: describeValue(spec, conflict.draft, context.effective),
+      live: describeValue(context, spec, conflict.live, context.data),
+      draft: describeValue(context, spec, conflict.draft, context.effective),
     };
   });
 
@@ -249,12 +225,12 @@ export function ownerData(context: RouteContext, owner: RouteOwner): VisualSecti
     route: {
       ownerKey: key,
       routeKey: context.routeKey,
-      label: ownerLabel(owner, context.effective),
+      label: context.adapter.label(owner, context.effective),
       resource: resourceOf(owner),
-      adminHref: adminHrefOf(owner, context.data),
+      adminHref: context.adapter.adminHref(owner, context.data),
       conflicts,
-      options: optionsOf(owner, context.effective),
-      visible: visibleAfterPublish(owner, context.effective),
+      options: context.adapter.options(owner, context.effective),
+      visible: visibleAfterPublish(context, owner),
     },
   };
 }

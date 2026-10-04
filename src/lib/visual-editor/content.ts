@@ -89,9 +89,9 @@ export type VisualSectionData = {
 
 /** What a dynamic route's region adds to the section shape (Batch 21). */
 export type RouteOwnerInfo = {
-  /** `service:12`. */
+  /** `service:12`, `serviceHero:12`. */
   ownerKey: string;
-  /** `category:3`. */
+  /** `category:3`, or `service:12` for a service's own page (Batch 22). */
   routeKey: string;
   /** "Service “Hotel Reservation”". */
   label: string;

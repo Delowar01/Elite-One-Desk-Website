@@ -3,38 +3,29 @@ import "server-only";
 import { and, asc, count, desc, eq, inArray, notInArray } from "drizzle-orm";
 
 import { readMotionDocument, type MotionDocument } from "@/lib/cms/motion-doc";
-import { sanitizeHref, sanitizeRichText } from "@/lib/cms/sanitize";
 import { validateStyleDocument, type StyleDocument } from "@/lib/cms/styles";
 import { db } from "@/lib/db";
 import type { Executor } from "@/lib/db/revision";
-import {
-  faqs,
-  routeNodes,
-  routeVersions,
-  serviceCategories,
-  serviceSubcategories,
-  services,
-} from "@/lib/db/schema";
-import { isIconName } from "@/lib/icons";
+import { routeNodes, routeVersions } from "@/lib/db/schema";
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 
+import { existingMedia } from "./category";
+import { RECORD_OWNERS, type RouteData } from "./adapter";
+import { describeValue, readRouteContext, type RouteContext } from "./drafts";
+import { ownerKeyOf, parseOwnerKey, type RouteOwner } from "./owners";
 import {
+  applyOrder,
   blockTypeOf,
   conflictsOf,
   domainPermissionOf,
-  existingMedia,
-  membersOf,
-  ownerLabel,
+  mediaIdsOfPatches,
+  publishedValue,
   sameStored,
   SPECS,
-  storedValuesOf,
-  applyOrder,
-  type CategoryData,
+  storedProblem,
   type FieldSpec,
   type StoredPatch,
-} from "./category";
-import { describeValue, readRouteContext, type RouteContext } from "./drafts";
-import { ownerKeyOf, parseOwnerKey, type RouteOwner } from "./owners";
+} from "./specs";
 import { publishedOf, writeNodeGuarded, type NodeRow } from "./store";
 import {
   KEEP_ROUTE_VERSIONS,
@@ -45,21 +36,23 @@ import {
 } from "./views";
 
 /**
- * Publishing a category route's drafts — and throwing them away, and bringing
- * an earlier publication back as a draft (Batch 21).
+ * Publishing a dynamic route's drafts — and throwing them away, and bringing
+ * an earlier publication back as a draft (Batch 21; every route kind since
+ * Batch 22, through its adapter).
  *
  * The page CMS has `publish-service.ts`; this is its twin for dynamic routes,
  * and it holds the same three properties for the same reasons:
  *
- * **It is atomic.** One transaction locks the category, its groups, cards and
- * questions and every stored region, checks everything, writes everything and
- * records the version. A route is published entirely or not at all.
+ * **It is atomic.** One transaction locks the route's records and every
+ * stored region, checks everything, writes everything and records the
+ * version. A route is published entirely or not at all.
  *
  * **It is guarded twice.** The publisher names the drafts they reviewed (the
  * summary's token); drafts that moved since are refused rather than published
  * unseen. And every patched field names the live value its draft began from;
- * a field somebody changed in an admin form since is a conflict, and **one
- * conflict refuses the whole publication** — nothing is written.
+ * a field somebody changed in an admin form — or on another route — since is
+ * a conflict, and **one conflict refuses the whole publication**: nothing is
+ * written.
  *
  * **It writes only what was changed.** A publication updates the patched
  * columns of the patched rows and nothing else, so a form edit to any other
@@ -106,7 +99,7 @@ export function summarize(context: RouteContext): RouteSummaryView {
     const live = context.live.get(key) ?? {};
     return {
       ownerKey: key,
-      label: ownerLabel(owner, context.effective),
+      label: context.adapter.label(owner, context.effective),
       fields: Object.keys(patch).map((field) => specFor(owner, field)?.label ?? field),
       style: pendingStyle(node),
       motion: pendingMotion(node),
@@ -118,9 +111,10 @@ export function summarize(context: RouteContext): RouteSummaryView {
   const drafts = owners.length;
   return {
     routeKey: context.routeKey,
-    title: context.data.category.titleEn,
-    path: `/services/${context.data.category.slug}`,
-    isPublished: context.data.category.isPublished,
+    kind: context.document.kind,
+    title: context.adapter.title(context.data),
+    path: context.adapter.path(context.data),
+    isPublished: context.adapter.published(context.data),
     token: tokenOf(context),
     owners,
     contentChanges,
@@ -138,66 +132,6 @@ export async function routeSummary(routeKey: string): Promise<RouteSummaryView |
 }
 
 /* -------------------------------------------------------------------------- */
-/* Checking a stored value again                                              */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Whether a value a draft holds may still be published.
- *
- * Every value was checked when it was saved; it is checked again here because
- * a draft can outlive the thing it refers to — a picture deleted from the
- * library, a group deleted from the category — and because a publication is
- * the last point at which a wrong value can be kept off the live page.
- */
-function storedProblem(
-  spec: FieldSpec,
-  value: unknown,
-  data: CategoryData,
-  mediaIds: ReadonlySet<number>,
-): string | null {
-  switch (spec.check) {
-    case "text":
-      if (typeof value !== "string" || value.length > (spec.max ?? 400)) return `${spec.label} is not valid text.`;
-      if (spec.required && !value.trim()) return `${spec.label} cannot be empty.`;
-      return null;
-    case "rich":
-      return typeof value === "string" && value.length <= (spec.max ?? 20000) && sanitizeRichText(value) === value
-        ? null
-        : `${spec.label} is not valid text.`;
-    case "icon":
-      return typeof value === "string" && isIconName(value) ? null : `${spec.label} is not one of the site's icons.`;
-    case "link":
-      return typeof value === "string" && (value === "" || sanitizeHref(value) === value)
-        ? null
-        : `${spec.label} is not an allowed link.`;
-    case "media":
-      return value === null || (typeof value === "number" && mediaIds.has(value))
-        ? null
-        : `${spec.label} is no longer in the media library.`;
-    case "flag":
-      return typeof value === "boolean" ? null : `${spec.label} is not valid.`;
-    case "group":
-      return value === null || data.groups.some((group) => group.id === value)
-        ? null
-        : `${spec.label} names a group that no longer exists.`;
-    case "order":
-      return Array.isArray(value) && value.every((id) => Number.isInteger(id)) ? null : `${spec.label} is not valid.`;
-  }
-}
-
-const mediaIdsOf = (patches: Iterable<[string, StoredPatch]>): number[] => {
-  const ids: number[] = [];
-  for (const [ownerKey, patch] of patches) {
-    const owner = parseOwnerKey(ownerKey);
-    if (!owner) continue;
-    for (const [key, entry] of Object.entries(patch)) {
-      if (specFor(owner, key)?.check === "media" && typeof entry.value === "number") ids.push(entry.value);
-    }
-  }
-  return ids;
-};
-
-/* -------------------------------------------------------------------------- */
 /* Snapshots                                                                  */
 /* -------------------------------------------------------------------------- */
 
@@ -210,24 +144,31 @@ type OwnerSnapshot = {
 
 export type RouteSnapshot = { v: 1; title: string; owners: Record<string, OwnerSnapshot> };
 
-/** The published state of every region of a route, for a version row. */
+/**
+ * The published state of every region of a route, for a version row. A list
+ * is recorded as it is published — without the rows that say nothing — so a
+ * version and the live row it describes always agree.
+ */
 function snapshotOf(
-  data: CategoryData,
-  owners: RouteOwner[],
+  context: RouteContext,
+  data: RouteData,
   presentation: (ownerKey: string) => { styles: StyleDocument; motion: MotionDocument | null; copy: Record<string, string> },
 ): RouteSnapshot {
   const out: Record<string, OwnerSnapshot> = {};
-  for (const owner of owners) {
+  for (const owner of context.owners) {
     const key = ownerKeyOf(owner);
     const shown = presentation(key);
+    const stored = context.adapter.storedValues(owner, data, shown.copy);
+    const fields: Record<string, unknown> = {};
+    for (const [field, value] of Object.entries(stored)) fields[field] = publishedValue(specFor(owner, field), value);
     out[key] = {
-      label: ownerLabel(owner, data),
-      fields: storedValuesOf(owner, data, shown.copy),
+      label: context.adapter.label(owner, data),
+      fields,
       styles: shown.styles,
       motion: shown.motion,
     };
   }
-  return { v: 1, title: data.category.titleEn, owners: out };
+  return { v: 1, title: context.adapter.title(data), owners: out };
 }
 
 /** A version row's snapshot, read strictly: anything else is not one. */
@@ -279,7 +220,7 @@ function diffSnapshots(before: RouteSnapshot, after: RouteSnapshot): StoredChang
 }
 
 const liveSnapshot = (context: RouteContext): RouteSnapshot =>
-  snapshotOf(context.data, context.owners, (key) => publishedOf(context.nodes.get(key)));
+  snapshotOf(context, context.data, (key) => publishedOf(context.nodes.get(key)));
 
 /* -------------------------------------------------------------------------- */
 /* Publish                                                                    */
@@ -305,18 +246,11 @@ class Refusal extends Error {
   }
 }
 
-/**
- * Assigns new sort positions to a list, in the order given, reusing the
- * positions those rows already hold so every row outside the list keeps its
- * place. Rows that shared one position are spread out from the lowest.
- */
-function positionsFor(ids: number[], current: Map<number, number>): Map<number, number> {
-  const held = ids.map((id) => current.get(id) ?? 0).sort((a, b) => a - b);
-  const distinct = new Set(held).size === held.length;
-  const out = new Map<number, number>();
-  ids.forEach((id, index) => out.set(id, distinct ? held[index]! : (held[0] ?? 0) + index));
-  return out;
-}
+/** The patches of a route, with their owners. */
+const ownedPatches = (context: RouteContext): [RouteOwner, StoredPatch][] =>
+  [...context.patches]
+    .map(([key, patch]) => [parseOwnerKey(key), patch] as const)
+    .filter((entry): entry is [RouteOwner, StoredPatch] => entry[0] !== null);
 
 export async function publishRoute(input: {
   routeKey: string;
@@ -340,7 +274,7 @@ export async function publishRoute(input: {
       for (const owner of pending) {
         const key = ownerKeyOf(owner);
         for (const conflict of conflictsOf(owner, context.patches.get(key) ?? {}, context.live.get(key) ?? {})) {
-          conflicts.push(`${ownerLabel(owner, context.data)} — ${conflict.label}`);
+          conflicts.push(`${context.adapter.label(owner, context.data)} — ${conflict.label}`);
         }
       }
       if (conflicts.length) {
@@ -371,27 +305,28 @@ export async function publishRoute(input: {
       }
 
       // Every value, checked again.
-      const mediaIds = await existingMedia(tx, mediaIdsOf(context.patches));
+      const mediaIds = await existingMedia(tx, mediaIdsOfPatches(ownedPatches(context)));
+      const groupIds = context.adapter.groupIds(context.data);
       for (const owner of pending) {
         const patch = context.patches.get(ownerKeyOf(owner)) ?? {};
         for (const [key, entry] of Object.entries(patch)) {
           const spec = specFor(owner, key);
-          const problem = spec ? storedProblem(spec, entry.value, context.data, mediaIds) : "Unknown field.";
+          const problem = spec ? storedProblem(spec, entry.value, groupIds, mediaIds) : "Unknown field.";
           if (problem) {
             throw new Refusal({
               ok: false,
               reason: "invalid",
-              message: `${ownerLabel(owner, context.data)}: ${problem} Nothing was published.`,
+              message: `${context.adapter.label(owner, context.data)}: ${problem} Nothing was published.`,
             });
           }
         }
       }
 
       const before = liveSnapshot(context);
-      await applyContent(tx, context);
+      await context.adapter.apply(tx, context);
       const presentation = await promotePresentation(tx, context, pending, input.actor.id);
 
-      const after = snapshotOf(context.effective, context.owners, (key) => presentation.get(key) ?? publishedOf(context.nodes.get(key)));
+      const after = snapshotOf(context, context.effective, (key) => presentation.get(key) ?? publishedOf(context.nodes.get(key)));
       const changes = diffSnapshots(before, after);
       const resources = [...new Set(changes.map((change) => change.ownerLabel))];
 
@@ -433,76 +368,6 @@ export async function publishRoute(input: {
   } catch (error) {
     if (error instanceof Refusal) return error.outcome;
     throw error;
-  }
-}
-
-/** The patched columns of the patched rows, and the new orders — nothing else. */
-async function applyContent(tx: Executor, context: RouteContext): Promise<void> {
-  const now = new Date();
-  const columns = new Map<string, Record<string, unknown>>();
-  const add = (row: string, key: string, value: unknown) => {
-    const set = columns.get(row) ?? {};
-    set[key] = value;
-    columns.set(row, set);
-  };
-
-  for (const [ownerKey, patch] of context.patches) {
-    const owner = parseOwnerKey(ownerKey);
-    if (!owner) continue;
-    for (const [key, entry] of Object.entries(patch)) {
-      if (key.startsWith("copy:") || key.startsWith("order:")) continue;
-      const row =
-        owner.type === "category" || owner.type === "categoryBody"
-          ? "category"
-          : owner.type === "subcategory"
-            ? `group:${owner.id}`
-            : owner.type === "service"
-              ? `service:${owner.id}`
-              : owner.type === "faq"
-                ? `faq:${owner.id}`
-                : null;
-      if (row) add(row, key, entry.value);
-    }
-  }
-
-  /**
-   * Orders, against the rows as the drafts leave them (`effective` already has
-   * each list in its draft order). Positions are reassigned within each list
-   * only, so a list nobody reordered is not touched.
-   */
-  const sortOf = new Map<string, number>();
-  for (const row of context.data.groups) sortOf.set(`group:${row.id}`, row.sortOrder);
-  for (const row of context.data.services) sortOf.set(`service:${row.id}`, row.sortOrder);
-  for (const row of context.data.faqs) sortOf.set(`faq:${row.id}`, row.sortOrder);
-
-  const reposition = (kind: "group" | "service" | "faq", ids: number[]) => {
-    const current = new Map(ids.map((id) => [id, sortOf.get(`${kind}:${id}`) ?? 0]));
-    for (const [id, position] of positionsFor(ids, current)) {
-      if (position !== current.get(id)) add(`${kind}:${id}`, "sortOrder", position);
-    }
-  };
-
-  for (const [ownerKey, patch] of context.patches) {
-    const owner = parseOwnerKey(ownerKey);
-    if (!owner) continue;
-    for (const spec of SPECS[owner.type]) {
-      if (spec.check !== "order" || !patch[spec.key]) continue;
-      const ids = applyOrder(patch[spec.key]!.value, membersOf(owner, spec.list, context.effective));
-      reposition(spec.list === "groups" ? "group" : spec.list === "faqs" ? "faq" : "service", ids);
-    }
-  }
-
-  for (const [row, set] of columns) {
-    const values = { ...set, updatedAt: now };
-    if (row === "category") {
-      await tx.update(serviceCategories).set(values).where(eq(serviceCategories.id, context.data.category.id));
-      continue;
-    }
-    const [kind, raw] = row.split(":");
-    const id = Number(raw);
-    if (kind === "group") await tx.update(serviceSubcategories).set(values).where(eq(serviceSubcategories.id, id));
-    else if (kind === "service") await tx.update(services).set(values).where(eq(services.id, id));
-    else if (kind === "faq") await tx.update(faqs).set(values).where(eq(faqs.id, id));
   }
 }
 
@@ -581,8 +446,8 @@ async function pruneVersions(tx: Executor, routeKey: string): Promise<void> {
 /**
  * Stored regions this route edited whose record has since been deleted in an
  * admin form. They are never loaded and never published; this is where they
- * go. A region whose record still exists — a card moved to another category —
- * is somebody else's and is left alone.
+ * go. A region whose record still exists — a card moved to another category,
+ * a question moved to another service — is somebody else's and is left alone.
  */
 async function removeOrphans(tx: Executor, context: RouteContext): Promise<void> {
   const known = new Set(context.owners.map(ownerKeyOf));
@@ -593,22 +458,16 @@ async function removeOrphans(tx: Executor, context: RouteContext): Promise<void>
   const candidates = rows.map((row) => row.ownerKey).filter((key) => !known.has(key));
   if (!candidates.length) return;
 
-  const ids = (type: RouteOwner["type"]) =>
-    candidates.map(parseOwnerKey).filter((owner): owner is RouteOwner => owner?.type === type).map((owner) => owner.id);
-  const exists = new Set<string>();
-  const check = async (type: RouteOwner["type"], table: typeof services | typeof faqs | typeof serviceSubcategories) => {
-    const wanted = ids(type);
-    if (!wanted.length) return;
-    const found = await tx.select({ id: table.id }).from(table).where(inArray(table.id, wanted));
-    for (const row of found) exists.add(`${type}:${row.id}`);
-  };
-  await check("service", services);
-  await check("faq", faqs);
-  await check("subcategory", serviceSubcategories);
+  const recordTypes = RECORD_OWNERS[context.document.kind];
+  const owners = candidates.map(parseOwnerKey).filter((owner): owner is RouteOwner => owner !== null);
+  const exists = await context.adapter.existing(
+    tx,
+    owners.filter((owner) => recordTypes.includes(owner.type)),
+  );
 
   const orphans = candidates.filter((key) => {
     const owner = parseOwnerKey(key);
-    return !owner || (["service", "faq", "subcategory"].includes(owner.type) && !exists.has(key));
+    return !owner || (recordTypes.includes(owner.type) && !exists.has(key));
   });
   if (orphans.length) await tx.delete(routeNodes).where(inArray(routeNodes.ownerKey, orphans));
 }
@@ -667,7 +526,7 @@ export async function discardRoute(input: {
         ok: true as const,
         message: `Discarded the drafts of ${pending.length} region${pending.length === 1 ? "" : "s"}.`,
         changes: pending.length,
-        resources: pending.map((owner) => ownerLabel(owner, context.data)),
+        resources: pending.map((owner) => context.adapter.label(owner, context.data)),
       };
     });
   } catch (error) {
@@ -717,11 +576,11 @@ export async function routeHistory(routeKey: string): Promise<RouteHistoryView> 
   };
 }
 
-const viewOf = (change: StoredChange, data: CategoryData): RouteChangeView => {
+const viewOf = (context: RouteContext, change: StoredChange): RouteChangeView => {
   const owner = parseOwnerKey(change.owner);
   const spec = owner ? specFor(owner, change.key) : undefined;
   const words = (value: unknown) =>
-    change.key === "styles" || change.key === "motion" ? "" : describeValue(spec, value, data);
+    change.key === "styles" || change.key === "motion" ? "" : describeValue(context, spec, value);
   return { owner: change.ownerLabel, field: change.label, before: words(change.before), after: words(change.after) };
 };
 
@@ -747,7 +606,7 @@ export async function compareRouteVersion(
       versionId,
       against,
       title: row.summary,
-      changes: readChanges(row.changes).map((change) => viewOf(change, context.data)),
+      changes: readChanges(row.changes).map((change) => viewOf(context, change)),
     };
   }
   const snapshot = readSnapshot(row.snapshot);
@@ -756,7 +615,7 @@ export async function compareRouteVersion(
     versionId,
     against,
     title: row.summary,
-    changes: diffSnapshots(snapshot, liveSnapshot(context)).map((change) => viewOf(change, context.data)),
+    changes: diffSnapshots(snapshot, liveSnapshot(context)).map((change) => viewOf(context, change)),
   };
 }
 
@@ -801,6 +660,7 @@ export async function restoreRouteVersion(input: {
         for (const value of Object.values(owned.fields)) if (typeof value === "number") wantedMedia.push(value);
       }
       const mediaIds = await existingMedia(tx, wantedMedia);
+      const groupIds = context.adapter.groupIds(context.data);
 
       let restored = 0;
       const skipped: string[] = [];
@@ -817,9 +677,9 @@ export async function restoreRouteVersion(input: {
         for (const spec of SPECS[owner.type]) {
           if (!(spec.key in owned.fields)) continue;
           let value = owned.fields[spec.key];
-          if (spec.check === "order") value = applyOrder(value, membersOf(owner, spec.list, context.data));
+          if (spec.check === "order") value = applyOrder(value, context.adapter.members(owner, spec.list, context.data));
           if (sameStored(value, live[spec.key])) continue;
-          if (storedProblem(spec, value, context.data, mediaIds)) {
+          if (storedProblem(spec, value, groupIds, mediaIds)) {
             skipped.push(`${owned.label} — ${spec.label}`);
             continue;
           }

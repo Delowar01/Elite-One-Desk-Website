@@ -70,7 +70,7 @@ export function RouteSource({
         <p className="mt-0.5 text-[0.78rem] text-strong">{info.label}</p>
         {info.resource.kind === "template" ? (
           <p className="mt-1 text-[0.7rem] leading-relaxed text-muted">
-            This wording belongs to this category page. Left empty, each language shows the site’s standard wording.
+            This wording belongs to this page. Left empty, each language shows the site’s standard wording.
           </p>
         ) : null}
         {info.adminHref ? (

@@ -11,9 +11,11 @@ import { ancestorAddresses, buildLayerTree } from "@/lib/visual-editor/tree";
 import { Badge, editableOf, LayerRow, LockButton, NO_ADDRESSES, RowButton } from "./layers";
 
 /**
- * Layers for a dynamic route (Batch 21): the category page's regions, nested
- * as the page nests them — a group holds its cards — each opening into its
- * fields, exactly as a page section does.
+ * Layers for a dynamic route (Batch 21): the page's regions, nested as the
+ * page nests them — a group holds its cards, a questions section its
+ * questions — each opening into its fields, exactly as a page section does.
+ * A category's page and a service's own page (Batch 22) are drawn by this one
+ * panel.
  *
  * Built from what the canvas rendered, like page Layers: the regions and their
  * nesting come over the bridge (`parent`), so the tree is a view of what can
@@ -21,8 +23,8 @@ import { Badge, editableOf, LayerRow, LockButton, NO_ADDRESSES, RowButton } from
  * page itself — a card is called by its title, a question by its question —
  * so nobody has to recognise a service by its id.
  *
- * What it does not offer is a page's layout tools. A category page's regions
- * are the template's: nothing is added, duplicated or removed here. What an
+ * What it does not offer is a page's layout tools. A route's regions are the
+ * template's: nothing is added, duplicated or removed here. What an
  * editor may change is what the records support — the order of the groups,
  * of the cards in a group and of the questions, and whether each is shown —
  * and each of those is a draft of the record, published with the rest.
@@ -30,13 +32,15 @@ import { Badge, editableOf, LayerRow, LockButton, NO_ADDRESSES, RowButton } from
 
 /** The regions that can be reordered and hidden, and what they are called. */
 const MOVABLE = new Set(["route-subcategory", "route-service-card", "route-faq"]);
-const GENERATED = new Set(["route-category-crumbs"]);
+/** Regions with nothing to type at all: the site's own chrome. */
+const GENERATED = new Set(["route-category-crumbs", "route-service-crumbs", "route-service-notices"]);
 
 /** A region's name in the tree: its own words where it has some, its block's name otherwise. */
 function regionLabel(section: EditorSectionMeta): string {
   const own = (path: string) => section.nodes.find((node) => node.relativePath === path)?.text;
   switch (section.blockType) {
     case "route-category-hero":
+    case "route-service-hero":
       return "Hero";
     case "route-subcategory":
       return own("field:title") ?? "Group";
@@ -64,6 +68,7 @@ function nest(sections: EditorSectionMeta[]): Branch[] {
 }
 
 export function RouteLayersPanel({
+  kind = "category",
   title,
   sections,
   selectedSectionId,
@@ -82,6 +87,8 @@ export function RouteLayersPanel({
   onVisibility,
   busy,
 }: {
+  /** Which kind of page this is, for the panel's own heading (Batch 22). */
+  kind?: "category" | "service";
   title: string;
   sections: EditorSectionMeta[];
   selectedSectionId: number | null;
@@ -240,13 +247,16 @@ export function RouteLayersPanel({
       data-route-layers
     >
       <div className="shrink-0 px-3.5 pb-2 pt-3.5">
-        <h2 className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">Service category</h2>
+        <h2 className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">
+          {kind === "service" ? "Service" : "Service category"}
+        </h2>
         <p className="mt-0.5 truncate text-[0.78rem] text-strong">{title}</p>
       </div>
       {canStructure ? null : (
         <p className="mx-3.5 mb-2 shrink-0 text-[0.68rem] leading-relaxed text-muted" role="note" data-permission-note="content.structure">
-          You can view this page’s structure, but your role does not allow reordering or hiding its groups,
-          services or questions.
+          {kind === "service"
+            ? "You can view this page’s structure, but your role does not allow reordering or hiding its questions."
+            : "You can view this page’s structure, but your role does not allow reordering or hiding its groups, services or questions."}
         </p>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">

@@ -3,6 +3,7 @@ import "server-only";
 import { eq, or, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
+import { routeDraftMedia } from "@/lib/routes/media-usage";
 import {
   pageSections,
   pages,
@@ -30,7 +31,7 @@ export type MediaUse = { label: string; where: string; href: string };
 export async function mediaUsage(id: number): Promise<MediaUse[]> {
   const uses: MediaUse[] = [];
 
-  const [sections, categories, serviceRows, packageRows, videoRows, testimonialRows, componentRows] =
+  const [sections, categories, serviceRows, packageRows, videoRows, testimonialRows, componentRows, routeDrafts] =
     await Promise.all([
       db
         .select({
@@ -82,6 +83,13 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
                        where e.value = to_jsonb(${id}::int))
           `,
         ),
+      /**
+       * A dynamic route's draft (Batch 22): a picture a category's or a
+       * service's page has chosen and not yet published. Deleting it would
+       * leave the draft unpublishable, so it is placed as surely as a
+       * section's draft — while its record exists to publish it.
+       */
+      routeDraftMedia(),
     ]);
 
   for (const row of sections) {
@@ -108,6 +116,10 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
   }
   for (const row of componentRows) {
     uses.push({ label: row.name, where: "Reusable components", href: `/admin/components/${row.id}` });
+  }
+  for (const draft of routeDrafts) {
+    if (draft.mediaId !== id) continue;
+    uses.push({ label: draft.label, where: "Visual Editor drafts", href: draft.href });
   }
 
   return uses;

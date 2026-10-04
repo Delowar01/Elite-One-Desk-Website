@@ -9,6 +9,7 @@ import { media, pages } from "@/lib/db/schema";
 import { localeOrDefault, publicPathForPage } from "@/lib/page-path";
 import { listCategoryDocuments } from "@/lib/routes/category";
 import { documentEditorKey, parseRouteKey, routeKeyOf } from "@/lib/routes/owners";
+import { listServiceDocuments } from "@/lib/routes/service";
 import { globalsCapabilities } from "@/lib/visual-editor/globals";
 import { deviceOrDefault } from "@/lib/visual-editor/viewport";
 
@@ -111,6 +112,29 @@ export default async function VisualEditorPage({
       path: `/services/${row.slug}`,
       isPublished: row.isPublished,
       kind: "category",
+    });
+  }
+
+  /**
+   * Every service's own page, as a document of its own (Batch 22), grouped
+   * under its category. Read from the table like the categories are, so a
+   * service created tomorrow — in any category — is in this list the moment
+   * it exists, opened by its id and drawn at its real public address. A
+   * service moved to another category is listed under the new one, at the new
+   * address, as the same document. No service is named in code.
+   */
+  const services = await listServiceDocuments();
+  for (const row of services) {
+    const document = { kind: "service" as const, id: row.id };
+    editable.push({
+      id: documentEditorKey(document),
+      slug: routeKeyOf(document),
+      title: row.titleEn,
+      path: `/services/${row.categorySlug}/${row.slug}`,
+      // A visitor reaches it only while the service and its category are both published.
+      isPublished: row.isPublished && row.categoryPublished,
+      kind: "service",
+      group: row.categoryTitle,
     });
   }
 

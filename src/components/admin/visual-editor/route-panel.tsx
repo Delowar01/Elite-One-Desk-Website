@@ -21,6 +21,7 @@ import type { RouteCompareView, RouteHistoryView, RouteSummaryView } from "@/lib
  * exactly what was shown here.
  */
 export function RoutePanel({
+  kind = "category",
   open,
   onClose,
   locale,
@@ -38,6 +39,8 @@ export function RoutePanel({
   onCompare,
   onRefresh,
 }: {
+  /** Which kind of page this is: a category's (Batch 21) or a service's own (Batch 22). */
+  kind?: "category" | "service";
   open: boolean;
   onClose: () => void;
   locale: Locale;
@@ -81,7 +84,9 @@ export function RoutePanel({
       data-route-panel
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-[var(--admin-line)] px-3.5 py-2.5">
-        <h2 className="flex-1 truncate text-[0.82rem] font-semibold text-strong">{summary?.title ?? "Service category"}</h2>
+        <h2 className="flex-1 truncate text-[0.82rem] font-semibold text-strong">
+          {summary?.title ?? (kind === "service" ? "Service" : "Service category")}
+        </h2>
         <button
           type="button"
           onClick={onRefresh}
@@ -179,9 +184,17 @@ export function RoutePanel({
           )}
 
           <p className="text-[0.7rem] leading-relaxed text-muted">
-            Publishing changes what visitors see on this category page and writes the category, its groups, services and
-            questions in one step. The Service Categories, Services and FAQs screens keep working as before.
+            {kind === "service"
+              ? "Publishing changes what visitors see on this service's page and writes the service and its own questions in one step. The Services and FAQs screens keep working as before."
+              : "Publishing changes what visitors see on this category page and writes the category, its groups, services and questions in one step. The Service Categories, Services and FAQs screens keep working as before."}
           </p>
+          {summary && !summary.isPublished ? (
+            <p className="text-[0.7rem] leading-relaxed" style={{ color: "var(--color-peach)" }} role="note" data-route-unpublished>
+              {kind === "service"
+                ? "This service — or its category — is not published, so visitors cannot open this page yet. That is set on the Services and Service Categories screens."
+                : "This category is not published, so visitors cannot open this page yet. That is set on the Service Categories screen."}
+            </p>
+          ) : null}
           {summary ? (
             <a
               href={`${localeHref(locale, summary.path)}?compare=published`}

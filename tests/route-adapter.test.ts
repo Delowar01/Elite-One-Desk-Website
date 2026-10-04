@@ -176,6 +176,20 @@ describe("owner identity: one owner, two spellings, no collisions", () => {
       categoryHub: 7,
       categoryFaqs: 8,
       faq: 9,
+      // A service's own page (Batch 22), appended after the category's: the
+      // codes are part of the editor-key encoding, so they only ever grow.
+      serviceHero: 10,
+      serviceCrumbs: 11,
+      serviceOverview: 12,
+      serviceBenefits: 13,
+      serviceAudience: 14,
+      serviceRequirements: 15,
+      serviceProcess: 16,
+      serviceNotes: 17,
+      serviceFaqs: 18,
+      serviceNotices: 19,
+      serviceRequest: 20,
+      serviceRelated: 21,
     });
   });
 
@@ -590,6 +604,8 @@ describe("orders and visibility", () => {
       "faq.isPublished",
       "service.isPublished",
       "service.subcategoryId",
+      // The order of a service's own questions, on its own page (Batch 22).
+      "serviceFaqs.order:faqs",
       "subcategory.isPublished",
       "subcategory.order:services",
     ]);

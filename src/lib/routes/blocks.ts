@@ -4,7 +4,8 @@ import { ICON_NAMES } from "@/lib/icons";
 import type { RouteOwnerType } from "./owners";
 
 /**
- * The block definitions of a category route's regions (Batch 21).
+ * The block definitions of a dynamic route's regions: a category's page
+ * (Batch 21) and a service's own page (Batch 22).
  *
  * The same `BlockDef` vocabulary page sections use, on purpose: the Content
  * tab draws them with `BlockEditor`, the Style and Motion panels read their
@@ -66,6 +67,8 @@ const SOURCE = {
   destinations: { label: "Packages › Destinations", href: "/admin/packages/destinations" },
   packages: { label: "Packages", href: "/admin/packages" },
   categories: { label: "Service Categories", href: "/admin/categories" },
+  faqs: { label: "FAQs", href: "/admin/faqs" },
+  disclaimers: { label: "Globals › Disclaimers", href: "/admin/settings" },
 } as const;
 
 export const ROUTE_BLOCKS: BlockDef[] = [
@@ -245,6 +248,248 @@ export const ROUTE_BLOCKS: BlockDef[] = [
       { name: "published", label: "Show this question on the website", type: "boolean" },
     ],
   },
+
+  /* ------------------------------------------------------------------------ */
+  /* A service's own page (Batch 22)                                          */
+  /* ------------------------------------------------------------------------ */
+
+  {
+    type: "route-service-hero",
+    name: "Service hero",
+    description: "The service's own introduction: its category, title, short introduction, timeline, picture and calls to action.",
+    scope: "any",
+    fields: [
+      {
+        name: "category",
+        label: "Category",
+        type: "link",
+        generated: {
+          explain:
+            "The category this service is filed under, linking to that category's page. Which category it is in is changed on the Services screen.",
+          source: SOURCE.services,
+        },
+      },
+      text("title", "Title", { help: "Changing the title never changes the page address." }),
+      area("intro", "Short introduction", 3, {
+        help: "Also this page's description for search engines and link previews.",
+      }),
+      text("timeline", "Indicative timeline", {
+        help: "Free text, and optional. Leave it empty rather than publishing a duration you cannot stand behind.",
+      }),
+      { name: "image", label: "Picture", type: "media" },
+      text("ctaLabel", "Request button — text", {
+        surface: "button",
+        placeholder: "Request this service",
+        help: "Leave empty to use “Request this service”. The button opens this page's request form.",
+      }),
+      {
+        name: "whatsapp",
+        label: "WhatsApp button",
+        type: "link",
+        surface: "button",
+        generated: {
+          explain:
+            "Shown when WhatsApp is switched on. The number and the switch are site settings, and the message names this service automatically.",
+          source: SOURCE.whatsapp,
+        },
+      },
+    ],
+  },
+  {
+    type: "route-service-crumbs",
+    name: "Breadcrumbs",
+    description: "Where this page sits in the site, built from the category's and the service's titles.",
+    scope: "any",
+    still: true,
+    fields: [
+      {
+        name: "trail",
+        label: "Trail",
+        type: "text",
+        generated: {
+          explain:
+            "Built from the site structure, the category's title and this service's title. Change the title in the hero; the other steps are the site's own navigation.",
+        },
+      },
+    ],
+  },
+  {
+    type: "route-service-overview",
+    name: "Overview",
+    description: "The service's detailed description.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "Overview", help: STANDARD }),
+      { name: "body", label: "Overview", type: "richtext", localised: true },
+    ],
+  },
+  {
+    type: "route-service-benefits",
+    name: "Key benefits",
+    description: "What the client gains, as a checked list.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "Key benefits", help: STANDARD }),
+      {
+        name: "benefits",
+        label: "Benefits",
+        type: "items",
+        // The two-column checked list.
+        box: "grid",
+        maxItems: 16,
+        help: "One line each. Shown as a checked list.",
+        itemFields: [{ name: "text", label: "Benefit", localised: true }],
+      },
+    ],
+  },
+  {
+    type: "route-service-audience",
+    name: "Who this is for",
+    description: "Who the service suits, as a row of labels.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "Who this is for", help: STANDARD }),
+      {
+        name: "audience",
+        label: "Audience",
+        type: "items",
+        // A wrapping row of pills.
+        box: "flex",
+        maxItems: 16,
+        itemFields: [{ name: "text", label: "Label", localised: true }],
+      },
+    ],
+  },
+  {
+    type: "route-service-requirements",
+    name: "Documents and requirements",
+    description: "What the client has to provide.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "Documents and requirements", help: STANDARD }),
+      {
+        name: "requirements",
+        label: "Requirements",
+        type: "items",
+        // A ruled list in ordinary block flow.
+        maxItems: 16,
+        help: "Never publish a requirement you are not sure of — these change, and the page is what a client will hold you to.",
+        itemFields: [{ name: "text", label: "Requirement", localised: true }],
+      },
+    ],
+  },
+  {
+    type: "route-service-process",
+    name: "How the process runs",
+    description: "The numbered steps from enquiry to completion.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "How the process runs", help: STANDARD }),
+      {
+        name: "steps",
+        label: "Steps",
+        type: "items",
+        // A numbered <ol> in ordinary block flow, its rail positioned beside it.
+        maxItems: 10,
+        itemFields: [
+          { name: "title", label: "Step", localised: true },
+          { name: "detail", label: "Detail", type: "textarea", localised: true },
+        ],
+      },
+    ],
+  },
+  {
+    type: "route-service-notes",
+    name: "Important notes",
+    description: "Caveats and conditions, boxed.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "Important notes", help: STANDARD }),
+      { name: "notes", label: "Notes", type: "richtext", localised: true },
+    ],
+  },
+  {
+    type: "route-service-faqs",
+    name: "Questions",
+    description: "This service's frequently asked questions, with its category's.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "Frequently asked questions", help: STANDARD }),
+      {
+        name: "inherited",
+        label: "The category's questions",
+        type: "text",
+        generated: {
+          explain:
+            "Questions that belong to this service's category appear on every service page in it, between this service's own. They are edited on the category's page, so one change reaches every service it applies to. Questions are added on the FAQs screen.",
+          source: SOURCE.faqs,
+        },
+      },
+    ],
+  },
+  {
+    type: "route-service-notices",
+    name: "Notices",
+    description: "The site's standing notices for service pages.",
+    scope: "any",
+    fields: [
+      {
+        name: "notes",
+        label: "Notices",
+        type: "text",
+        generated: {
+          explain:
+            "The site's disclaimers, worded and switched on in the site settings. Visa services also show the visa notice.",
+          source: SOURCE.disclaimers,
+        },
+      },
+    ],
+  },
+  {
+    type: "route-service-request",
+    name: "Request form",
+    description: "The request form beside the page, with its heading.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "Request a service", help: STANDARD }),
+      area("intro", "Introduction", 2, {
+        placeholder: "Tell us what you need and an advisor will come back to you.",
+        help: STANDARD,
+      }),
+      {
+        name: "form",
+        label: "Form",
+        type: "text",
+        generated: {
+          explain:
+            "The site's request form, with this service already chosen. Which extra questions it asks for this service is set on the Services screen (Request form).",
+          source: SOURCE.services,
+        },
+      },
+    ],
+  },
+  {
+    type: "route-service-related",
+    name: "Related services",
+    description: "Other services from the same category.",
+    scope: "any",
+    fields: [
+      text("heading", "Heading", { placeholder: "Related services", help: STANDARD }),
+      {
+        name: "items",
+        label: "Services",
+        // A list's box: the four-across grid of links, laid out as a grid, so
+        // its gap and columns are the controls that mean something on it.
+        type: "items",
+        box: "grid",
+        generated: {
+          explain:
+            "The first four other published services of this category, in the category's own order. Their titles and order are managed on the category's page and the Services screen.",
+          source: SOURCE.services,
+        },
+      },
+    ],
+  },
 ];
 
 export const ROUTE_BLOCK_MAP = new Map(ROUTE_BLOCKS.map((block) => [block.type, block]));
@@ -260,6 +505,18 @@ export const ROUTE_BLOCK_OF: Record<RouteOwnerType, string> = {
   categoryHub: "route-category-hub",
   categoryFaqs: "route-category-faqs",
   faq: "route-faq",
+  serviceHero: "route-service-hero",
+  serviceCrumbs: "route-service-crumbs",
+  serviceOverview: "route-service-overview",
+  serviceBenefits: "route-service-benefits",
+  serviceAudience: "route-service-audience",
+  serviceRequirements: "route-service-requirements",
+  serviceProcess: "route-service-process",
+  serviceNotes: "route-service-notes",
+  serviceFaqs: "route-service-faqs",
+  serviceNotices: "route-service-notices",
+  serviceRequest: "route-service-request",
+  serviceRelated: "route-service-related",
 };
 
 export const isRouteBlockType = (type: string): boolean => ROUTE_BLOCK_MAP.has(type);
@@ -280,7 +537,8 @@ export const ROUTE_STRUCTURAL_FIELDS: ReadonlySet<string> = new Set(["published"
 /**
  * The list a region is a member of, by its block: groups and ungrouped cards
  * are ordered by the services section, cards in a group by the group, and
- * questions by the questions section. The names are the `_order` keys the
+ * questions by the questions section — a category's, or on a service's page
+ * (Batch 22) the service's own. The names are the `_order` keys the
  * containers store.
  */
 export const ROUTE_LIST_OF: Readonly<Record<string, "groups" | "services" | "faqs">> = {

@@ -4,11 +4,15 @@ import { animatesAnywhere, motionStyle, parallaxAnywhere } from "@/lib/cms/motio
 import { effectiveSectionTarget, type MotionDocument, type MotionTarget } from "@/lib/cms/motion-doc";
 import { blockNode, mediaNode, withMotion, type NodeAttrs } from "@/lib/cms/node";
 import type { StyleDocument } from "@/lib/cms/styles";
+import type { Locale } from "@/lib/i18n/config";
 import { ROUTE_BLOCK_OF } from "@/lib/routes/blocks";
-import type { CategoryRender } from "@/lib/routes/category-view";
 import { editorKeyOf, ownerKeyOf, type RouteOwner } from "@/lib/routes/owners";
+import type { RouteRender } from "@/lib/routes/route-view";
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 import type { EditorRender } from "@/lib/visual-editor/render";
+
+/** What a region needs of a route's answer: any route kind's (Batch 22). */
+export type RegionSource = Pick<RouteRender<unknown>, "editor" | "still" | "drafted" | "hidden" | "presentation">;
 
 /**
  * One region of a dynamic route, ready to draw (Batch 21).
@@ -38,7 +42,7 @@ export type Region = {
   enters: boolean;
 };
 
-export function regionOf(view: CategoryRender, owner: RouteOwner): Region {
+export function regionOf(view: RegionSource, owner: RouteOwner): Region {
   const key = ownerKeyOf(owner);
   const blockType = ROUTE_BLOCK_OF[owner.type];
   const shown = view.presentation(key);
@@ -76,6 +80,15 @@ export function regionOf(view: CategoryRender, owner: RouteOwner): Region {
 
   return { key, editor, styles: shown.styles, motion, copy: shown.copy, node, media: mediaNode(source), root, enters };
 }
+
+/**
+ * A route's template wording (Batch 21): the region's own copy for this
+ * edition, else the site's standard wording *for this edition*. Never the
+ * other language's custom copy — an Arabic page whose Arabic was left empty
+ * reads the standard Arabic, not somebody's English.
+ */
+export const copyOf = (region: Region, locale: Locale, field: string, standard: string): string =>
+  (locale === "ar" ? region.copy[`${field}Ar`] : region.copy[`${field}En`])?.trim() || standard;
 
 /**
  * Whether anything on the page moves on its own — a region's entrance, or a

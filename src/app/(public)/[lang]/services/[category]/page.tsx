@@ -9,7 +9,7 @@ import { MediaImage } from "@/components/site/media-image";
 import { MotionRuntime } from "@/components/site/motion-runtime";
 import { PreviewBanner } from "@/components/site/preview-banner";
 import { Reveal } from "@/components/site/reveal";
-import { motionSignature, needsRuntime, RegionRoot, regionOf, type Region } from "@/components/site/route-region";
+import { copyOf, motionSignature, needsRuntime, RegionRoot, regionOf } from "@/components/site/route-region";
 import { SectionHeading } from "@/components/site/section-heading";
 import { ServiceCardGrid, type CardMarks } from "@/components/site/service-card";
 import { StillPresentation } from "@/components/site/still-presentation";
@@ -50,15 +50,6 @@ export async function generateMetadata({ params }: Pick<Params, "params">) {
     imageId: category.imageId,
   });
 }
-
-/**
- * The category's template wording (Batch 21): the region's own copy for this
- * edition, else the site's standard wording *for this edition*. Never the
- * other language's custom copy — an Arabic page whose Arabic was left empty
- * reads the standard Arabic, not somebody's English.
- */
-const copyOf = (region: Region, locale: Locale, field: string, standard: string): string =>
-  (locale === "ar" ? region.copy[`${field}Ar`] : region.copy[`${field}En`])?.trim() || standard;
 
 /** A call to action's destination: a site path in this edition, or an address as given. */
 const ctaTarget = (locale: Locale, href: string): { href: string; external: boolean } =>

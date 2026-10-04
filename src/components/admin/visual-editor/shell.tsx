@@ -128,14 +128,25 @@ import type { ReuseControls, ReuseNotice } from "./reuse-panel";
 export type EditablePage = {
   /** A page's id, or a dynamic route's document key (Batch 21, `lib/routes/owners.ts`). */
   id: number;
-  /** A page's slug, or a route's key — `category:3`. Never a path. */
+  /** A page's slug, or a route's key — `category:3`, `service:12`. Never a path. */
   slug: string;
   title: string;
   /** The public address, without a language prefix. */
   path: string;
   isPublished: boolean;
-  /** What the document is: a CMS page, or a service category's route (Batch 21). */
-  kind: "page" | "category";
+  /**
+   * What the document is: a CMS page, a service category's route (Batch 21),
+   * or a service's own page (Batch 22).
+   */
+  kind: "page" | "category" | "service";
+  /** For a service: its category's name, which is the group it is listed under. */
+  group?: string;
+};
+
+/** What a route document is called in the editor's own sentences. */
+const ROUTE_NOUN: Record<Exclude<EditablePage["kind"], "page">, string> = {
+  category: "category page",
+  service: "service page",
 };
 
 const STATUS: Record<CanvasState["status"], { label: string; tone: string }> = {
@@ -443,11 +454,13 @@ export function VisualEditorShell({
 
   const page = useMemo(() => pages.find((row) => row.slug === slug) ?? pages[0], [pages, slug]);
   /**
-   * A service category's route rather than a CMS page (Batch 21). The editor
-   * is the same editor; what differs is underneath — where a region's data is
-   * read and saved, what the page drawer publishes, and what Layers may do.
+   * A dynamic route rather than a CMS page: a service category's page
+   * (Batch 21) or a service's own (Batch 22). The editor is the same editor;
+   * what differs is underneath — where a region's data is read and saved,
+   * what the page drawer publishes, and what Layers may do.
    */
-  const isRoute = page?.kind === "category";
+  const isRoute = Boolean(page) && page.kind !== "page";
+  const routeNoun = page && page.kind !== "page" ? ROUTE_NOUN[page.kind] : "page";
   /** Whether this session may change a route region's record — its resource's own capability. */
   const mayRecord = useCallback(
     (info: RouteOwnerInfo): boolean => (info.resource.kind === "faq" ? domains.faqs : domains.services),
@@ -648,7 +661,7 @@ export function VisualEditorShell({
   useEffect(() => {
     if (!page) return;
     const params = new URLSearchParams(
-      page.kind === "category"
+      page.kind !== "page"
         ? { route: page.slug, lang: locale, device }
         : { page: page.slug, lang: locale, device },
     );
@@ -721,7 +734,7 @@ export function VisualEditorShell({
     // new page that happens to share an id at worst.
     setLocks([]);
     // A route's regions are the template's: there is no layout draft to read.
-    if (page.kind === "category") return;
+    if (page.kind !== "page") return;
     loadPageStructure(page.id).then((next) => {
       if (!cancelled) setStructure(next);
     });
@@ -2573,7 +2586,7 @@ export function VisualEditorShell({
 
   const refreshPageState = useCallback(async () => {
     if (!page) return;
-    if (page.kind === "category") {
+    if (page.kind !== "page") {
       const [next, past] = await Promise.all([loadRouteSummary(page.slug), loadRouteHistory(page.slug)]);
       setRouteSummary(next);
       setRouteHistory(past);
@@ -2598,7 +2611,7 @@ export function VisualEditorShell({
     setHistory(null);
     setRouteSummary(null);
     setRouteHistory(null);
-    if (page.kind === "category") {
+    if (page.kind !== "page") {
       void Promise.all([loadRouteSummary(page.slug), loadRouteHistory(page.slug)]).then(([next, past]) => {
         if (cancelled) return;
         setRouteSummary(next);
@@ -2697,7 +2710,7 @@ export function VisualEditorShell({
       for (const id of mine) inflight.current.delete(id);
 
       // A route has no layout to re-read; its regions are the template's.
-      const latest = page.kind === "category" ? null : await loadPageStructure(pageId);
+      const latest = page.kind !== "page" ? null : await loadPageStructure(pageId);
       if (latest) setStructure(latest);
       setStructureFailure(null);
       await refreshPageState();
@@ -2706,7 +2719,7 @@ export function VisualEditorShell({
       const survives =
         keepSelection &&
         selected &&
-        (page.kind === "category" || latest?.structure.sections.some((entry) => entry.sectionId === selected.sectionId));
+        (page.kind !== "page" || latest?.structure.sections.some((entry) => entry.sectionId === selected.sectionId));
       restoreTo.current = survives
         ? { address: selected.address, fallback: `section:${selected.sectionId}` }
         : null;
@@ -2882,7 +2895,7 @@ export function VisualEditorShell({
       keepSelection: boolean,
       historyNotice: string,
     ) => {
-      if (!page || page.kind !== "category" || !allowed("publish") || pageBusy) return;
+      if (!page || page.kind === "page" || !allowed("publish") || pageBusy) return;
       setPageBusy(true);
       setPageMessage(null);
       setPageError(null);
@@ -2919,7 +2932,7 @@ export function VisualEditorShell({
 
   const publishRoute = useCallback(() => {
     const lines = (routeSummary?.owners ?? []).map((owner) => `${owner.label}: ${[...owner.fields, owner.style ? "Style" : null, owner.motion ? "Motion" : null].filter(Boolean).join(", ")}`);
-    const question = ["Publish the saved changes on this category page?", lines.slice(0, 12).join("\n")]
+    const question = [`Publish the saved changes on this ${routeNoun}?`, lines.slice(0, 12).join("\n")]
       .filter(Boolean)
       .join("\n\n");
     if (!window.confirm(question)) return;
@@ -2929,17 +2942,17 @@ export function VisualEditorShell({
       true,
       "Undo history was cleared: this page was published. Version History keeps the state before it.",
     );
-  }, [routeSummary, runRouteAction]);
+  }, [routeNoun, routeSummary, runRouteAction]);
 
   const discardRoute = useCallback(() => {
-    if (!window.confirm("Discard every saved change on this category page? The live page does not change.")) return;
+    if (!window.confirm(`Discard every saved change on this ${routeNoun}? The live page does not change.`)) return;
     void runRouteAction(
       discardRouteFromEditor,
       () => undefined,
       false,
       "Undo history was cleared: the saved changes were discarded, and Redo cannot bring them back.",
     );
-  }, [runRouteAction]);
+  }, [routeNoun, runRouteAction]);
 
   const restoreRouteVersion = useCallback(
     (versionId: number) => {
@@ -3324,21 +3337,20 @@ export function VisualEditorShell({
             className="admin-input h-[1.9rem] max-w-[19rem] py-0 text-[0.8rem]"
           >
             {/*
-              Two groups when there is anything but pages (Batch 21): the CMS
-              pages, and every service category — named by the database and
-              listed by it, so a category created tomorrow is here tomorrow.
+              Groups when there is anything but pages (Batch 21): the CMS
+              pages, every service category, and every service under its
+              category (Batch 22) — named by the database and listed by it,
+              so a category or a service created tomorrow is here tomorrow.
             */}
-            {(["page", "category"] as const).map((kind) => {
-              const rows = pages.filter((row) => row.kind === kind);
-              if (!rows.length) return null;
+            {pickerGroups(pages).map(({ key, label, rows }) => {
               const options = rows.map((row) => (
                 <option key={row.slug} value={row.slug}>
                   {row.title} — {row.path}
                   {row.isPublished ? "" : " (unpublished)"}
                 </option>
               ));
-              return pages.some((row) => row.kind !== kind) ? (
-                <optgroup key={kind} label={kind === "page" ? "Pages" : "Service Categories"}>
+              return pages.some((row) => row.kind !== "page") ? (
+                <optgroup key={key} label={label}>
                   {options}
                 </optgroup>
               ) : (
@@ -3503,6 +3515,7 @@ export function VisualEditorShell({
       <div className="flex min-h-0 flex-1">
         {isRoute ? (
           <RouteLayersPanel
+            kind={page.kind === "service" ? "service" : "category"}
             title={page.title}
             sections={sections}
             selectedSectionId={activeId}
@@ -3584,6 +3597,7 @@ export function VisualEditorShell({
 
           {isRoute ? (
             <RoutePanel
+              kind={page.kind === "service" ? "service" : "category"}
               open={pagePanel}
               onClose={() => setPagePanel(false)}
               locale={locale}
@@ -3732,6 +3746,29 @@ export function VisualEditorShell({
       </div>
     </div>
   );
+}
+
+/**
+ * The page picker's groups, in the order the editor lists documents: the CMS
+ * pages, the service categories, and then one group per category holding its
+ * services (Batch 22) — so seventy services are found by the category a
+ * person already knows them by, and a category's services stay together
+ * whatever their ids.
+ */
+function pickerGroups(pages: EditablePage[]): { key: string; label: string; rows: EditablePage[] }[] {
+  const out: { key: string; label: string; rows: EditablePage[] }[] = [];
+  const pagesOnly = pages.filter((row) => row.kind === "page");
+  if (pagesOnly.length) out.push({ key: "page", label: "Pages", rows: pagesOnly });
+  const categories = pages.filter((row) => row.kind === "category");
+  if (categories.length) out.push({ key: "category", label: "Service Categories", rows: categories });
+  const byGroup = new Map<string, EditablePage[]>();
+  for (const row of pages) {
+    if (row.kind !== "service") continue;
+    const group = row.group ?? "Services";
+    byGroup.set(group, [...(byGroup.get(group) ?? []), row]);
+  }
+  for (const [group, rows] of byGroup) out.push({ key: `service:${group}`, label: `Services · ${group}`, rows });
+  return out;
 }
 
 /**

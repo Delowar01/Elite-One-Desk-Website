@@ -1,5 +1,6 @@
 /**
- * What the Visual Editor's route panel is sent (Batch 21).
+ * What the Visual Editor's route panel is sent (Batch 21; every route kind
+ * since Batch 22).
  *
  * Plain data, client-safe, computed on the server from the database. The panel
  * never counts its own buffers to say what is waiting: the only honest source
@@ -23,8 +24,10 @@ export type RouteOwnerSummary = {
 
 export type RouteSummaryView = {
   routeKey: string;
+  /** Which kind of page this is: a category's (Batch 21) or a service's own (Batch 22). */
+  kind: "category" | "service";
   title: string;
-  /** The public path, without a locale prefix: `/services/<slug>`. */
+  /** The public path, without a locale prefix: `/services/<slug>`, `/services/<category>/<service>`. */
   path: string;
   isPublished: boolean;
   /**

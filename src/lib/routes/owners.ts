@@ -36,6 +36,25 @@ export const ROUTE_OWNER_CODES = {
   categoryHub: 7,
   categoryFaqs: 8,
   faq: 9,
+  /**
+   * A service's own page (Batch 22), one region per part of it, each keyed by
+   * the service's id — so a region names the service, never its address, and
+   * follows it through a rename or a move to another category. `service` above
+   * is the service's *card* on its category page: a different element with
+   * different fields, so it keeps its own type and its own styles.
+   */
+  serviceHero: 10,
+  serviceCrumbs: 11,
+  serviceOverview: 12,
+  serviceBenefits: 13,
+  serviceAudience: 14,
+  serviceRequirements: 15,
+  serviceProcess: 16,
+  serviceNotes: 17,
+  serviceFaqs: 18,
+  serviceNotices: 19,
+  serviceRequest: 20,
+  serviceRelated: 21,
 } as const;
 
 export type RouteOwnerType = keyof typeof ROUTE_OWNER_CODES;
@@ -100,13 +119,28 @@ export const ownerKeyOfEditorKey = (key: unknown): string | null => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * A dynamic route the editor can open. One kind in Batch 21: a service
- * category, named by its row id — never by its slug, so a document cannot
- * change identity under an open editor.
+ * A dynamic route the editor can open, named by its row id — never by its
+ * slug, so a document cannot change identity under an open editor.
+ *
+ *   · `category` — a service category's page (Batch 21), `category:<id>`.
+ *   · `service` — one service's own page (Batch 22), `service:<id>`. The id is
+ *     the service's: renaming it, or moving it to another category, changes
+ *     its address and never its document — so its drafts and its history stay
+ *     with it.
+ *
+ * A route key and an owner key are different vocabularies, stored in
+ * different columns (`route_nodes.route_key`, `route_versions.route_key`
+ * against `route_nodes.owner_key`) and read by different parsers: the route
+ * `service:12` is a page, the owner `service:12` is a card on its category's
+ * page, and neither parser accepts the other's meaning.
  */
-export type RouteDocument = { kind: "category"; id: number };
+export type RouteKind = "category" | "service";
 
-const ROUTE_KEY = /^category:([1-9][0-9]{0,8})$/;
+export type RouteDocument = { kind: RouteKind; id: number };
+
+export const ROUTE_KINDS: readonly RouteKind[] = ["category", "service"];
+
+const ROUTE_KEY = /^(category|service):([1-9][0-9]{0,8})$/;
 
 export const routeKeyOf = (document: RouteDocument): string => `${document.kind}:${document.id}`;
 
@@ -114,21 +148,33 @@ export function parseRouteKey(input: unknown): RouteDocument | null {
   if (typeof input !== "string") return null;
   const match = ROUTE_KEY.exec(input);
   if (!match) return null;
-  const id = Number(match[1]);
-  return isOwnerRecordId(id) ? { kind: "category", id } : null;
+  const id = Number(match[2]);
+  return isOwnerRecordId(id) ? { kind: match[1] as RouteKind, id } : null;
 }
+
+/**
+ * Which owner a route document *is*: the region its key is shared with. A
+ * category route is its category's hero; a service route is its service's
+ * hero. Append-only, like the codes.
+ */
+const ROOT_OWNER: Record<RouteKind, RouteOwnerType> = { category: "category", service: "serviceHero" };
+const KIND_OF_ROOT = new Map<RouteOwnerType, RouteKind>(
+  (Object.entries(ROOT_OWNER) as [RouteKind, RouteOwnerType][]).map(([kind, type]) => [type, kind]),
+);
 
 /**
  * A route document's editor key: its root owner's. The category route *is*
  * its category, so the document and the hero share one identity — and the
  * editor's per-document state (the Undo history) is keyed where the per-owner
  * state (buffers) cannot collide with it, since the two live in different maps.
+ * A service route is its service's hero in the same way (Batch 22).
  */
 export const documentEditorKey = (document: RouteDocument): number =>
-  editorKeyOf({ type: "category", id: document.id });
+  editorKeyOf({ type: ROOT_OWNER[document.kind], id: document.id });
 
 /** The route document an editor key names, or null. */
 export function documentOfEditorKey(key: unknown): RouteDocument | null {
   const owner = ownerOfEditorKey(key);
-  return owner && owner.type === "category" ? { kind: "category", id: owner.id } : null;
+  const kind = owner ? KIND_OF_ROOT.get(owner.type) : undefined;
+  return owner && kind ? { kind, id: owner.id } : null;
 }

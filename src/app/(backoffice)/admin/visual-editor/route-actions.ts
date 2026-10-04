@@ -11,27 +11,32 @@ import { TAGS, revalidate } from "@/lib/cache";
 import { emptyMotionDocument, isReadableMotionDocument } from "@/lib/cms/motion-doc";
 import { advancedStylesDiffer, validateStyleDocument } from "@/lib/cms/styles";
 import { db } from "@/lib/db";
+import { existingMedia } from "@/lib/routes/category";
 import {
-  blockTypeOf,
-  changedKeys,
-  domainPermissionOf,
-  existingMedia,
-  mediaIdsIn,
-  nextPatch,
-  ownerLabel,
-  readSubmitted,
-  sameStored,
-  SPECS,
-  type StoredPatch,
-} from "@/lib/routes/category";
-import { ownerData, ownerIn, readRouteContext, type RouteContext } from "@/lib/routes/drafts";
+  nextPatchIn,
+  ownerData,
+  ownerIn,
+  readRouteContext,
+  readSubmittedIn,
+  type RouteContext,
+} from "@/lib/routes/drafts";
 import {
   documentOfEditorKey,
   ownerKeyOf,
   ownerOfEditorKey,
+  parseRouteKey,
   routeKeyOf,
   type RouteOwner,
 } from "@/lib/routes/owners";
+import {
+  blockTypeOf,
+  changedKeys,
+  domainPermissionOf,
+  mediaIdsIn,
+  sameStored,
+  SPECS,
+  type StoredPatch,
+} from "@/lib/routes/specs";
 import {
   compareRouteVersion,
   discardRoute,
@@ -58,7 +63,8 @@ import type {
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 
 /**
- * The Visual Editor's actions for dynamic routes (Batch 21).
+ * The Visual Editor's actions for dynamic routes (Batch 21; a service's own
+ * page too since Batch 22, through the same actions and its own adapter).
  *
  * They answer in exactly the shapes the section actions do — the same load,
  * the same content, style and motion results — so the editor's one autosave
@@ -97,6 +103,12 @@ const MESSAGES = {
 
 const domainDenied = (permission: "services.manage" | "faqs.manage") =>
   permission === "faqs.manage" ? MESSAGES.faqs : MESSAGES.services;
+
+/** The record the activity log files a route's change under: its category, or its service (Batch 22). */
+const entityOf = (context: RouteContext) => {
+  const entity = context.adapter.entity(context.data);
+  return { entityType: entity.type, entityId: entity.id };
+};
 
 /** The route context and the region an editor key names, or why not. */
 async function resolve(
@@ -192,13 +204,13 @@ export async function saveRouteRegionDraft(form: FormData): Promise<VisualConten
     const values = submitted as Record<string, unknown>;
 
     const mediaIds = await existingMedia(db, mediaIdsIn(owner, values));
-    const read = readSubmitted(owner, values, context.data, mediaIds);
+    const read = readSubmittedIn(context, owner, values, mediaIds);
     if (!read.ok) return { ok: false, reason: "invalid", message: read.problem.message };
 
     const key = ownerKeyOf(owner);
     const live = context.live.get(key) ?? {};
     const previous: StoredPatch = context.patches.get(key) ?? {};
-    const patch = nextPatch(owner, previous, live, read.stored, context.effective);
+    const patch = nextPatchIn(context, owner, previous, live, read.stored);
     const changed = changedKeys(owner, previous, live, patch);
 
     // A save that changes nothing is answered, not written: no revision moves.
@@ -228,9 +240,8 @@ export async function saveRouteRegionDraft(form: FormData): Promise<VisualConten
 
     await logActivity(session, {
       action: "route.draft_saved",
-      entityType: "category",
-      entityId: context.data.category.id,
-      summary: `Saved a draft of ${ownerLabel(owner, context.data)} in the Visual Editor`.slice(0, 255),
+      ...entityOf(context),
+      summary: `Saved a draft of ${context.adapter.label(owner, context.data)} in the Visual Editor`.slice(0, 255),
       metadata: { owner: key, route: context.routeKey, fields: changed.map((spec) => spec.key) },
     });
 
@@ -294,9 +305,8 @@ export async function resolveRouteConflict(form: FormData): Promise<VisualConten
 
     await logActivity(session, {
       action: choice === "mine" ? "route.conflict_kept_draft" : "route.conflict_took_live",
-      entityType: "category",
-      entityId: context.data.category.id,
-      summary: `${choice === "mine" ? "Kept the draft of" : "Took the live value of"} ${spec.label} — ${ownerLabel(owner, context.data)}`.slice(0, 255),
+      ...entityOf(context),
+      summary: `${choice === "mine" ? "Kept the draft of" : "Took the live value of"} ${spec.label} — ${context.adapter.label(owner, context.data)}`.slice(0, 255),
       metadata: { owner: key, field },
     });
 
@@ -360,9 +370,8 @@ export async function saveRouteRegionStyles(form: FormData): Promise<VisualStyle
 
     await logActivity(session, {
       action: "route.style_draft_saved",
-      entityType: "category",
-      entityId: context.data.category.id,
-      summary: `Saved a style draft for ${ownerLabel(owner, context.data)}`.slice(0, 255),
+      ...entityOf(context),
+      summary: `Saved a style draft for ${context.adapter.label(owner, context.data)}`.slice(0, 255),
       metadata: { owner: key },
     });
     return { ok: true, revision: written.revision, styles };
@@ -416,9 +425,8 @@ export async function saveRouteRegionMotion(form: FormData): Promise<VisualMotio
 
     await logActivity(session, {
       action: "route.motion_draft_saved",
-      entityType: "category",
-      entityId: context.data.category.id,
-      summary: `Saved a motion draft for ${ownerLabel(owner, context.data)}`.slice(0, 255),
+      ...entityOf(context),
+      summary: `Saved a motion draft for ${context.adapter.label(owner, context.data)}`.slice(0, 255),
       metadata: { owner: key },
     });
     return { ok: true, revision: written.revision, motion: "none", motionDocument: document, legacyEntrance: "none" };
@@ -496,10 +504,10 @@ const answer = (outcome: RouteOutcome): RouteActionResult =>
         ...(outcome.details ? { details: outcome.details } : {}),
       };
 
-/** The category a route key names, for the activity log and the admin screens. */
-const categoryIdOf = (routeKey: string): number | null => {
-  const match = /^category:([1-9][0-9]{0,8})$/.exec(routeKey);
-  return match ? Number(match[1]) : null;
+/** The record a route key names, for the activity log: a category, or a service (Batch 22). */
+const routeEntity = (routeKey: string): { entityType: "category" | "service" | "route"; entityId: number | string } => {
+  const document = parseRouteKey(routeKey);
+  return document ? { entityType: document.kind, entityId: document.id } : { entityType: "route", entityId: routeKey };
 };
 
 /**
@@ -522,8 +530,7 @@ export async function publishRouteFromEditor(form: FormData): Promise<RouteActio
 
     await logActivity(session, {
       action: "route.published",
-      entityType: "category",
-      entityId: categoryIdOf(routeKey) ?? routeKey,
+      ...routeEntity(routeKey),
       summary: `${outcome.message} ${outcome.resources.join(", ")}`.slice(0, 255),
       metadata: { route: routeKey, changes: outcome.changes, resources: outcome.resources },
     });
@@ -559,8 +566,7 @@ export async function discardRouteFromEditor(form: FormData): Promise<RouteActio
     if (!outcome.ok) return answer(outcome);
     await logActivity(session, {
       action: "route.drafts_discarded",
-      entityType: "category",
-      entityId: categoryIdOf(routeKey) ?? routeKey,
+      ...routeEntity(routeKey),
       summary: outcome.message.slice(0, 255),
       metadata: { route: routeKey, regions: outcome.resources },
     });
@@ -590,8 +596,7 @@ export async function restoreRouteFromEditor(form: FormData): Promise<RouteActio
     if (!outcome.ok) return answer(outcome);
     await logActivity(session, {
       action: "route.version_restored_to_draft",
-      entityType: "category",
-      entityId: categoryIdOf(routeKey) ?? routeKey,
+      ...routeEntity(routeKey),
       summary: `Restored version #${versionId} as a draft`,
       metadata: { route: routeKey, versionId, skipped: outcome.resources },
     });

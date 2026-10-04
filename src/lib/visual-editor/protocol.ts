@@ -77,6 +77,11 @@ export const EDITOR_CHANNEL = "eod.visual-editor";
  *     the address of the region it is drawn inside — a service card inside its
  *     group — so Layers can nest them. Every value is still an address, an
  *     integer or a name the reader validates; nothing else travels.
+ *     Batch 22 adds a second kind of route document within the same grammar —
+ *     a service's own page, `service:12`, keyed by its hero — and new region
+ *     owners (`serviceHero:12/field:title`); no message changes shape, and a
+ *     canvas from before it never drew a service page in the editor, so the
+ *     version stands.
  *
  * Bumped rather than extended in place: a canvas document served by an older
  * build must not answer a newer editor with a message the editor will read
