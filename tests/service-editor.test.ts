@@ -697,7 +697,8 @@ describe("publish is atomic, guarded, audited and invalidates the caches", () =>
 
     // The live page, its metadata and its structured data show it — on the very next request.
     const live = await publicPage();
-    for (const words of ["Draft Service Title", "What we do for you", "Fast turnaround", "Typically", "Start my request"].slice(0, 3)) {
+    // The timeline is the stale-revision test's winner; the button's wording is the hero's copy.
+    for (const words of ["Draft Service Title", "What we do for you", "Fast turnaround", "First writer.", "Start my request"]) {
       assert.ok(live.includes(words), words);
     }
     assert.ok(titleOf(live).includes("Draft Service Title"), titleOf(live));
