@@ -172,6 +172,20 @@ const EMPTY_CANVAS: CanvasState = { status: "loading", innerWidth: null, message
 export const AUTOSAVE_DELAY_MS = 1100;
 
 /**
+ * What to select once a redrawn canvas is ready: an address, and what to fall
+ * back to when the new document has nothing at that address.
+ */
+type RestoreTarget = { address: string; fallback: string };
+
+/**
+ * The outermost thing an address names — its section, or a route's region:
+ * `section:15/field:items/item:a1` → `section:15`, `serviceHero:12/field:title`
+ * → `serviceHero:12`. The nearest thing that still exists when the node itself
+ * has gone.
+ */
+const rootOf = (address: string): string => address.split("/")[0]!;
+
+/**
  * Whether two documents say the same thing, whatever order they say it in.
  *
  * The server rebuilds a document key by key in its own canonical order; the
@@ -356,8 +370,40 @@ export function VisualEditorShell({
   const editToken = useRef(0);
   const editSession = useRef<DirectEditSession | null>(null);
   /** Where the selection should go once the canvas comes back from a save. */
-  const restoreTo = useRef<{ address: string; fallback: string } | null>(null);
+  const restoreTo = useRef<RestoreTarget | null>(null);
   const [restoreToken, setRestoreToken] = useState(0);
+  /**
+   * The selection being held across a redraw (Batch 23).
+   *
+   * A save redraws the canvas, and the canvas reports "nothing selected" twice
+   * while its document is replaced — once when it is asked for a new one and
+   * once when that one loads. Taken at their word, those emptied the
+   * Inspector: the box being typed in was unmounted, the keyboard focus fell
+   * to the page and the next keystrokes went nowhere. The editor knows those
+   * two reports are the old document leaving, not an answer — so when a
+   * redraw puts back the node that is selected now, the selection is kept
+   * through it and the Inspector stays exactly as it is.
+   *
+   * Held until the canvas answers the restore (`asked` is set when it is
+   * asked): the same node ends the hold; "nothing here" ends it and falls back
+   * as before; a different node — somebody chose something else — ends it and
+   * wins. Choosing anything from the editor ends it too (`ask`). Nothing here
+   * ever moves the keyboard focus: the box keeps it because it is never
+   * replaced.
+   */
+  const holding = useRef<(RestoreTarget & { asked: boolean }) | null>(null);
+  /**
+   * A redraw put off because a direct edit is under way on the canvas
+   * (Batch 23): the section whose save asked for it.
+   *
+   * Redrawing replaces the document the person is typing into, which ends the
+   * session and loses whatever is typed next. The save itself goes ahead —
+   * only the redraw waits, and it happens when the session ends, or is made
+   * unnecessary by whichever redraw comes first.
+   */
+  const deferredRedraw = useRef<number | null>(null);
+  /** `settleDeferredRedraw`, reachable from the edit callbacks declared above it (the `drainRef` pattern). */
+  const settleDeferredRef = useRef<() => void>(() => {});
   /**
    * A restore that has been asked for and not answered yet (Batch 19A).
    *
@@ -676,24 +722,56 @@ export function VisualEditorShell({
 
   const onCanvasState = useCallback((next: CanvasState) => setCanvas(next), []);
   const onStructure = useCallback((next: EditorSectionMeta[]) => setSections(next), []);
-  const onSelection = useCallback((node: EditorNodeMeta | null) => {
-    const pending = restoring.current;
-    if (pending) {
-      restoring.current = null;
-      // The canvas's answer to a restore was "nothing here": the node the edit
-      // removed — the row that was just deleted — cannot come back, so the
-      // nearest thing that still exists, its section.
-      if (node === null) {
-        setSelectRequest((current) => ({
-          address: pending.fallback,
-          scrollIntoView: true,
-          token: (current?.token ?? 0) + 1,
-        }));
+  /** One request to the canvas to select `address`, or to clear when it is `null`. */
+  const requestSelection = useCallback(
+    (address: string | null) =>
+      setSelectRequest((current) => ({
+        address,
+        scrollIntoView: address !== null,
+        token: (current?.token ?? 0) + 1,
+      })),
+    [],
+  );
+
+  const onSelection = useCallback(
+    (node: EditorNodeMeta | null) => {
+      const hold = holding.current;
+      if (hold) {
+        // The document being replaced and the one arriving both report
+        // "nothing selected" before the restore is asked. Neither is an
+        // answer, and the held selection stays — with the Inspector, and the
+        // box that has the keyboard focus, exactly as they are.
+        if (node === null && !hold.asked) return;
+        holding.current = null;
+        if (node === null) {
+          // The answer: nothing in the new document answers to the address.
+          // The node the save removed cannot come back, so the nearest thing
+          // that still exists — never a stale reference to what has gone.
+          restoring.current = null;
+          if (hold.fallback !== hold.address) requestSelection(hold.fallback);
+        } else if (node.address !== hold.address) {
+          // A different node: somebody chose it while the canvas came back.
+          // Their choice wins, and nothing is put back over it.
+          restoreTo.current = null;
+          restoring.current = null;
+        }
+        selectedRef.current = node;
+        setSelected(node);
+        return;
       }
-    }
-    selectedRef.current = node;
-    setSelected(node);
-  }, []);
+      const pending = restoring.current;
+      if (pending) {
+        restoring.current = null;
+        // The canvas's answer to a restore was "nothing here": the node the edit
+        // removed — the row that was just deleted — cannot come back, so the
+        // nearest thing that still exists, its section.
+        if (node === null) requestSelection(pending.fallback);
+      }
+      selectedRef.current = node;
+      setSelected(node);
+    },
+    [requestSelection],
+  );
 
   /**
    * A new document: everything about the old one goes with it.
@@ -701,8 +779,14 @@ export function VisualEditorShell({
    * Everything about the *document*, that is. The edit buffers are not part of
    * it — they are what the person typed, and reloading the frame they are being
    * previewed in is no reason to throw them away.
+   *
+   * `keep` is what a redraw will put back (`redrawTo`). When that is the node
+   * selected now and its section's buffer survives the redraw, the selection is
+   * held through it rather than emptied (`holding`), so the Inspector is never
+   * unmounted. Anything else — another node, a section whose buffer was just
+   * thrown away, a page or language change — starts from nothing, as before.
    */
-  const freshCanvas = () => {
+  const freshCanvas = (keep?: RestoreTarget | null) => {
     setCanvas(EMPTY_CANVAS);
     setSections([]);
     setEditRequest(null);
@@ -710,11 +794,39 @@ export function VisualEditorShell({
     // A restore still waiting on the document being replaced has nobody left
     // to answer it; a new one is asked for once the new document is ready.
     restoring.current = null;
-    selectedRef.current = null;
-    setSelected(null);
+    // Whatever redraw was waiting for a direct edit to end is this one.
+    deferredRedraw.current = null;
+    const node = selectedRef.current;
+    const hold =
+      keep && node && node.address === keep.address && buffersRef.current[node.sectionId] !== undefined ? keep : null;
+    holding.current = hold ? { ...hold, asked: false } : null;
+    if (!hold) {
+      selectedRef.current = null;
+      setSelected(null);
+    }
     setSelectRequest(null);
     setCanvasKey((n) => n + 1);
   };
+
+  /** The selection as it stands, as something a redraw can put back. */
+  const keptSelection = (): RestoreTarget | null => {
+    const address = selectedRef.current?.address ?? null;
+    return address ? { address, fallback: rootOf(address) } : null;
+  };
+
+  /**
+   * The canvas drawn again, with `wanted` selected on the far side of it.
+   *
+   * The one way every write that changes what the canvas shows redraws it — an
+   * autosave, Undo back to what is stored, a layout step, a component
+   * publication, a global change — for a page section and a route region
+   * alike, so they cannot differ in what happens to the selection.
+   */
+  const redrawTo = useCallback((wanted: RestoreTarget | null) => {
+    restoreTo.current = wanted;
+    freshCanvas(wanted);
+    if (wanted) setRestoreToken((n) => n + 1);
+  }, []);
 
   /**
    * The layout, re-read whenever the page changes.
@@ -772,14 +884,22 @@ export function VisualEditorShell({
     [],
   );
 
+  /**
+   * Somebody chose what to select — from Layers, from the Inspector, by
+   * starting a direct edit.
+   *
+   * Their choice ends any hold, and a restore still waiting for the canvas to
+   * be ready is pointed at it instead: otherwise a save that was on its way
+   * when they clicked would put back the node they had just moved away from.
+   */
   const ask = useCallback(
-    (address: string | null) =>
-      setSelectRequest((current) => ({
-        address,
-        scrollIntoView: address !== null,
-        token: (current?.token ?? 0) + 1,
-      })),
-    [],
+    (address: string | null) => {
+      holding.current = null;
+      restoring.current = null;
+      if (restoreTo.current) restoreTo.current = address ? { address, fallback: rootOf(address) } : null;
+      requestSelection(address);
+    },
+    [requestSelection],
   );
 
   /* ------------------------------------------------------------------ */
@@ -1012,12 +1132,9 @@ export function VisualEditorShell({
       // own side. Nothing more is needed here.
 
       // The inspector should be pointed at what is about to be typed into, and
-      // this is also what loads the section on the ordinary path.
-      setSelectRequest((current) => ({
-        address,
-        scrollIntoView: true,
-        token: (current?.token ?? 0) + 1,
-      }));
+      // this is also what loads the section on the ordinary path. A choice like
+      // any other: it ends a hold and outranks a restore still on its way.
+      ask(address);
 
       const pageAtRequest = pageRef.current;
       const localeAtRequest = localeRef.current;
@@ -1082,7 +1199,7 @@ export function VisualEditorShell({
       };
       setEditRequest({ kind: "begin", address, token, text });
     },
-    [allowed, ensureSectionBuffer, mayRecord],
+    [allowed, ask, ensureSectionBuffer, mayRecord],
   );
 
 
@@ -1205,14 +1322,21 @@ export function VisualEditorShell({
       if (edit.phase !== "input") closeHistoryGroup();
 
       /**
-       * A cancelled session saves nothing.
+       * A cancelled session saves nothing of its own.
        *
        * The section's autosave timer may already be running because of earlier
        * keystrokes, and it is deliberately left alone: it may also be carrying
        * unrelated style or motion work. When it wakes, the restored buffer is
        * no longer content-dirty, so it writes no content and moves no revision.
+       *
+       * Unless the session outlasted a save (Batch 23: a save no longer ends
+       * it): then the server holds what was typed, Escape has put the text
+       * back, and the buffer differs from what is stored — so that is saved,
+       * or the page would keep the words the editor just took back.
        */
-      if (edit.phase !== "cancel") scheduleAutosave(verdict.sectionId);
+      const restored = buffersRef.current[verdict.sectionId];
+      if (edit.phase !== "cancel" || (restored?.contentDirty ?? false)) scheduleAutosave(verdict.sectionId);
+      if (verdict.ends) settleDeferredRef.current();
     },
     [allowed, closeHistoryGroup, recordChange, scheduleAutosave, writeBuffers],
   );
@@ -1743,14 +1867,16 @@ export function VisualEditorShell({
       // Only the page being looked at: a debounce that fired for a section on
       // another page has nothing to say about this canvas.
       if (buffersRef.current[sectionId]?.data.pageId !== pageRef.current) return;
-      const address = selectedRef.current?.address ?? null;
-      restoreTo.current = address
-        ? { address, fallback: `section:${sectionId}` }
-        : null;
-      freshCanvas();
-      if (address) setRestoreToken((n) => n + 1);
+      // A direct edit under way on this canvas would be ended by a new
+      // document, and what is typed next lost with it. The save has landed;
+      // only the redraw waits for the session to end (Batch 23).
+      if (editSession.current && editSession.current.canvasKey === canvasKeyRef.current) {
+        deferredRedraw.current = sectionId;
+        return;
+      }
+      redrawTo(keptSelection());
     },
-    [resetHistory, runSave],
+    [redrawTo, resetHistory, runSave],
   );
 
   drainRef.current = (sectionId: number) => void drainSection(sectionId);
@@ -1800,12 +1926,25 @@ export function VisualEditorShell({
   );
 
   /** The canvas drawn again with the selection kept — after a write it cannot see. */
-  const redrawKeeping = useCallback((sectionId: number) => {
-    const address = selectedRef.current?.address ?? null;
-    restoreTo.current = address ? { address, fallback: `section:${sectionId}` } : null;
-    freshCanvas();
-    if (address) setRestoreToken((n) => n + 1);
-  }, []);
+  const redrawKeeping = useCallback(() => redrawTo(keptSelection()), [redrawTo]);
+
+  /**
+   * A direct edit has ended: the redraw its saves put off is due now — unless
+   * a write is still to come, which redraws when it lands as every save does.
+   * A debounce armed over a buffer with nothing unsaved is not one: it wakes,
+   * finds nothing to write and redraws nothing.
+   */
+  const settleDeferredRedraw = useCallback(() => {
+    if (deferredRedraw.current === null || editSession.current) return;
+    const writeToCome = Object.entries(buffersRef.current).some(
+      ([id, entry]) =>
+        entry.data.pageId === pageRef.current &&
+        (isDirty(entry) || entry.saving !== null || draining.current.has(Number(id))),
+    );
+    if (writeToCome) return;
+    redrawKeeping();
+  }, [redrawKeeping]);
+  settleDeferredRef.current = settleDeferredRedraw;
 
   /**
    * Detaches one instance: resolved by the server from the component's current
@@ -1848,7 +1987,7 @@ export function VisualEditorShell({
           }
           if (answer.reason === "component_conflict") {
             await refreshCatalog();
-            redrawKeeping(sectionId);
+            redrawKeeping();
           }
           if (answer.reason === "denied") noteRefusal(answer.message);
           setReuseMessage({ ok: false, text: answer.message });
@@ -1893,7 +2032,7 @@ export function VisualEditorShell({
           text: `Detached. This page keeps the content as its own; “${name ?? "the component"}” is unchanged.`,
         });
         void refreshCatalog();
-        redrawKeeping(sectionId);
+        redrawKeeping();
       } finally {
         setReuseBusy(false);
       }
@@ -2119,14 +2258,10 @@ export function VisualEditorShell({
           : select === "new" && result.sectionId
             ? `section:${result.sectionId}`
             : previous;
-      restoreTo.current = wanted
-        ? { address: wanted, fallback: wanted.split("/")[0]! }
-        : null;
-      freshCanvas();
-      if (wanted) setRestoreToken((n) => n + 1);
+      redrawTo(wanted ? { address: wanted, fallback: rootOf(wanted) } : null);
       return result;
     },
-    [allowed, closeHistoryGroup, csrf, noteRefusal, page, recordChange, resetHistory, structure, structureBusy],
+    [allowed, closeHistoryGroup, csrf, noteRefusal, page, recordChange, redrawTo, resetHistory, structure, structureBusy],
   );
 
   /**
@@ -2167,12 +2302,8 @@ export function VisualEditorShell({
     const selected = selectedRef.current;
     const survives =
       selected && latest.structure.sections.some((entry) => entry.sectionId === selected.sectionId);
-    restoreTo.current = survives
-      ? { address: selected.address, fallback: `section:${selected.sectionId}` }
-      : null;
-    freshCanvas();
-    if (survives) setRestoreToken((n) => n + 1);
-  }, [page, resetHistory, structureBusy]);
+    redrawTo(survives ? keptSelection() : null);
+  }, [page, redrawTo, resetHistory, structureBusy]);
 
   const ops: StructuralOps = useMemo(
     () => ({
@@ -2460,12 +2591,7 @@ export function VisualEditorShell({
        * Anything still dirty is left to the autosave, which reloads it anyway.
        */
       const after = buffersRef.current[change.sectionId];
-      if (after && !isDirty(after) && after.data.pageId === pageRef.current) {
-        const address = selectedRef.current?.address ?? null;
-        restoreTo.current = address ? { address, fallback: `section:${change.sectionId}` } : null;
-        freshCanvas();
-        if (address) setRestoreToken((n) => n + 1);
-      }
+      if (after && !isDirty(after) && after.data.pageId === pageRef.current) redrawTo(keptSelection());
     },
     [
       allowed,
@@ -2473,6 +2599,7 @@ export function VisualEditorShell({
       historyOf,
       page,
       pageBusy,
+      redrawTo,
       resetHistory,
       runLayoutStep,
       scheduleAutosave,
@@ -2720,13 +2847,9 @@ export function VisualEditorShell({
         keepSelection &&
         selected &&
         (page.kind !== "page" || latest?.structure.sections.some((entry) => entry.sectionId === selected.sectionId));
-      restoreTo.current = survives
-        ? { address: selected.address, fallback: `section:${selected.sectionId}` }
-        : null;
-      freshCanvas();
-      if (survives) setRestoreToken((n) => n + 1);
+      redrawTo(survives ? keptSelection() : null);
     },
-    [page, refreshPageState, resetHistory, writeBuffers],
+    [page, redrawTo, refreshPageState, resetHistory, writeBuffers],
   );
 
   /* ------------------------------------------------------------------ */
@@ -2768,13 +2891,8 @@ export function VisualEditorShell({
    */
   const afterGlobalChange = useCallback(async () => {
     await refreshGlobals();
-    const selected = selectedRef.current;
-    restoreTo.current = selected
-      ? { address: selected.address, fallback: `section:${selected.sectionId}` }
-      : null;
-    freshCanvas();
-    if (selected) setRestoreToken((n) => n + 1);
-  }, [refreshGlobals]);
+    redrawTo(keptSelection());
+  }, [redrawTo, refreshGlobals]);
 
   const toggleGlobals = useCallback(() => {
     setGlobalsPanel((value) => {
@@ -3129,7 +3247,7 @@ export function VisualEditorShell({
         });
         setLoadError(null);
         void refreshPageState();
-        redrawKeeping(sectionId);
+        redrawKeeping();
       } finally {
         setResolving(false);
       }
@@ -3164,9 +3282,11 @@ export function VisualEditorShell({
     restoreTo.current = null;
 
     // The next selection the canvas reports is its answer (`onSelection`).
-    restoring.current = wanted.fallback !== wanted.address ? wanted : null;
-    ask(wanted.address);
-  }, [restoreToken, canvas.status, ask]);
+    const hold = holding.current;
+    if (hold && hold.address === wanted.address) hold.asked = true;
+    else restoring.current = wanted.fallback !== wanted.address ? wanted : null;
+    requestSelection(wanted.address);
+  }, [restoreToken, canvas.status, requestSelection]);
 
   /**
    * An unsaved edit is worth one browser prompt.
@@ -3437,7 +3557,7 @@ export function VisualEditorShell({
             {status.label}
           </p>
           {/* Below lg the words are hidden from the eye, never from a screen reader. */}
-          <button type="button" onClick={freshCanvas} className="admin-btn admin-btn-sm">
+          <button type="button" onClick={() => freshCanvas()} className="admin-btn admin-btn-sm">
             <Icon name="refresh" size={12} />
             <span className="sr-only lg:not-sr-only">Reload</span>
           </button>
@@ -3689,7 +3809,7 @@ export function VisualEditorShell({
                      * it was, because nothing in it has become untrue.
                      */
                     void refreshCatalog();
-                    if (event === "published" && activeId !== null) redrawKeeping(activeId);
+                    if (event === "published" && activeId !== null) redrawKeeping();
                     else if (event === "published") freshCanvas();
                     if (event === "deleted") setComponentDrawer(null);
                   }}

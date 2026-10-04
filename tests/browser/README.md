@@ -10,7 +10,7 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty-four probes, one file each |
+| `probes/*.probe.mts` | the thirty-five probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -46,7 +46,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the thirty-three probes, once each
+npm run test:browser              # the thirty-five probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -94,8 +94,9 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,266 `PASS`
-across the thirty-three as of Batch 21A (1,255 across thirty-two at Batch 21,
+Every probe clean, with the counts in `probes/expected.json` — 1,412 `PASS`
+across the thirty-five as of Batch 23 (1,377 across thirty-four at Batch 22,
+1,266 across thirty-three at Batch 21A, 1,255 across thirty-two at Batch 21,
 1,145 across thirty-one at Batch 19C,
 1,131 across thirty at Batch 19B, 1,089
 at Batch 19A, 1,078 at Batch 18;
@@ -204,3 +205,17 @@ answering as a missing page always has — and moved back. Last, a service made
 on the Services screen while the probe runs is offered, edited, published and
 deleted again. The draft it leaves pending, and the service it makes, are gone
 at the end.
+
+Batch 23 added a probe and changed none: `inspector-focus` (35 checks, port
+3736) types in the Inspector across real autosaves — each save redraws the
+canvas — in the three editors that share it: a CMS page, a category page and a
+service page; a text box, a textarea with the caret in the middle and a list
+row; English and Arabic; Desktop, Tablet and Mobile; four saves in a row; a
+save the server holds back for 2.5 s; and a direct edit on the canvas across
+its own autosave. Each case reads `document.activeElement`, `selectionStart`
+and `selectionEnd` on the very element that was typed in, and the text both on
+screen and in the database. Then the races: another section chosen while a
+save is on its way, focus moved to another box before it lands, and a selected
+row the save itself removed, which falls back to its section. On the build
+before the fix it recorded 7 `PASS` and 28 `FAIL` — the defect, in all three
+editors — and on the fixed one 35 `PASS`.
