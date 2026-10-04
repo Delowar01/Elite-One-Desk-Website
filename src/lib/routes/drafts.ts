@@ -156,8 +156,9 @@ export function nextPatchIn(
   previous: StoredPatch | null | undefined,
   live: Record<string, unknown>,
   stored: Record<string, unknown>,
+  startedFrom?: Record<string, unknown>,
 ): StoredPatch {
-  return nextPatchWith(owner, previous, live, stored, (list) => context.adapter.members(owner, list, context.effective));
+  return nextPatchWith(owner, previous, live, stored, (list) => context.adapter.members(owner, list, context.effective), startedFrom);
 }
 
 /* -------------------------------------------------------------------------- */

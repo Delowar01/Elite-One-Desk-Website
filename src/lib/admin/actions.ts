@@ -3,6 +3,8 @@ import "server-only";
 import { AccessError } from "@/lib/auth/guard";
 import type { DraftKind } from "@/lib/cms/drafts";
 
+import { numberField } from "./form-readers";
+
 /**
  * What a section screen must adopt after a write that succeeded.
  *
@@ -50,6 +52,11 @@ export type ActionState = {
   id?: number;
   /** The row this action wrote, for a screen that must stay authoritative. */
   section?: SectionSnapshot;
+  /**
+   * Fields changed elsewhere since the form was opened, when that refused the
+   * save (Batch 23: the Services form). Keys, never values.
+   */
+  conflicts?: string[];
 };
 
 export const ok = (message?: string, id?: number): ActionState => ({ ok: true, message, id });
@@ -80,19 +87,9 @@ export async function runAction(
   }
 }
 
-/** Reads a trimmed string from a form, with a length cap. */
-export const field = (form: FormData, name: string, max = 5000): string =>
-  String(form.get(name) ?? "").trim().slice(0, max);
-
-export const checkbox = (form: FormData, name: string): boolean =>
-  form.get(name) === "on" || form.get(name) === "true";
-
-export const numberField = (form: FormData, name: string, fallback = 0): number => {
-  const raw = String(form.get(name) ?? "").trim();
-  if (!raw) return fallback;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : fallback;
-};
+// The plain readers live on their own, so a module that only reads a form
+// (the Services form's fields, Batch 23) need not import the action machinery.
+export { checkbox, field, numberField, optionalId } from "./form-readers";
 
 /**
  * The revision the submitting screen was built from, or -1 when the form did
@@ -106,7 +103,3 @@ export const revisionField = (form: FormData, name = "expectedRevision"): number
   return Number.isInteger(value) && value >= 0 ? value : -1;
 };
 
-export const optionalId = (form: FormData, name: string): number | null => {
-  const value = numberField(form, name, 0);
-  return value > 0 ? value : null;
-};

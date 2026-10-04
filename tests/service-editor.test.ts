@@ -20,6 +20,7 @@ import { giveFresh } from "./helpers/fixtures";
 import { get } from "./helpers/http";
 import { connect, dropDatabase, type Sql } from "./helpers/pg";
 import { BUILD_HINT, isBuilt, startServer, type Server } from "./helpers/server";
+import { openServiceForm } from "./helpers/service-form";
 import { signIn, type TestSession } from "./helpers/session";
 
 import type { PermissionKey } from "@/lib/auth/permissions";
@@ -189,33 +190,8 @@ const titleOf = (markup: string) => /<title>([^<]*)<\/title>/.exec(markup)?.[1] 
 
 /** The Services screen's own update, carrying every field the form holds — as the form does. */
 async function servicesForm(id: number, over: Record<string, string | number> = {}, session = owner) {
-  const row = (await serviceRow(id))!;
-  const fields: Record<string, string | number> = {
-    id,
-    slug: String(row.slug),
-    categoryId: Number(row.category_id),
-    subcategoryId: row.subcategory_id === null ? "" : Number(row.subcategory_id),
-    titleEn: String(row.title_en),
-    titleAr: String(row.title_ar),
-    introEn: String(row.intro_en),
-    introAr: String(row.intro_ar),
-    bodyEn: String(row.body_en),
-    bodyAr: String(row.body_ar),
-    benefits: JSON.stringify(row.benefits),
-    audience: JSON.stringify(row.audience),
-    requirements: JSON.stringify(row.requirements),
-    processSteps: JSON.stringify(row.process_steps),
-    timelineEn: String(row.timeline_en),
-    timelineAr: String(row.timeline_ar),
-    notesEn: String(row.notes_en),
-    notesAr: String(row.notes_ar),
-    formPreset: String(row.form_preset),
-    imageId: row.image_id === null ? "" : Number(row.image_id),
-    sortOrder: Number(row.sort_order),
-    ...(row.is_published ? { isPublished: "on" } : {}),
-    ...(row.is_featured ? { isFeatured: "on" } : {}),
-    ...over,
-  };
+  // Opened now, with the base its page signs (Batch 23), and saved with `over` changed.
+  const fields: Record<string, string | number> = { ...(await openServiceForm(sql, server.origin, session.cookie, id)), ...over };
   if (over.subcategoryId === "") fields.subcategoryId = "";
   return actionOf<Answer>(SERVICE_ACTIONS, `/admin/services/${id}`, "updateService", [{ ok: false }, formOf(fields, session)], session);
 }

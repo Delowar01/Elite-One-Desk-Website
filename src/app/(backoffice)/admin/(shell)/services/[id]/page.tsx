@@ -6,6 +6,7 @@ import { AdminPageHeader } from "@/components/admin/page-header";
 import { requirePermission } from "@/lib/auth/guard";
 import { db } from "@/lib/db";
 import { media, serviceCategories, serviceSubcategories, services } from "@/lib/db/schema";
+import { rowValues, signServiceBase } from "@/lib/services/form-fields";
 import { DeleteService, ServiceForm, type ServiceValues } from "../service-form";
 
 export const dynamic = "force-dynamic";
@@ -139,6 +140,9 @@ export default async function ServiceEditor({
         <ServiceForm
           csrf={session.csrfToken}
           service={row.service as unknown as ServiceValues}
+          // What every field is as this page draws it, signed: the save writes
+          // only what the form changes from it (Batch 23).
+          base={signServiceBase(row.service.id, rowValues(row.service))}
           categories={categories}
           subcategories={subcategories}
           media={library}

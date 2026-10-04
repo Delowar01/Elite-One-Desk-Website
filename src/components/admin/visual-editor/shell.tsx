@@ -1640,6 +1640,11 @@ export function VisualEditorShell({
       form.set("pageId", String(entry.data.pageId));
       form.set("expectedRevision", String(entry.data.revision));
       form.set(domain === "content" ? "values" : domain === "style" ? "styles" : "motionDocument", sent);
+      // What `sent` derives from, so a route region's save writes only what this
+      // editor changed (Batch 23): its record can change under it, on the
+      // Services screen, while the buffer is open.
+      const sentBase = entry.contentBase ?? entry.data.values;
+      if (domain === "content" && routeRegion) form.set("baseValues", canonical(sentBase));
 
       const settle = (patch: Partial<SectionBuffer>) =>
         writeBuffers((prev) => {
@@ -1779,7 +1784,13 @@ export function VisualEditorShell({
 
         const domainState =
           domain === "content"
-            ? { values: movedOn ? live.values : data.values, contentDirty: movedOn }
+            ? {
+                values: movedOn ? live.values : data.values,
+                contentDirty: movedOn,
+                // Typing went on during the save: the local values still derive
+                // from the base that was sent, not from this answer.
+                contentBase: movedOn ? sentBase : undefined,
+              }
             : domain === "style"
               ? { styles: movedOn ? live.styles : data.styles, styleDirty: movedOn }
               : { motion: movedOn ? live.motion : data.motionDocument, motionDirty: movedOn };

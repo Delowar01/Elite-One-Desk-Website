@@ -116,7 +116,7 @@ back by calling `emit(value)`; nothing in between is mocked.
 
 ## Ports
 
-The server tests bind `3411`–`3414`, `3421`, `3431`, `3441`–`3451`, `3461`, `3471`, `3502`–`3504` (and `server-staging.test.ts` names trees `3505` and `3506` without starting a server) —
+The server tests bind `3411`–`3414`, `3421`, `3431`, `3441`–`3451`, `3461`, `3471`, `3502`–`3504`, `3507`–`3509` (and `server-staging.test.ts` names trees `3505` and `3506` without starting a server) —
 one port per file, never shared. `node --test` runs the files in parallel, so
 two files on one port is not a style point: whichever starts second fails to
 bind, or worse, answers the first one's questions. `build-isolation.test.ts`

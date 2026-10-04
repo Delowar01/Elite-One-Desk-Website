@@ -570,6 +570,14 @@ export function nextPatchWith(
   live: Record<string, unknown>,
   stored: Record<string, unknown>,
   membersOf: (list: ListName | undefined) => number[],
+  /**
+   * What the editor's buffer showed for each field when it began (Batch 23).
+   * A field newly drafted from a buffer older than the record starts from the
+   * value the editor saw, so its publication meets the newer one as a
+   * conflict rather than writing over it. Orders keep starting from live:
+   * their membership can move without anybody editing them.
+   */
+  startedFrom?: Record<string, unknown>,
 ): StoredPatch {
   const out: StoredPatch = {};
   for (const spec of SPECS[owner.type]) {
@@ -577,7 +585,57 @@ export function nextPatchWith(
     if (spec.check === "order") value = applyOrder(value, membersOf(spec.list));
     if (sameStored(value, live[spec.key])) continue;
     const kept = previous?.[spec.key];
-    out[spec.key] = { value, base: kept && "base" in kept ? kept.base : live[spec.key] };
+    const start = spec.check !== "order" && startedFrom && spec.key in startedFrom ? startedFrom[spec.key] : live[spec.key];
+    out[spec.key] = { value, base: kept && "base" in kept ? kept.base : start };
+  }
+  return out;
+}
+
+/**
+ * A submission with every field the editor did not change put back to what
+ * the server holds now (Batch 23).
+ *
+ * `base` is what the editor's buffer was last reconciled with, read the same
+ * way as the submission. A field equal to it was not edited in this buffer,
+ * so its value says nothing new: it becomes the draft's value if the field is
+ * drafted, otherwise the record's. Without this, a buffer opened before the
+ * Services screen changed the record sent the old value back, `nextPatchWith`
+ * took it for an edit — it differed from live — and the next publication put
+ * it back, silently. A field the editor did change is left exactly as sent.
+ */
+export function withUntouchedFromServer(
+  owner: RouteOwner,
+  stored: Record<string, unknown>,
+  base: Record<string, unknown>,
+  previous: StoredPatch | null | undefined,
+  live: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...stored };
+  for (const spec of SPECS[owner.type]) {
+    if (!(spec.key in stored) || !(spec.key in base)) continue;
+    if (!sameStored(stored[spec.key], base[spec.key])) continue;
+    const kept = previous?.[spec.key];
+    if (kept && "value" in kept) out[spec.key] = kept.value;
+    else if (spec.key in live) out[spec.key] = live[spec.key];
+  }
+  return out;
+}
+
+/**
+ * The fields whose value the editor began from is no longer what the server
+ * would show it (Batch 23) — both read the same way, so a column merely stored
+ * unnormalised does not count. Only these start a draft from the editor's
+ * value (`nextPatchWith`'s `startedFrom`); every other field starts from live
+ * exactly as before.
+ */
+export function staleStartingPoints(
+  owner: RouteOwner,
+  began: Record<string, unknown>,
+  now: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const spec of SPECS[owner.type]) {
+    if (spec.key in began && spec.key in now && !sameStored(began[spec.key], now[spec.key])) out[spec.key] = began[spec.key];
   }
   return out;
 }

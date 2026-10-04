@@ -18,20 +18,24 @@
  *       category shows it — the caches were dropped
  *   S4  publish races the Services form on a drafted field — the hero's
  *       introduction and a style against the form saving another
- *       introduction, in both orders: the publication lands whole or is
- *       refused as a conflict with nothing written; the form always lands
+ *       introduction, in both orders: exactly one lands — the publication
+ *       whole, or the form — and the other is refused as a conflict with
+ *       nothing written (Batch 23: the form no longer writes over a field
+ *       changed since it was opened)
  *   S5  publish races a move — the Services form moving the service to
  *       another category while its page is published: both land, the
  *       publication on the same row, every region still the service's
- *       (one route key, no second identity), the page at its new address
+ *       (one route key, no second identity), the page at its new address —
+ *       and in both orders the published timeline stays (Batch 23: a form
+ *       opened before the publication no longer puts its old timeline back)
  *   S6  the category page and the service page publish the same column at
  *       once — the card's introduction and the hero's: exactly one lands,
  *       the other is refused as a conflict and keeps its draft, and neither
  *       waits on the other for ever (the two lock orders cannot cycle)
  *   S7  a rename races a publication of the title — the form renaming the
- *       service while its title draft is published: the form always lands;
- *       the publication lands whole or is refused as a conflict; the page's
- *       identity never changes
+ *       service while its title draft is published: exactly one title
+ *       lands; the loser is refused as a conflict with nothing written; the
+ *       page's identity never changes
  *   S8  discard races a new edit elsewhere on the page — the new draft, never
  *       reviewed, always survives
  *   S9  components created and deleted while the page is published — every
@@ -47,6 +51,7 @@ import { isNavigationDigest, payloadErrors, serverFailureLines } from "../helper
 import { giveFresh } from "../helpers/fixtures";
 import { connect, dropDatabase } from "../helpers/pg";
 import { startServer } from "../helpers/server";
+import { openServiceForm } from "../helpers/service-form";
 import { signIn } from "../helpers/session";
 
 import { STYLE_DOCUMENT_VERSION } from "../../src/lib/cms/styles";
@@ -62,7 +67,7 @@ const say = (label: string, ok: boolean, detail = "") =>
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
 
 type Values = Record<string, unknown>;
-type Answer = { ok: boolean; reason?: string; message?: string };
+type Answer = { ok: boolean; reason?: string; message?: string; conflicts?: string[] };
 type Region = { revision: number; values: Values };
 
 const database = giveFresh("service_concurrency_stress");
@@ -134,11 +139,20 @@ try {
     if (!answer?.ok || !answer.section) throw new Error(`could not load ${target.type}:${target.id}: ${answer?.message ?? "no answer"}`);
     return answer.section;
   };
-  const saveAt = (target: RouteOwner, pageId: number, revision: number, values: Values) =>
-    call(VE, "saveRouteRegionDraft", [form({ sectionId: editorKeyOf(target), pageId, expectedRevision: revision, values: JSON.stringify(values) })]);
+  /** A region's draft saved as the editor saves it: with the values it was loaded with as its base (Batch 23). */
+  const saveAt = (target: RouteOwner, pageId: number, revision: number, values: Values, base?: Values) =>
+    call(VE, "saveRouteRegionDraft", [
+      form({
+        sectionId: editorKeyOf(target),
+        pageId,
+        expectedRevision: revision,
+        values: JSON.stringify(values),
+        ...(base ? { baseValues: JSON.stringify(base) } : {}),
+      }),
+    ]);
   const edit = async (target: RouteOwner, pageId: number, change: (values: Values) => Values) => {
     const current = await region(target, pageId);
-    const answer = await saveAt(target, pageId, current.revision, change(current.values));
+    const answer = await saveAt(target, pageId, current.revision, change(current.values), current.values);
     if (!answer?.ok) throw new Error(`could not save ${target.type}:${target.id}: ${answer?.message ?? "no answer"}`);
   };
   const english = (field: string, text: string) => (values: Values) => ({ ...values, [field]: { ...(values[field] as object), en: text } });
@@ -174,35 +188,13 @@ try {
     (await sql<{ n: number }[]>`select count(*)::int as n from route_versions where route_key = ${routeKey} and kind = 'publish' and id > ${since}`)[0]!.n;
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-  /** The Services screen's own update, carrying every field the form holds — as the form does. */
+  /**
+   * The Services screen's own update, as the form does it (Batch 23): the page
+   * opened now — every field and the base it signs — and saved, when the
+   * returned function is called, with `over` changed.
+   */
   const servicesForm = async (id: number, over: Record<string, string | number> = {}) => {
-    const [row] = await sql<Record<string, unknown>[]>`select * from services where id = ${id}`;
-    const fields: Record<string, string | number> = {
-      id,
-      slug: String(row!.slug),
-      categoryId: Number(row!.category_id),
-      subcategoryId: row!.subcategory_id === null ? "" : Number(row!.subcategory_id),
-      titleEn: String(row!.title_en),
-      titleAr: String(row!.title_ar),
-      introEn: String(row!.intro_en),
-      introAr: String(row!.intro_ar),
-      bodyEn: String(row!.body_en),
-      bodyAr: String(row!.body_ar),
-      benefits: JSON.stringify(row!.benefits),
-      audience: JSON.stringify(row!.audience),
-      requirements: JSON.stringify(row!.requirements),
-      processSteps: JSON.stringify(row!.process_steps),
-      timelineEn: String(row!.timeline_en),
-      timelineAr: String(row!.timeline_ar),
-      notesEn: String(row!.notes_en),
-      notesAr: String(row!.notes_ar),
-      formPreset: String(row!.form_preset),
-      imageId: row!.image_id === null ? "" : Number(row!.image_id),
-      sortOrder: Number(row!.sort_order),
-      ...(row!.is_published ? { isPublished: "on" } : {}),
-      ...(row!.is_featured ? { isFeatured: "on" } : {}),
-      ...over,
-    };
+    const fields: Record<string, string | number> = { ...(await openServiceForm(sql, origin, owner.cookie, id)), ...over };
     return () => call(SERVICES, "updateService", [{ ok: false }, form(fields)]);
   };
 
@@ -369,16 +361,19 @@ try {
       const whole = published?.ok === true && recorded && stylesAfter.includes(`"${colour}"`) && node?.draft_styles == null && node?.draft_content == null;
       const nothing =
         published?.ok === false && published.reason === "conflict" && !recorded && stylesAfter === stylesBefore && node?.draft_styles != null && node?.draft_content != null;
-      const formLanded = saved?.ok === true && (await serviceRow(second)).intro_en === formIntro;
-      if (formLanded && (whole || nothing)) exact += 1;
-      else if (!odd) odd = JSON.stringify({ round, published, saved: saved?.ok ?? saved, recorded, intro: (await serviceRow(second)).intro_en });
-      if (whole) landed += 1;
-      if (nothing) refused += 1;
+      // Both changed the introduction since the form was opened: exactly one lands (Batch 23).
+      const intro = (await serviceRow(second)).intro_en;
+      const formWon = saved?.ok === true && nothing && intro === formIntro;
+      const editorWon = whole && saved?.ok === false && (saved.conflicts ?? []).join() === "introEn" && intro === `S4 draft ${round}`;
+      if (formWon || editorWon) exact += 1;
+      else if (!odd) odd = JSON.stringify({ round, published, saved, recorded, intro });
+      if (editorWon) landed += 1;
+      if (formWon) refused += 1;
     }
     say(
-      "S4. a publication racing the Services form lands whole or is refused with nothing written; the form always lands",
+      "S4. a publication racing the Services form on the same field: exactly one lands — the publication whole, or the form — and the other writes nothing",
       exact === LOOPS,
-      `${exact}/${LOOPS} exact — ${landed} published whole, ${refused} refused as a conflict${odd ? ` — first other: ${odd}` : ""}`,
+      `${exact}/${LOOPS} exact — the publication won ${landed}, the form won ${refused}${odd ? ` — first other: ${odd}` : ""}`,
     );
     await settle(routeOf(second));
   }
@@ -398,8 +393,7 @@ try {
       const timeline = `S5 timeline ${round}`;
       await edit(hero(second), pageOf(second), english("timeline", timeline));
       const reviewed = await token(routeOf(second));
-      // The form as an admin opened it, before the publication: it saves every field it holds.
-      const opened = (await serviceRow(second)).timeline_en;
+      // The form as an admin opened it, before the publication: it changes only the placement.
       const move = await servicesForm(second, { categoryId: to, subcategoryId: group });
       const hold = 10 + (round % 4) * 25;
       const [published, moved] = await Promise.all([
@@ -409,15 +403,15 @@ try {
       const row = await serviceRow(second);
       const keys = (await sql<{ route_key: string }[]>`select distinct route_key from route_nodes where owner_key ~ ${`^service[A-Z][A-Za-z]*:${second}$`}`).map((entry) => entry.route_key);
       const page = await read(await pathOf(second));
-      // A move changes no drafted column, so the publication is never refused for it. The
-      // form saved last puts back the timeline it was opened with — as it always has; the
-      // form saved first leaves the publication to land on top of it.
-      if (row.timeline_en === opened) formLast += 1;
+      // A move changes no drafted column, so the publication is never refused for it, and
+      // the form — whichever order they meet in — writes only the placement: the published
+      // timeline stays (Batch 23; before it, the form saved last put back its old one).
+      if (moved?.ok === true && published?.ok === true && round % 2 === 0) formLast += 1;
       if (
         published?.ok === true &&
         moved?.ok === true &&
         row.category_id === to &&
-        (row.timeline_en === timeline || row.timeline_en === opened) &&
+        row.timeline_en === timeline &&
         (await nodeRow(`serviceHero:${second}`))?.draft_content == null &&
         keys.join(",") === routeOf(second) &&
         page.status === 200 &&
@@ -432,9 +426,9 @@ try {
     await (await servicesForm(second, { categoryId: home.category_id, subcategoryId: home.subcategory_id ?? "" }))();
     const back = await serviceRow(second);
     say(
-      "S5. a publication racing a move: both land, on the same row and the same identity, the page at its new address",
+      "S5. a publication racing a move: both land, on the same row and the same identity, the page at its new address, the published timeline kept",
       exact === LOOPS && back.category_id === home.category_id && back.subcategory_id === home.subcategory_id,
-      `${exact}/${LOOPS} — the form saved last in ${formLast}${odd ? ` — first other: ${odd}` : ""}`,
+      `${exact}/${LOOPS} — ${formLast} rounds with the form held back${odd ? ` — first other: ${odd}` : ""}`,
     );
     await settle(routeOf(second));
   }
@@ -503,18 +497,21 @@ try {
       const recorded = (await recordedSince(routeOf(first), before)) === 1;
       const node = await nodeRow(`serviceHero:${first}`);
       const row = await serviceRow(first);
-      // The form always lands. Last, its title is live; first, the publication finds the
-      // title moved since its draft began and refuses, keeping the draft.
+      // Both changed the title: exactly one lands (Batch 23). The form first: the
+      // publication finds the title moved since its draft began and refuses, keeping the
+      // draft. The publication first: the form finds it moved since it was opened.
       const whole = published?.ok === true && recorded && node?.draft_content == null;
       const nothing = published?.ok === false && published.reason === "conflict" && !recorded && node?.draft_content?.titleEn?.value === drafted;
-      if (saved?.ok === true && row.title_en === renamed && node?.route_key === routeOf(first) && (whole || nothing)) exact += 1;
-      else if (!odd) odd = JSON.stringify({ round, published, saved: saved?.ok ?? saved, title: row.title_en, recorded });
-      if (whole) landed += 1;
+      const formWon = saved?.ok === true && nothing && row.title_en === renamed;
+      const editorWon = whole && saved?.ok === false && (saved.conflicts ?? []).join() === "titleEn" && row.title_en === drafted;
+      if ((formWon || editorWon) && node?.route_key === routeOf(first)) exact += 1;
+      else if (!odd) odd = JSON.stringify({ round, published, saved, title: row.title_en, recorded });
+      if (editorWon) landed += 1;
     }
     say(
-      "S7. a rename racing a publication of the title: the rename always lands, the publication lands whole or not at all, the identity never moves",
+      "S7. a rename racing a publication of the title: exactly one title lands, the other writes nothing, the identity never moves",
       exact === LOOPS,
-      `${exact}/${LOOPS} exact — ${landed} published first${odd ? ` — first other: ${odd}` : ""}`,
+      `${exact}/${LOOPS} exact — the publication won ${landed}${odd ? ` — first other: ${odd}` : ""}`,
     );
     await settle(routeOf(first));
   }

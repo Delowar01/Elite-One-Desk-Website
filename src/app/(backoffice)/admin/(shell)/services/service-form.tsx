@@ -100,19 +100,55 @@ function Pair({
   );
 }
 
-export function ServiceForm({
-  csrf,
+type ServiceFormProps = {
+  csrf: string;
+  service: ServiceValues;
+  /**
+   * The signed base the page drew `service` with (Batch 23). Posted back, so
+   * the server writes only what this form changed from it; absent for a new
+   * service.
+   */
+  base?: string;
+  categories: Array<{ id: number; titleEn: string }>;
+  subcategories: Array<{ id: number; categoryId: number; titleEn: string }>;
+  media: MediaOption[];
+};
+
+export function ServiceForm({ csrf, service, base, categories, subcategories, media }: ServiceFormProps) {
+  const isNew = !service.id;
+  return (
+    <AdminForm
+      action={isNew ? createService : updateService}
+      className="admin-card p-5"
+      successMessage={isNew ? "Service created." : "Service saved."}
+    >
+      <input type="hidden" name="_csrf" value={csrf} />
+      {service.id ? <input type="hidden" name="id" value={service.id} /> : null}
+      {base ? <input type="hidden" name="_base" value={base} /> : null}
+      {/*
+        Keyed by the base. The Category select, the picture and the list
+        editors keep their own state, which a re-rendered page does not reach;
+        when a save comes back with the stored row and its new base, every
+        field is drawn afresh from that row — so what the form shows and the
+        base it posts are always the same snapshot.
+      */}
+      <ServiceFields
+        key={base ?? "new"}
+        service={service}
+        categories={categories}
+        subcategories={subcategories}
+        media={media}
+      />
+    </AdminForm>
+  );
+}
+
+function ServiceFields({
   service,
   categories,
   subcategories,
   media,
-}: {
-  csrf: string;
-  service: ServiceValues;
-  categories: Array<{ id: number; titleEn: string }>;
-  subcategories: Array<{ id: number; categoryId: number; titleEn: string }>;
-  media: MediaOption[];
-}) {
+}: Omit<ServiceFormProps, "csrf" | "base">) {
   const isNew = !service.id;
   const [categoryId, setCategoryId] = useState(service.categoryId || categories[0]?.id || 0);
   const [imageId, setImageId] = useState<number | null>(service.imageId);
@@ -124,13 +160,7 @@ export function ServiceForm({
   );
 
   return (
-    <AdminForm
-      action={isNew ? createService : updateService}
-      className="admin-card p-5"
-      successMessage={isNew ? "Service created." : "Service saved."}
-    >
-      <input type="hidden" name="_csrf" value={csrf} />
-      {service.id ? <input type="hidden" name="id" value={service.id} /> : null}
+    <>
       <input type="hidden" name="imageId" value={imageId ?? ""} />
 
       <div className="space-y-6">
@@ -310,7 +340,7 @@ export function ServiceForm({
       <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
         <SubmitButton>{isNew ? "Create service" : "Save changes"}</SubmitButton>
       </div>
-    </AdminForm>
+    </>
   );
 }
 

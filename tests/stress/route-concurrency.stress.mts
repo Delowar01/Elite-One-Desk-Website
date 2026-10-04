@@ -18,9 +18,9 @@
  *       shows whether the publication landed whole.)
  *   R4  publish races the Services form — a card's introduction and a style,
  *       against the form saving a different introduction, in both orders:
- *       the publication either lands whole (words and style) or is refused as
- *       a conflict with nothing of it written; the form's own save always
- *       lands, exactly as before Batch 21
+ *       exactly one lands — the publication whole (words and style), or the
+ *       form — and the other is refused as a conflict with nothing written.
+ *       (Until Batch 23 the form always landed, writing every column it held.)
  *   R5  publish races new edits — a reviewed set published while the same
  *       regions are edited again: the page gets exactly what was reviewed or
  *       nothing, and an edit made after the review is never published unseen
@@ -33,6 +33,7 @@ import { callAction } from "../helpers/action";
 import { giveFresh } from "../helpers/fixtures";
 import { connect, dropDatabase } from "../helpers/pg";
 import { startServer } from "../helpers/server";
+import { openServiceForm } from "../helpers/service-form";
 import { signIn } from "../helpers/session";
 
 import { STYLE_DOCUMENT_VERSION } from "../../src/lib/cms/styles";
@@ -46,7 +47,7 @@ const say = (label: string, ok: boolean, detail = "") =>
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
 
 type Values = Record<string, unknown>;
-type Answer = { ok: boolean; reason?: string; message?: string };
+type Answer = { ok: boolean; reason?: string; message?: string; conflicts?: string[] };
 type Region = { revision: number; values: Values };
 
 const database = giveFresh("route_concurrency_stress");
@@ -93,13 +94,20 @@ try {
     if (!answer?.ok || !answer.section) throw new Error(`could not load ${target.type}:${target.id}: ${answer?.message ?? "no answer"}`);
     return answer.section;
   };
-  const saveAt = (target: RouteOwner, revision: number, values: Values) =>
+  /** A region's draft saved as the editor saves it: with the values it was loaded with as its base (Batch 23). */
+  const saveAt = (target: RouteOwner, revision: number, values: Values, base?: Values) =>
     call(VE, "saveRouteRegionDraft", [
-      form({ sectionId: editorKeyOf(target), pageId, expectedRevision: revision, values: JSON.stringify(values) }),
+      form({
+        sectionId: editorKeyOf(target),
+        pageId,
+        expectedRevision: revision,
+        values: JSON.stringify(values),
+        ...(base ? { baseValues: JSON.stringify(base) } : {}),
+      }),
     ]);
   const edit = async (target: RouteOwner, change: (values: Values) => Values) => {
     const current = await region(target);
-    const answer = await saveAt(target, current.revision, change(current.values));
+    const answer = await saveAt(target, current.revision, change(current.values), current.values);
     if (!answer?.ok) throw new Error(`could not save ${target.type}:${target.id}: ${answer?.message ?? "no answer"}`);
   };
   const english = (field: string, text: string) => (values: Values) => ({
@@ -242,8 +250,6 @@ try {
     let odd = "";
     for (let round = 0; round < LOOPS; round += 1) {
       await settle();
-      const [live] = await sql<{ category_id: number; subcategory_id: number | null; title_en: string; sort_order: number; is_published: boolean }[]>`
-        select category_id, subcategory_id, title_en, sort_order, is_published from services where id = ${card.id}`;
       const colour = round % 2 === 0 ? "peach" : "strong";
       await edit(card, english("intro", `R4 draft ${round}`));
       const styled = await region(card);
@@ -260,23 +266,14 @@ try {
       const reviewed = await token();
       const before = await mark();
       const formIntro = `R4 form ${round}`;
+      // The Services form as an admin opens it now: every field, and the base its page signs.
+      const opened = await openServiceForm(sql, origin, owner.cookie, card.id);
       // Each side is held back in turn, by a little more each time, so both orders are met.
       const hold = 10 + (round % 5) * 30;
       const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
       const [published, saved] = await Promise.all([
         wait(round % 2 === 1 ? hold : 0).then(() => publishWith(reviewed)),
-        wait(round % 2 === 0 ? hold : 0).then(() => call(SERVICES, "updateService", [
-          { ok: false },
-          form({
-            id: card.id,
-            categoryId: live!.category_id,
-            subcategoryId: live!.subcategory_id ?? "",
-            titleEn: live!.title_en,
-            introEn: formIntro,
-            sortOrder: live!.sort_order,
-            ...(live!.is_published ? { isPublished: "on" } : {}),
-          }),
-        ])),
+        wait(round % 2 === 0 ? hold : 0).then(() => call(SERVICES, "updateService", [{ ok: false }, form({ ...opened, introEn: formIntro })])),
       ]);
       const node = (await sql<{ styles: unknown; draft_styles: unknown; draft_content: unknown }[]>`
         select styles, draft_styles, draft_content from route_nodes where owner_key = ${`service:${card.id}`}`)[0];
@@ -295,9 +292,13 @@ try {
         stylesAfter === stylesBefore &&
         node?.draft_styles != null &&
         node?.draft_content != null;
-      // The form's save lands in both orders: last, it is the live introduction.
-      const formLanded = saved?.ok === true && (await serviceRow(card.id)).intro_en === formIntro;
-      if (formLanded && (whole || nothing)) exact += 1;
+      // Both changed the introduction: exactly one lands (Batch 23). The form first, the
+      // publication finds the column moved and writes nothing; the publication first, the
+      // form finds it moved since it was opened and writes nothing.
+      const intro = (await serviceRow(card.id)).intro_en;
+      const formWon = saved?.ok === true && nothing && intro === formIntro;
+      const editorWon = whole && saved?.ok === false && (saved.conflicts ?? []).join() === "introEn" && intro === `R4 draft ${round}`;
+      if (formWon || editorWon) exact += 1;
       else if (!odd) {
         odd = JSON.stringify({
           round,
@@ -315,7 +316,7 @@ try {
       if (nothing) refused += 1;
     }
     say(
-      "R4. a publication racing the Services form lands whole or is refused with nothing written",
+      "R4. a publication racing the Services form on the same field: exactly one lands — the publication whole, or the form — the other writes nothing",
       exact === LOOPS,
       `${exact}/${LOOPS} exact — ${landed} published whole, ${refused} refused as a conflict${odd ? ` — first other: ${odd}` : ""}`,
     );

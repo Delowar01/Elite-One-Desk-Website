@@ -10,7 +10,7 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty-five probes, one file each |
+| `probes/*.probe.mts` | the thirty-six probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -46,7 +46,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the thirty-five probes, once each
+npm run test:browser              # the thirty-six probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -94,8 +94,8 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,412 `PASS`
-across the thirty-five as of Batch 23 (1,377 across thirty-four at Batch 22,
+Every probe clean, with the counts in `probes/expected.json` — 1,425 `PASS`
+across the thirty-six as of Batch 23 (1,377 across thirty-four at Batch 22,
 1,266 across thirty-three at Batch 21A, 1,255 across thirty-two at Batch 21,
 1,145 across thirty-one at Batch 19C,
 1,131 across thirty at Batch 19B, 1,089
@@ -206,7 +206,7 @@ on the Services screen while the probe runs is offered, edited, published and
 deleted again. The draft it leaves pending, and the service it makes, are gone
 at the end.
 
-Batch 23 added a probe and changed none: `inspector-focus` (35 checks, port
+Batch 23 added two probes and changed none. `inspector-focus` (35 checks, port
 3736) types in the Inspector across real autosaves — each save redraws the
 canvas — in the three editors that share it: a CMS page, a category page and a
 service page; a text box, a textarea with the caret in the middle and a list
@@ -218,4 +218,10 @@ screen and in the database. Then the races: another section chosen while a
 save is on its way, focus moved to another box before it lands, and a selected
 row the save itself removed, which falls back to its section. On the build
 before the fix it recorded 7 `PASS` and 28 `FAIL` — the defect, in all three
-editors — and on the fixed one 35 `PASS`.
+editors — and on the fixed one 35 `PASS`. `services-form` (13 checks, port
+3737) holds one service's edit page open in two tabs: what one tab saves, the
+other's stale form does not put back; a field both changed is refused with a
+message naming it and nothing of that save written; a reload saves normally;
+the same against the Visual Editor publishing the service's page; and the
+editor's own buffer, opened before a Services save, drafting only what is
+typed in it, so its publication keeps the Services screen's newer value.

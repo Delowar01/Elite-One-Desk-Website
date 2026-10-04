@@ -69,6 +69,16 @@ export type SectionBuffer = {
    * save of that domain, or by discarding its changes.
    */
   denied?: Partial<Record<EditDomain, string>>;
+  /**
+   * The server's values `values` were last reconciled with, when that is not
+   * `data.values` (Batch 23). A save answered while the editor kept typing
+   * adopts the server's answer as `data` but keeps the local `values`, which
+   * still derive from the earlier answer. A dynamic route region's save names
+   * this base, so the server writes only the fields the editor changed — a
+   * field changed elsewhere since (the Services form) is not put back from a
+   * stale buffer. Older is always safe; it is never newer than `values`.
+   */
+  contentBase?: Record<string, unknown>;
 };
 
 /**

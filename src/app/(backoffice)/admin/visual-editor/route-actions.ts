@@ -35,6 +35,8 @@ import {
   mediaIdsIn,
   sameStored,
   SPECS,
+  staleStartingPoints,
+  withUntouchedFromServer,
   type StoredPatch,
 } from "@/lib/routes/specs";
 import {
@@ -180,6 +182,17 @@ function assertContentAuthority(session: AdminSession, owner: RouteOwner, struct
  * between those and what is live — each changed field with the live value it
  * started from. A value put back to what is live leaves the draft.
  */
+/** A JSON object posted as text, or `null` when it is absent or is not one. */
+function parseValues(raw: FormDataEntryValue | null): Record<string, unknown> | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function saveRouteRegionDraft(form: FormData): Promise<VisualContentSaveResult> {
   try {
     const session = await guardAction(AUTHORITY.viewPages, form, DENIED.viewPages);
@@ -210,7 +223,25 @@ export async function saveRouteRegionDraft(form: FormData): Promise<VisualConten
     const key = ownerKeyOf(owner);
     const live = context.live.get(key) ?? {};
     const previous: StoredPatch = context.patches.get(key) ?? {};
-    const patch = nextPatchIn(context, owner, previous, live, read.stored);
+    // What the editor's buffer was reconciled with (Batch 23): a field it did not
+    // change is taken from the server, never from a buffer opened before the
+    // record changed elsewhere. A base that does not read is ignored.
+    // A field it did change is drafted from the value it began from, so one changed
+    // elsewhere in the meantime is a conflict at publication, not overwritten.
+    let stored = read.stored;
+    let startedFrom: Record<string, unknown> | undefined;
+    const base = parseValues(form.get("baseValues"));
+    if (base) {
+      const baseRead = readSubmittedIn(context, owner, base, await existingMedia(db, mediaIdsIn(owner, base)));
+      if (baseRead.ok) {
+        stored = withUntouchedFromServer(owner, read.stored, baseRead.stored, previous, live);
+        // What a fresh load would show the editor now, read the same way.
+        const now = ownerData(context, owner).values;
+        const nowRead = readSubmittedIn(context, owner, now, await existingMedia(db, mediaIdsIn(owner, now)));
+        if (nowRead.ok) startedFrom = staleStartingPoints(owner, baseRead.stored, nowRead.stored);
+      }
+    }
+    const patch = nextPatchIn(context, owner, previous, live, stored, startedFrom);
     const changed = changedKeys(owner, previous, live, patch);
 
     // A save that changes nothing is answered, not written: no revision moves.

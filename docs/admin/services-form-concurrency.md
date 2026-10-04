@@ -163,3 +163,36 @@ fields are newer elsewhere, and reloading shows them.
 `createService` (a new row has nothing to be stale against), the list's
 publish toggle (it reads the row and flips it), `deleteService`, the Visual
 Editor's publication rules, permissions, and the schema — no migration.
+
+## 9. The editor's half (found by the Batch 23 stress)
+
+The stress script written for this change (`service-form-concurrency`, F5)
+found the same defect running the other way. A Visual Editor buffer holds every
+field of a region from the moment it is loaded. When the Services form saved
+the introduction while that buffer was open, the editor's next save of a
+*different* field sent the whole region back, old introduction included, and
+`nextPatchWith` drafted every value that differed from live — so the old
+introduction became a patch, based on the new live value, and the next
+publication put it back without a conflict. Not new in Batch 23 (the patch
+rule dates from Batch 21); it was masked while the form overwrote everything
+anyway.
+
+The correction keeps the region save's shape and adds one field:
+
+* The editor posts `baseValues` — the server values its buffer was last
+  reconciled with (`SectionBuffer.contentBase`, or `data.values`). When a save
+  is answered while the editor kept typing, the buffer keeps its local values
+  and the base they derive from, never the newer answer.
+* `saveRouteRegionDraft` reads the base exactly as it reads the submission.
+  A field equal to its base was not edited in this buffer: it is taken from
+  the draft, or from the record (`withUntouchedFromServer`), never from the
+  buffer.
+* A field the editor did edit is drafted from the value the editor began
+  from — but only where that differs from what a fresh load shows now
+  (`staleStartingPoints`), so an unnormalised column causes no false
+  conflict. Its publication then meets the newer value as Batch 21's field
+  conflict, with the same two choices.
+* A save without `baseValues` (an old client) behaves exactly as before.
+
+Held by `tests/service-form-concurrency.test.ts` (three cases), the
+`services-form` probe (the real editor's buffer) and stress F5.

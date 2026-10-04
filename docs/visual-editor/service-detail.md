@@ -434,11 +434,22 @@ silently.
 
 ### B.8 The Services screen beside the editor
 
-The Services screen still saves live, as before. A field it changes after a
-draft began is a conflict at publication time (stress S4, S7). It saves every
-field it holds, so a form opened before a publication and saved after it puts
-back the values it was opened with — Batch 21's documented behaviour for the
-category forms, unchanged (stress S5 counts both orders).
+The Services screen still saves live. A field it changes after a draft began
+is a conflict at publication time (stress S4, S7).
+
+**Batch 23** closed the two ways the screen and the editor could undo each
+other (docs/admin/services-form-concurrency.md):
+
+* The form no longer writes every field it holds. It posts the signed base
+  its page was drawn with, and `updateService` writes only the fields it
+  changed: a form opened before a publication and saved after it keeps the
+  published values (stress S5 now requires the published timeline in both
+  orders), and a field both changed is refused, whole, with nothing written
+  (S4, S7: exactly one side lands).
+* The editor's region saves name the values their buffer began from, so a
+  buffer opened before a Services save neither drafts nor publishes the old
+  value of a field it did not change, and a field it did change is a conflict
+  at publication (`dynamic-routes.md`, the conflict table).
 
 ### B.9 Media
 

@@ -39,6 +39,7 @@ import { giveFresh } from "./helpers/fixtures";
 import { get } from "./helpers/http";
 import { connect, dropDatabase, type Sql } from "./helpers/pg";
 import { BUILD_HINT, isBuilt, startServer, type Server } from "./helpers/server";
+import { openServiceForm } from "./helpers/service-form";
 import { signIn, type TestSession } from "./helpers/session";
 
 import type { ActionState } from "@/lib/admin/actions";
@@ -471,13 +472,11 @@ describe("19B · rules the server holds itself, not the form", () => {
     const [made] = await sql<{ id: number }[]>`select id from services where slug = 'audit-match'`;
     assert.ok(made, "the matching pair is accepted");
 
-    const update = (subcategoryId: number) =>
+    // The form as its page draws it, with its signed base (Batch 23), filed under `subcategoryId`.
+    const update = async (subcategoryId: number) =>
       screen(SERVICES, `/admin/services/${made!.id}`, "updateService", {
-        id: made!.id,
-        titleEn: "Audit service",
-        categoryId: a!.id,
+        ...(await openServiceForm(sql, server.origin, owner.cookie, made!.id)),
         subcategoryId,
-        formPreset: "general",
       });
     assert.equal(answered(await update(groupB)).ok, false);
     const [kept] = await sql<{ subcategory_id: number }[]>`select subcategory_id from services where id = ${made!.id}`;

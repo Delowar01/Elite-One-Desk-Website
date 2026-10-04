@@ -218,6 +218,7 @@ what they do: they write live, immediately, as before. They never read or write
 | Situation | What happens |
 |---|---|
 | Admin form saves a field **no draft patches** | Live immediately. A later Visual Editor publish does not touch that column, so the form's value survives. |
+| Admin form saves a field while an editor **already has the owner loaded** (Batch 23) | Live immediately. The editor's next save names the values its buffer began from (`baseValues`): a field it did not change is not drafted from the buffer (`withUntouchedFromServer`), so the form's value survives; a field it did change is drafted from the value it began from (`staleStartingPoints`), so publishing it meets the form's newer value as a conflict, with the same two choices. Before Batch 23 the buffer's old value was drafted as if typed, and the next publish put it back. |
 | Admin form saves a field **a draft patches** | Live immediately. The draft's `base` no longer matches. The editor marks the field "Changed outside the Visual Editor" as soon as the owner is loaded, and **publish is refused** until the editor chooses, per field, **Keep my draft** (re-base: publishing will then replace the form's value, deliberately) or **Use the live value** (drop that patch). |
 | Admin form deletes a record a draft patches | The owner disappears from the route; its draft is ignored and is removed by the next publish or discard of that route. |
 | Admin reorders rows an order draft covers | Publish is refused for that order field, with the same two choices. |
