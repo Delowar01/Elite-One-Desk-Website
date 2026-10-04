@@ -22,6 +22,17 @@
  *   TypeScript tooling, on the repository's own globs. BUILD/DEV ONLY.
  *
  * docs/release/visual-editor-v1-rc.md records each decision in full.
+ *
+ * Batch 23 upgraded drizzle-orm to 0.45.2, the release that fixes
+ * GHSA-gpj5-g38j-94v9, and moved both copies of brace-expansion to their
+ * patched releases (1.1.21, 5.0.12) inside the ranges their parents already
+ * declare. The rules above still hold — they are how the code stays safe on
+ * the next advisory too — and the versions are now held as well, so a lockfile
+ * that drifts back fails here. Two advisories have no safe fix: braces
+ * (GHSA-vfj7-8cjw-p6xm, no patched release at all) and the esbuild under
+ * drizzle-kit (GHSA-67mh-4wv8-2f99); what keeps each out of the running
+ * application is checked too. docs/release/dependency-advisories-batch-23.md
+ * classifies every advisory `npm audit` reports today.
  */
 import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -83,5 +94,66 @@ describe("19B · dependency advisories the release candidate keeps unreachable",
       .filter(([, text]) => /require\(["']postcss["']\)/.test(text))
       .map(([file]) => path.relative(nextDist, path.join(REPO_ROOT, file)));
     for (const file of requirers) assert.match(file, /^(build\/webpack\/|compiled\/(postcss-|cssnano))/, file);
+  });
+});
+
+describe("23 · the advisories Batch 23 fixed stay fixed", () => {
+  const lock = JSON.parse(readFileSync(path.join(REPO_ROOT, "package-lock.json"), "utf8")) as {
+    packages: Record<string, { version?: string }>;
+  };
+  const versionsOf = (name: string) =>
+    Object.entries(lock.packages)
+      .filter(([key]) => key === `node_modules/${name}` || key.endsWith(`/node_modules/${name}`))
+      .map(([key, entry]) => [key, entry.version ?? ""] as const);
+  const atLeast = (version: string, floor: string) => {
+    const [a, b] = [version, floor].map((value) => value.split(".").map((part) => Number.parseInt(part, 10)));
+    for (let index = 0; index < 3; index += 1) {
+      if (a![index]! !== b![index]!) return a![index]! > b![index]!;
+    }
+    return true;
+  };
+
+  test("drizzle-orm is at a release that escapes identifiers (GHSA-gpj5-g38j-94v9 fixed in 0.45.2)", () => {
+    const found = versionsOf("drizzle-orm");
+    assert.deepEqual(found.map(([key]) => key), ["node_modules/drizzle-orm"], "one drizzle-orm, at the top");
+    assert.ok(atLeast(found[0]![1], "0.45.2"), `drizzle-orm ${found[0]![1]}`);
+  });
+
+  test("every brace-expansion copy is at its patched release (1.1.21 on the 1.x line, 5.0.12 on the 5.x line)", () => {
+    const found = versionsOf("brace-expansion");
+    assert.ok(found.length > 0);
+    for (const [key, version] of found) {
+      const floor = version.startsWith("1.") ? "1.1.21" : version.startsWith("5.") ? "5.0.12" : "999.0.0";
+      assert.ok(atLeast(version, floor), `${key}: ${version}`);
+    }
+  });
+});
+
+describe("23 · the advisories with no safe fix stay out of the running application", () => {
+  test("braces (GHSA-vfj7-8cjw-p6xm, no patched release) is lint tooling: nothing imports it and the server does not ship it", () => {
+    // eslint-config-next > @next/eslint-plugin-next > fast-glob (pinned 3.3.1)
+    // > micromatch > braces. It parses the repository's own lint globs.
+    const chain = ["braces", "micromatch", "fast-glob"];
+    const imports = sources("src").filter(([, text]) =>
+      chain.some((name) => text.includes(`from "${name}"`) || text.includes(`require("${name}")`)),
+    );
+    assert.deepEqual(imports.map(([file]) => file), []);
+    const standalone = path.join(REPO_ROOT, ".next", "standalone", "node_modules");
+    assert.ok(existsSync(standalone), "no production build — run `npm run build` first");
+    for (const name of chain) assert.ok(!existsSync(path.join(standalone, name)), `${name} is in the server runtime`);
+  });
+
+  test("the old esbuild under drizzle-kit (GHSA-67mh-4wv8-2f99) never runs on a server: migrations run through tsx", () => {
+    const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    assert.match(manifest.scripts["db:migrate"] ?? "", /^tsx scripts\/migrate\.ts$/);
+    // drizzle-kit is reached only by `db:generate`, a developer command.
+    const users = Object.entries(manifest.scripts).filter(([, command]) => command.includes("drizzle-kit"));
+    assert.deepEqual(users.map(([name]) => name), ["db:generate"]);
+    const deploy = readFileSync(path.join(REPO_ROOT, "deploy", "deploy.sh"), "utf8");
+    assert.ok(!deploy.includes("drizzle-kit") && !deploy.includes("db:generate"), "deploy.sh runs drizzle-kit");
+    const standalone = path.join(REPO_ROOT, ".next", "standalone", "node_modules");
+    assert.ok(!existsSync(path.join(standalone, "esbuild")), "esbuild is in the server runtime");
   });
 });
