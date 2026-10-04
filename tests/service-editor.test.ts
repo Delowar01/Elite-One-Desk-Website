@@ -641,6 +641,16 @@ describe("drafts never touch the live service", () => {
     assert.deepEqual((still as unknown as { motionDocument: { section: object } }).motionDocument.section, {});
   });
 
+  test("Preview draws the draft's styles and entrances; the public page draws neither", async () => {
+    const count = (markup: string, needle: RegExp) => markup.match(needle)?.length ?? 0;
+    const preview = await previewPage();
+    const live = await publicPage();
+    // The Mobile colour chosen above, and the benefits section's entrance.
+    assert.ok(count(preview, /data-rs-m="/g) > count(live, /data-rs-m="/g), "the draft's Mobile style is in the preview");
+    assert.ok(count(preview, /\sdata-m-reveal=""/g) > count(live, /\sdata-m-reveal=""/g), "the draft's entrance is in the preview");
+    assert.equal(count(live, /data-rs-m="/g), 0);
+  });
+
   test("drafts survive a restart: they are rows, read again by a fresh server", async () => {
     earlierLogs.push(server.log());
     await server.stop();
@@ -731,6 +741,19 @@ describe("publish is atomic, guarded, audited and invalidates the caches", () =>
     const published = (await serviceRow(subject.id))!;
     assert.equal(published.intro_en, "Editor intro.");
     assert.deepEqual(published.audience, [{ en: "Should not land", ar: "" }]);
+  });
+
+  test("a field changed elsewhere is kept when the draft publishes a different one", async () => {
+    // Editor A drafts the timeline; meanwhile another admin saves the introduction on
+    // the Services screen. A's publication writes the timeline and only the timeline.
+    assert.ok((await saveValues(at("serviceHero"), (values) => ({ ...values, timeline: { en: "Only the timeline", ar: "" } })))?.ok);
+    const form = await servicesForm(subject.id, { introEn: "Saved by another admin." });
+    assert.ok(form?.ok, form?.message);
+    const answer = await publish();
+    assert.ok(answer?.ok, answer && !answer.ok ? answer.message : "");
+    const row = (await serviceRow(subject.id))!;
+    assert.equal(row.timeline_en, "Only the timeline");
+    assert.equal(row.intro_en, "Saved by another admin.");
   });
 
   test("the category page's card and the service's page share columns and never overwrite each other silently", async () => {
@@ -1122,6 +1145,18 @@ describe("authority: every action asks again", () => {
     const history = (await routeAction<RouteHistoryView | null>("loadRouteHistory", [routeKey(subject)], session))!;
     assert.ok(history, "history is readable with content.view");
     assert.ok((await discard())?.ok);
+    // A version to restore: the owner publishes once.
+    assert.ok((await saveValues(target, (values) => ({ ...values, timeline: { en: "Published for a restore", ar: "" } })))?.ok);
+    assert.ok((await publish())?.ok);
+    const [version] = await sql<{ id: number }[]>`select id from route_versions where route_key = ${routeKey(subject)} order by id limit 1`;
+    assert.ok(version, "the subject has a version to restore");
+    const restored = await routeAction<RouteActionResult>(
+      "restoreRouteFromEditor",
+      [formOf({ routeKey: routeKey(subject), token: (await summary()).token, versionId: version.id }, session)],
+      session,
+    );
+    assert.equal(restored?.ok, false);
+    assert.equal(await nodeRow(`serviceHero:${subject.id}`).then((row) => row?.draft_content ?? null), null, "nothing was restored");
   });
 
   test("an editor with content and services rights edits; without content.publish they cannot publish", async () => {
@@ -1130,6 +1165,15 @@ describe("authority: every action asks again", () => {
     const refused = await publish(session);
     assert.equal(refused?.ok, false);
     assert.equal((await serviceRow(subject.id))!.timeline_en === "By the editor", false);
+    // Nor discard, nor restore: both need content.publish too.
+    assert.equal((await discard(session))?.ok, false);
+    const [version] = await sql<{ id: number }[]>`select id from route_versions where route_key = ${routeKey(subject)} order by id limit 1`;
+    const restored = await routeAction<RouteActionResult>(
+      "restoreRouteFromEditor",
+      [formOf({ routeKey: routeKey(subject), token: (await summary()).token, versionId: version!.id }, session)],
+      session,
+    );
+    assert.equal(restored?.ok, false);
     const owned = await as([...READ, "content.edit", "services.manage", "content.publish"]);
     assert.ok((await publish(owned))?.ok);
     assert.equal((await serviceRow(subject.id))!.timeline_en, "By the editor");

@@ -416,6 +416,17 @@ try {
   const styled = await until(async () => (await draftOf(`serviceHero:${main.id}`))?.draft_styles != null, 20_000);
   say("Main: a style edit is saved as a style draft", styled);
   await editorIdle(page);
+  // A style is taken back and put back like any other edit.
+  const heroStyles = async () =>
+    Object.keys(((await draftOf(`serviceHero:${main.id}`))?.draft_styles as { nodes?: object } | null)?.nodes ?? {}).length;
+  await page.locator('[data-history="undo"]').click();
+  const styleUndone = await until(async () => (await heroStyles()) === 0, 20_000);
+  say("Main: Undo takes the style back", styleUndone, JSON.stringify((await draftOf(`serviceHero:${main.id}`))?.draft_styles ?? null));
+  await editorIdle(page);
+  await page.locator('[data-history="redo"]').click();
+  const styleRedone = await until(async () => (await heroStyles()) > 0, 20_000);
+  say("Main: Redo puts the style back", styleRedone);
+  await editorIdle(page);
 
   // An entrance on the benefits, and its Replay.
   await selectFromLayers(page, `serviceBenefits:${main.id}`);

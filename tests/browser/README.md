@@ -182,7 +182,7 @@ its step, and printed without the session, the CSRF token or a database
 password. The page errors this probe records are provoked by its own stub
 pages; it visits no application page.
 
-Batch 22 added one probe and changed none: `route-services` (109 checks, port
+Batch 22 added one probe and changed none: `route-services` (111 checks, port
 3735) opens a service's own page in the Visual Editor. Its services are chosen
 from the data — the first published service of each of the first three
 categories — so no service is named. The first gets the full walk: reached
@@ -193,8 +193,8 @@ edit, a direct edit taken back and put back, Escape abandoning one, a benefit
 added and its words and its row each taken back by Undo and put back by Redo, a
 step with its detail, a picture chosen from the library (and counted by the
 library while it is only a draft), Arabic right to left with its own field,
-Desktop/Tablet/Mobile, a style saved for Mobile only, a style and an entrance
-with its Replay, Preview, a public page whose `<title>` and structured data
+Desktop/Tablet/Mobile, a style saved for Mobile only, a style taken back and
+put back, an entrance with its Replay, Preview, a public page whose `<title>` and structured data
 never moved, the same page by keyboard with every control named and nothing
 added inside the canvas, then Publish, the public result in both editions,
 history, compare, a version viewed, Restore and Discard. The second and third
