@@ -10,6 +10,13 @@ Nothing here replaces the page editor. Pages keep `pages` / `page_sections`,
 their drafts, their layout draft, their history and their compare exactly as
 Batch 16–19 left them. Every rule below is additive.
 
+**Batch 22** opened the second route kind — a service's own page,
+`/[lang]/services/[category]/[service]` — through the same adapter, now a
+`RouteAdapter` interface (`src/lib/routes/adapter.ts`) with two
+implementations. The category page's behaviour described here is unchanged;
+the service page's design of record is
+[`service-detail.md`](service-detail.md), Part B.
+
 ## 1. Vocabulary
 
 | Term | Meaning |

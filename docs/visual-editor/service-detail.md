@@ -283,4 +283,207 @@ address below also exists under `/ar` (148 addresses).
 
 ## Part B — design of record
 
-*(Written with the implementation; see below.)*
+### B.1 What the editor opens
+
+A service's own page is a second **route kind** beside Batch 21's category
+page. Everything below is keyed by the service's id and nothing else.
+
+| Thing | Value |
+|---|---|
+| Route kind | `service` (`RouteKind = "category" \| "service"`, `src/lib/routes/owners.ts`) |
+| Route key | `service:<services.id>` — `route_nodes.route_key`, `route_versions.route_key`, `?route=` in the editor's address |
+| Document | the hero's editor key, `documentEditorKey({ kind: "service", id })` |
+| Regions (owners) | twelve types, codes 10–21, appended after Batch 21's nine so no existing key moved |
+
+| Owner type | Code | Block | Edits | Resource |
+|---|---|---|---|---|
+| `serviceHero` | 10 | `route-service-hero` | title, introduction, timeline (column pairs), picture, request button wording (copy) | the service |
+| `serviceCrumbs` | 11 | `route-service-crumbs` | nothing — generated, never moves | template |
+| `serviceOverview` | 12 | `route-service-overview` | heading (copy), overview (rich text) | the service |
+| `serviceBenefits` | 13 | `route-service-benefits` | heading (copy), the benefits list | the service |
+| `serviceAudience` | 14 | `route-service-audience` | heading (copy), the audience list | the service |
+| `serviceRequirements` | 15 | `route-service-requirements` | heading (copy), the requirements list | the service |
+| `serviceProcess` | 16 | `route-service-process` | heading (copy), the steps (title and detail) | the service |
+| `serviceNotes` | 17 | `route-service-notes` | heading (copy), notes (rich text) | the service |
+| `serviceFaqs` | 18 | `route-service-faqs` | heading (copy), the order of the service's own questions | template |
+| `faq` (reused, code 9) | 9 | `route-faq` | each of the service's **own** questions: wording, answer, shown/hidden | the question |
+| `serviceNotices` | 19 | `route-service-notices` | nothing — the site's disclaimers, generated | template |
+| `serviceRequest` | 20 | `route-service-request` | heading and introduction above the form (copy) | template |
+| `serviceRelated` | 21 | `route-service-related` | heading (copy); the list is generated | template |
+
+The editor's page list (`#ve-page`) groups documents as *Pages*, *Service
+Categories* and one *Services · <category>* group per category, read from the
+database on every load — a service created on the Services screen is offered
+at once, with no code. A deleted service is not offered.
+
+### B.2 One adapter, two route kinds
+
+`src/lib/routes/adapter.ts` defines `RouteAdapter<D>`: how a route kind loads
+its data (under lock or not), which owners it has and whether one belongs to
+it, its live and effective values, how a draft is applied and which records
+still exist. `categoryAdapter` is Batch 21's code moved behind the interface
+unchanged; `serviceAdapter` is the second implementation. Everything above
+them is shared and kind-blind: drafts (`drafts.ts`), publish, discard and
+restore (`publish.ts`), the actions (`route-actions.ts`), history, compare,
+Layers, the Inspector and the canvas bridge. The field vocabulary — what a
+stored value is, its limits, how it is read back from the Inspector, compared,
+described and checked again before publishing — is one table, `SPECS` in
+`src/lib/routes/specs.ts`, for both kinds.
+
+Nothing branches on a particular service or category: there is no slug, title
+or id of a seeded record in the editor or route sources
+(`tests/service-route-adapter.test.ts` greps for every seeded service and group
+slug), and the probes choose their services from the data.
+
+### B.3 Identity
+
+`services.id` is the page's identity, as Part A found the application already
+treats it. A rename (English or Arabic), a move to another category and a
+change of group are updates of the same row, so the route key, every region's
+key, the drafts, the presentation and the history follow the service without
+any rewrite. The address is computed from the current category and slug at
+every read; it is never stored by the editor. There is still no slug-change
+flow (A.5); a direct edit of the title never touches the slug.
+
+A deleted service's `route_nodes` and `route_versions` rows are kept,
+dormant: no route can load them (the adapter answers "no longer exists"), the
+editor no longer offers the service, its public page and its preview are a
+404, and serial ids are never reused, so a service made later can never
+inherit them.
+
+### B.4 What is stored where
+
+Every value an Inspector field or a direct edit writes is either a **column of
+the service row** — with exactly the Services screen's limits (title 190,
+English required; introduction 2,000; timeline 190; overview 20,000 and notes
+8,000 of sanitised rich text; lists of at most 16 rows of 400 characters; at
+most 10 steps of 200 and 800) — or **template copy**: a heading, the request
+button's wording, the request form's heading and introduction. Copy is stored
+on the region's own `route_nodes.copy` (`copy:<field>En/Ar`), so it belongs to
+this service's page. Empty copy means the site's standard wording in that
+language; Arabic copy never falls back to English copy, it falls back to the
+standard Arabic wording.
+
+Deliberately not editable here: the slug, the category, the group, the request
+form preset, the featured flag, visibility and the order on the category page.
+They are identity and structure, owned by the Services screen and the category
+page's card. A submitted value under any of those names is ignored.
+
+**Lists.** Benefits, audience, requirements and steps are stored as plain
+JSON lists with no row identity (A.1), so the Inspector edits a list whole.
+Its rows are keyed by position and the editor mints no row id for them
+(`FieldDef.positional`): an id the server drops at the first save would leave
+the Undo history pointing at a row that no longer exists. A draft keeps an
+empty row, so "Add" never makes the row vanish while it is being written;
+publication drops empty rows exactly as the Services screen does. There are no
+per-row canvas nodes — a list is one selectable node.
+
+### B.5 Drafts, Preview and the public page
+
+A draft is a patch on the region's `route_nodes` row: `{ <column>: { value,
+base } }`, `base` being the live value the edit started from. Saving, autosave
+and Undo write only `route_nodes`; no request between the first keystroke and
+Publish writes the `services` or `faqs` rows. The canvas and the ordinary
+Preview (`?preview=1`, signed in) draw the service with every draft applied;
+the public route, its metadata and its structured data are built from the
+published catalogue only and never read a draft. Preview and canvas answers
+are `private, no-store` and `noindex`; the editor's marks and bridge exist only
+in an authorised canvas (`?preview=1&editor=1&bridge=…`), never because of the
+parameters alone.
+
+Structured data: the public page describes the published service. A preview's
+`Service` and `FAQPage` describe the draft it shows (it is private and never
+indexed); its `<title>` stays the published one. A question hidden in a draft
+is dimmed on the canvas and absent from the canvas's `FAQPage`.
+
+**Questions.** The service's own questions (`faqs.service_id = id`) are `faq`
+owners on this page: wording, answer, shown/hidden and their order. The
+category's questions are shown where they interleave, as the public page does,
+but are not this page's to edit — an editor-only caption says so and points to
+the category's page. New questions are still added on the FAQs screen.
+
+### B.6 Publish, discard, restore
+
+One transaction, in this order: lock the service row, then its own questions,
+then the route's `route_nodes`; check the review token (`stale` if the drafts
+changed since the panel was read); check every patch's `base` against the
+locked live value (`conflict`, with nothing written, if any field moved);
+check permissions; check every value again (`storedProblem`); apply; promote
+style, motion and copy; record the version; keep the newest thirty
+publications and the baseline; remove orphaned rows. Then drop the `catalog`,
+`faqs` and `routes` caches and the admin paths, so the very next request shows
+the result. The category page's publication locks
+category → groups → services → questions → nodes; the service page's locks
+service → its own questions → nodes. Neither takes a lock the other holds
+while waiting for one the other holds first, so the two cannot deadlock
+(stress S6).
+
+Discard removes the route's drafts and only them. Restore builds drafts from a
+version — it never writes live and never publishes — and refuses while drafts
+are pending. Every publication, discard and restore is in the activity log
+with the service as its entity.
+
+### B.7 The two pages that share a service's columns
+
+The category page's card for a service (`service:<id>`, Batch 21) and the
+service's own hero (`serviceHero:<id>`) both edit the title, the introduction
+and the picture. Each draft carries its own `base`, so whichever publishes
+second finds the column moved and is refused as a conflict, keeping its draft
+for the editor to resolve (take theirs, keep mine). Nothing is overwritten
+silently.
+
+### B.8 The Services screen beside the editor
+
+The Services screen still saves live, as before. A field it changes after a
+draft began is a conflict at publication time (stress S4, S7). It saves every
+field it holds, so a form opened before a publication and saved after it puts
+back the values it was opened with — Batch 21's documented behaviour for the
+category forms, unchanged (stress S5 counts both orders).
+
+### B.9 Media
+
+`routeDraftMedia()` (`src/lib/routes/media-usage.ts`) counts every picture a
+route draft has chosen — the service page's hero and, closing Batch 21's open
+limitation, the category page's hero and cards — in the media library's usage
+count and its delete guard. Only a draft's own choice counts (the patch's
+`value`, never its `base`), only for fields declared pictures, and only while
+the record behind the draft exists: a deleted service's dormant draft can never
+be published, so it holds nothing. A replaced picture is free again; a
+discarded draft holds nothing.
+
+### B.10 Permissions
+
+Batch 21's table (`dynamic-routes.md` §10), applied to the new regions:
+
+| Action | Needs |
+|---|---|
+| Open the editor, read a region, its summary, history and compare | `content.view` + `visual_editor.view` |
+| A service page's words, lists, picture or template copy | `content.edit` + `services.manage` |
+| A question's wording or answer | `content.edit` + `faqs.manage` |
+| A question shown or hidden | `content.structure` + `faqs.manage` |
+| The order of the service's questions (the questions section's) | `content.structure` + `services.manage` |
+| Style / motion | `content.style` (+ `content.advanced_style` for advanced tokens) / `content.motion` |
+| Publish, discard, restore to draft | `content.publish` + the capability of every region the drafts or the version would change |
+
+Every action re-checks on the server, with the session's CSRF token, before it
+reads anything.
+
+### B.11 What did not change
+
+No migration: the Batch 21 tables already accept the new keys (A.8). The
+editor protocol stays at version 7 — the messages have the same shape. The
+page CMS, its sections, history and compare are untouched, and a route region
+cannot be made into a reusable component.
+
+### B.12 Known limitations
+
+* **Typing across an autosave loses the keyboard focus — in every editor.**
+  Each save redraws the canvas and briefly clears the selection, so the
+  Inspector's form is drawn again and the box being typed in loses focus. Found
+  while writing the service probe; it is the same on a CMS page and on a
+  category page (Batch 21), so it is not changed here.
+* The service's own questions are created on the FAQs screen; the category's
+  questions are edited on the category's page.
+* The edit form's "Address" field is shown but ignored on save (A.5).
+* The category page's `ItemList` still lists services in a hidden group; the
+  Batch 21 follow-up stands.
