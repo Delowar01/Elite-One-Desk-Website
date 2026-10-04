@@ -334,6 +334,8 @@ export const ROUTE_BLOCKS: BlockDef[] = [
         name: "benefits",
         label: "Benefits",
         type: "items",
+        // Stored as a plain list: its rows have no id (see `FieldDef.positional`).
+        positional: true,
         // The two-column checked list.
         box: "grid",
         maxItems: 16,
@@ -353,6 +355,8 @@ export const ROUTE_BLOCKS: BlockDef[] = [
         name: "audience",
         label: "Audience",
         type: "items",
+        // Stored as a plain list: its rows have no id (see `FieldDef.positional`).
+        positional: true,
         // A wrapping row of pills.
         box: "flex",
         maxItems: 16,
@@ -371,6 +375,8 @@ export const ROUTE_BLOCKS: BlockDef[] = [
         name: "requirements",
         label: "Requirements",
         type: "items",
+        // Stored as a plain list: its rows have no id (see `FieldDef.positional`).
+        positional: true,
         // A ruled list in ordinary block flow.
         maxItems: 16,
         help: "Never publish a requirement you are not sure of — these change, and the page is what a client will hold you to.",
@@ -389,6 +395,8 @@ export const ROUTE_BLOCKS: BlockDef[] = [
         name: "steps",
         label: "Steps",
         type: "items",
+        // Stored as a plain list: its rows have no id (see `FieldDef.positional`).
+        positional: true,
         // A numbered <ol> in ordinary block flow, its rail positioned beside it.
         maxItems: 10,
         itemFields: [

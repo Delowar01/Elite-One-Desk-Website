@@ -132,6 +132,16 @@ export type FieldDef = {
   surface?: Surface;
   /** Repeatable lists only. Keeps a section from becoming a page of its own. */
   maxItems?: number;
+  /**
+   * Repeatable lists only (Batch 22): the rows have no identity of their own.
+   * A service's benefits, audience, requirements and steps are stored as plain
+   * lists, so the server answers a draft with rows that carry no `_id`. A row
+   * the editor minted an id for would lose it at its first save — and the Undo
+   * history, which files a row's edits under that id, could then no longer
+   * find the row: Undo would reset the page's history instead of taking the
+   * edit back. Such a list is edited, kept and undone whole, by position.
+   */
+  positional?: true;
   rows?: number;
   /**
    * Drawn from somewhere other than the block's values (Batch 21, route

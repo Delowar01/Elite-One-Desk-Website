@@ -61,7 +61,7 @@ import {
   valuesOf,
   type StoredPatch,
 } from "@/lib/routes/specs";
-import { applyContent, diffContent } from "@/lib/visual-editor/history";
+import { applyContent, describeContent, diffContent } from "@/lib/visual-editor/history";
 import { motionForBlock, motionTargetFor } from "@/lib/visual-editor/motion-targets";
 import { envelope, readCanvasMessage } from "@/lib/visual-editor/protocol";
 import { styleTargetFor } from "@/lib/visual-editor/style-targets";
@@ -455,6 +455,64 @@ describe("what a draft stores: the record's own rules", () => {
     // And back into the Inspector's rows.
     const values = valuesOf("serviceProcess", { "copy:headingEn": "", "copy:headingAr": "", processSteps: stored });
     assert.deepEqual((values.steps as unknown[])[0], { title: { en: "Step 0", ar: "خطوة 0" }, detail: { en: "d".repeat(800), ar: "" } });
+  });
+
+  test("a list's rows have no identity: the editor keys them by position and mints no id the server would drop", () => {
+    // What the server answers with: plain rows, whatever id the browser sent.
+    const owner: RouteOwner = { type: "serviceBenefits", id: 40 };
+    const read = readServiceSubmitted(owner, { benefits: [{ _id: "abcdefgh", text: { en: "Fast", ar: "" } }] }, media);
+    assert.ok(read.ok);
+    assert.deepEqual(read.stored.benefits, [{ en: "Fast", ar: "" }]);
+    const echoed = valuesOf("serviceBenefits", { "copy:headingEn": "", "copy:headingAr": "", benefits: read.stored.benefits });
+    assert.deepEqual(echoed.benefits, [{ text: { en: "Fast", ar: "" } }]);
+    // So every editable list of a service page is declared positional: an edit
+    // filed under a minted id could not be undone once the save dropped the id.
+    for (const [type, name] of [
+      ["route-service-benefits", "benefits"],
+      ["route-service-audience", "audience"],
+      ["route-service-requirements", "requirements"],
+      ["route-service-process", "steps"],
+    ] as const) {
+      const field = getEditorBlock(type)?.fields.find((candidate) => candidate.name === name);
+      assert.equal(field?.type, "items", `${type}.${name}`);
+      assert.equal(field?.positional, true, `${type}.${name} is positional`);
+    }
+    // …and no list of the page CMS is: its rows are stored with their ids.
+    for (const block of BLOCKS) {
+      for (const field of block.fields) assert.equal(field.positional, undefined, `${block.type}.${field.name}`);
+    }
+  });
+
+  test("an edit to a positional list is undone whole, so it still applies after the save dropped the rows' ids", () => {
+    const added = diffContent("route-service-benefits", { benefits: [] }, { benefits: [{ text: { en: "", ar: "" } }] });
+    const typed = diffContent("route-service-benefits", { benefits: [{ text: { en: "", ar: "" } }] }, { benefits: [{ text: { en: "Fast", ar: "" } }] });
+    for (const changes of [added, typed]) {
+      assert.deepEqual(changes.map((change) => change.path), [{ field: "benefits" }]);
+    }
+    // The server's answer — the same rows — is what Undo is applied to.
+    const saved = { benefits: [{ text: { en: "Fast", ar: "" } }] };
+    assert.deepEqual(applyContent(saved, typed, "undo"), { benefits: [{ text: { en: "", ar: "" } }] });
+    assert.deepEqual(applyContent({ benefits: [{ text: { en: "", ar: "" } }] }, added, "undo"), { benefits: [] });
+    assert.deepEqual(applyContent(saved, typed, "redo"), saved);
+    // What a minted id did: the edit was filed under the row's id, which the save
+    // then dropped — so Undo found no row and the editor reset its history.
+    const filed = diffContent(
+      "route-service-benefits",
+      { benefits: [{ _id: "abcdefgh", text: { en: "", ar: "" } }] },
+      { benefits: [{ _id: "abcdefgh", text: { en: "Fast", ar: "" } }] },
+    );
+    assert.equal(filed[0]!.path.itemId, "abcdefgh");
+    assert.equal(applyContent(saved, filed, "undo"), null);
+    // Named for what was done: words typed into a row are a change, not a reorder.
+    const two = [{ text: { en: "One", ar: "" } }, { text: { en: "Two", ar: "" } }];
+    const swapped = [two[1]!, two[0]!];
+    const edited = [two[0]!, { text: { en: "Two, edited", ar: "" } }];
+    const label = (after: unknown[]) =>
+      describeContent("route-service-benefits", diffContent("route-service-benefits", { benefits: two }, { benefits: after }), { benefits: after }, "en");
+    assert.equal(label(edited), "Change Benefits");
+    assert.equal(label(swapped), "Reorder Benefits");
+    assert.equal(label([...two, { text: { en: "", ar: "" } }]), "Add a row to Benefits");
+    assert.equal(label([two[0]!]), "Remove a row from Benefits");
   });
 
   test("a list's key order is not a difference: a row read back from jsonb is the same row", () => {

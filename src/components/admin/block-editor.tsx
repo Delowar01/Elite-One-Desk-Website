@@ -449,6 +449,9 @@ function ItemsField({
 }) {
   const fields: ItemFieldDef[] = field.itemFields ?? [];
   const rows = Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+  // A list whose rows have no identity is keyed by position, and a new row is
+  // given no id the server would drop (see `FieldDef.positional`).
+  const keyed = !field.positional;
   const atLimit = rows.length >= (field.maxItems ?? 24);
   const langs: Lang[] = locale ? [locale] : ["en", "ar"];
 
@@ -478,7 +481,7 @@ function ItemsField({
 
       <ul className="space-y-2.5">
         {rows.map((row, index) => {
-          const id = rowId(row);
+          const id = keyed ? rowId(row) : null;
           const focused = Boolean(id && id === focusItemId);
           return (
             <li
@@ -657,7 +660,7 @@ function ItemsField({
 
       <button
         type="button"
-        onClick={() => onChange([...rows, emptyRow(fields)])}
+        onClick={() => onChange([...rows, emptyRow(fields, keyed)])}
         disabled={atLimit}
         className="admin-btn admin-btn-sm mt-2.5"
       >
@@ -684,8 +687,8 @@ function ItemsField({
  * have produced itself, so minting it in the browser buys convenience without
  * buying trust.
  */
-function emptyRow(fields: ItemFieldDef[]): Record<string, unknown> {
-  const row: Record<string, unknown> = { [ITEM_ID_KEY]: newItemId() };
+function emptyRow(fields: ItemFieldDef[], keyed = true): Record<string, unknown> {
+  const row: Record<string, unknown> = keyed ? { [ITEM_ID_KEY]: newItemId() } : {};
   for (const field of fields) {
     row[field.name] = field.type === "media" ? null : field.localised ? { en: "", ar: "" } : "";
   }

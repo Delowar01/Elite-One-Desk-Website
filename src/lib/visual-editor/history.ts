@@ -423,6 +423,12 @@ export function describeContent(
     const now = change!.after.map(rowIdOf);
     if (now.length > was.length) return `Add a row to ${where}`;
     if (now.length < was.length) return `Remove a row from ${where}`;
+    // Rows with no identity (a positional list, Batch 22) change whole even when
+    // one row's words changed: only the same rows in another order are a reorder.
+    if (was.every((id) => id === null) && now.every((id) => id === null)) {
+      const rows = (list: unknown[]) => list.map(canonical).sort().join("\n");
+      if (rows(change!.before) !== rows(change!.after)) return `Change ${where}`;
+    }
     return `Reorder ${where}`;
   }
   return `Change ${where}${path.locale ? ` (${LANGUAGE[path.locale]})` : ""}`;
