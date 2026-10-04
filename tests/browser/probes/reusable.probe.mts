@@ -235,8 +235,17 @@ try {
   await until(async () => /Used on 2 pages/.test((await slotPanel().locator("[data-reuse-usage]").textContent().catch(() => "")) ?? ""), 20_000);
   const usageText = (await slotPanel().locator("[data-reuse-usage]").textContent()) ?? "";
   say("5. the instance panel says “Used on 2 pages”", /Used on 2 pages/.test(usageText), usageText);
+  // The Layers tree is drawn from the canvas's own report of its document, and
+  // the save that made this link redraws the canvas: until the new document
+  // reports in, the tree has no rows at all. The usage line above used to
+  // arrive after that, because the Inspector went blank with the canvas and
+  // came back with it; it now stays through the redraw (Batch 23), so the line
+  // can be read first. The row is read once the tree has it again.
+  const aboutLayerRow = page.locator(`[data-layer-row="section:${ABOUT_CTA}"]`);
+  const treeBack = await aboutLayerRow.waitFor({ timeout: 30_000 }).then(() => true, () => false);
   say("…and the Layers row for the section carries the Reusable badge",
-    (await page.locator(`[data-layer-reusable="${ABOUT_CTA}"]`).count()) > 0);
+    treeBack && (await page.locator(`[data-layer-reusable="${ABOUT_CTA}"]`).count()) > 0,
+    treeBack ? "" : "the Layers tree never showed the section again");
   // R1 (review correction). A CTA linked on its own rules out the whole section, and the panel says so.
   const wholeSlot = page.locator(`aside[aria-label='Inspector'] [data-reuse-slot="block"]`).first();
   const blockedNote = ((await wholeSlot.locator("[data-reuse-blocked]").textContent().catch(() => "")) ?? "").trim();
