@@ -389,9 +389,10 @@ describe("direct editing is recorded on the same buffer and the same history", (
     // A direct edit undone before its autosave leaves nothing to save — and
     // the canvas would otherwise keep showing the text typed onto it.
     const step = bodyOf(SHELL, "const stepHistory = useCallback(");
+    // Through the one redraw every write uses since Batch 23, selection kept.
     assert.match(
       step,
-      /const after = buffersRef\.current\[change\.sectionId\];\s*if \(after && !isDirty\(after\) && after\.data\.pageId === pageRef\.current\) \{[\s\S]*?freshCanvas\(\);/,
+      /const after = buffersRef\.current\[change\.sectionId\];\s*if \(after && !isDirty\(after\) && after\.data\.pageId === pageRef\.current\) redrawTo\(keptSelection\(\)\);/,
     );
   });
 

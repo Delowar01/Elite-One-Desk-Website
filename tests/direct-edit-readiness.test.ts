@@ -319,8 +319,14 @@ describe("what comes back is applied only to the session that asked for it", () 
     assert.match(apply, /verdict\.text/, "the handler writes something other than the verdict's text");
   });
 
-  test("…and never queues a write for it", () => {
-    assert.match(apply, /if \(edit\.phase !== "cancel"\) scheduleAutosave\(verdict\.sectionId\);/);
+  test("…and queues a write for it only when a save during the session stored what it takes back", () => {
+    // Batch 23: a save no longer ends the session (its redraw waits), so the
+    // typed text can reach the server before Escape. A cancel then queues the
+    // restoration — and only then: the condition is the restored buffer
+    // differing from what is stored, read after the restore is written.
+    assert.match(apply, /if \(edit\.phase !== "cancel" \|\| \(restored\?\.contentDirty \?\? false\)\) scheduleAutosave\(verdict\.sectionId\);/);
+    const restoredAt = apply.indexOf("const restored = buffersRef.current[verdict.sectionId];");
+    assert.ok(restoredAt > apply.indexOf("writeBuffers("), "the restore is judged before it is written");
   });
 
   test("a commit goes through the existing buffer and autosave, and nothing else", () => {
@@ -584,8 +590,8 @@ describe("the handler acts on the verdict and on nothing else", () => {
     }
   });
 
-  test("a cancel still writes the restored value and still queues nothing", () => {
-    assert.match(handler, /if \(edit\.phase !== "cancel"\) scheduleAutosave\(verdict\.sectionId\);/);
+  test("a cancel still writes the restored value and queues nothing unless the session outlasted a save", () => {
+    assert.match(handler, /if \(edit\.phase !== "cancel" \|\| \(restored\?\.contentDirty \?\? false\)\) scheduleAutosave\(verdict\.sectionId\);/);
   });
 
   test("the session is bound to the context the request validated, not re-read later", () => {
@@ -607,5 +613,30 @@ describe("the handler acts on the verdict and on nothing else", () => {
     // …and the bridge id is not part of it: it correlates documents, it does
     // not authorise anything.
     assert.ok(!source.includes("bridgeId"), "the session treats the bridge id as identity");
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe("23 · a save does not end a direct edit", () => {
+  const shell = code(SHELL_SOURCE);
+  const drain = bodyOf(shell, "const drainSection = useCallback(");
+  const handler = bodyOf(shell, "const onCanvasEdit = useCallback(");
+
+  test("a save that lands while a session is live on this canvas puts its redraw off, and redraws nothing", () => {
+    const deferred = drain.indexOf("if (editSession.current && editSession.current.canvasKey === canvasKeyRef.current) {");
+    assert.ok(deferred > 0, "the drain no longer checks for a live session");
+    assert.match(drain.slice(deferred), /^[^}]*deferredRedraw\.current = sectionId;\s*return;/);
+    assert.ok(drain.indexOf("redrawTo(keptSelection());") > deferred, "the drain redraws before it checks for a session");
+  });
+
+  test("the put-off redraw happens when the session ends, unless a write still to come will do it", () => {
+    assert.match(handler, /if \(verdict\.ends\) settleDeferredRef\.current\(\);/);
+    const settle = bodyOf(shell, "const settleDeferredRedraw = useCallback(");
+    assert.match(settle, /if \(deferredRedraw\.current === null \|\| editSession\.current\) return;/);
+    assert.match(settle, /isDirty\(entry\) \|\| entry\.saving !== null \|\| draining\.current\.has\(Number\(id\)\)/);
+    assert.match(settle, /redrawKeeping\(\);/);
+    // Any new document makes it unnecessary.
+    assert.match(bodyOf(shell, "const freshCanvas = ("), /deferredRedraw\.current = null;/);
   });
 });
