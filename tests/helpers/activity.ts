@@ -9,10 +9,12 @@
  *
  *  · server-component navigations (RSC requests) and document loads of the
  *    Components list, a component's page, the Visual Editor on a service
- *    category, the category's public page and its draft preview;
- *  · the Visual Editor's route reads (the route summary, a region);
+ *    category and on a service's own page (Batch 22), both pages in public
+ *    and their draft previews;
+ *  · the Visual Editor's route reads (the route summary, a region), of the
+ *    category page and of the service page;
  *  · route drafts written and discarded, and now and then published — which
- *    revalidates the catalog, FAQ and route caches;
+ *    revalidates the catalog, FAQ and route caches — on both pages;
  *  · reusable components created and deleted through their own actions.
  *
  * It never runs across a restart: `pause` waits for every request in flight
@@ -122,17 +124,30 @@ export function startActivity(options: {
 
   const pick = <T,>(list: T[]) => list[Math.floor(Math.random() * list.length)]!;
 
+  /** The first service of the first category, and its public address. */
+  const serviceOf = async () =>
+    (
+      await options.sql<{ id: number; path: string }[]>`
+        select s.id, '/services/' || c.slug || '/' || s.slug as path
+          from services s join service_categories c on c.id = s.category_id
+         order by c.id, s.id limit 1`
+    )[0];
+
   const operations: ((at: string, lane: number, turn: number) => Promise<void>)[] = [
     // Server-component navigations and document loads.
     async (at, _lane, turn) => {
       const [category] = await options.sql<{ id: number; slug: string }[]>`select id, slug from service_categories order by id limit 1`;
       const [component] = await options.sql<{ id: number }[]>`select id from reusable_components order by random() limit 1`;
+      const service = await serviceOf();
       const paths = [
         "/admin/components",
         component ? `/admin/components/${component.id}` : "/admin/components",
         category ? `/admin/visual-editor?route=category:${category.id}` : "/admin/visual-editor",
         category ? `/services/${category.slug}` : "/services",
         category ? `/services/${category.slug}?preview=1` : "/services",
+        service ? `/admin/visual-editor?route=service:${service.id}` : "/admin/visual-editor",
+        service ? service.path : "/services",
+        service ? `${service.path}?preview=1` : "/services",
       ];
       await page(at, pick(paths), turn % 3 !== 0);
     },
@@ -176,6 +191,47 @@ export function startActivity(options: {
         form({ routeKey: `category:${category.id}`, token: summary.token }),
       ]);
       count(`${verb === "publishRouteFromEditor" ? "publish" : "discard"} ${done?.ok ? "ok" : `refused (${done?.reason ?? "?"})`}`);
+    },
+    // The Visual Editor reading a service's own page (Batch 22).
+    async (at) => {
+      const service = await serviceOf();
+      if (!service) return void count("no service");
+      const pageId = documentEditorKey({ kind: "service", id: service.id });
+      const summary = await act<{ token?: string }>(at, ROUTE, "loadRouteSummary", [`service:${service.id}`]);
+      count(summary ? "service summary" : "service summary refused");
+      const region = await act<{ ok: boolean }>(at, ROUTE, "loadRouteRegion", [editorKeyOf({ type: "serviceHero", id: service.id }), pageId]);
+      count(region?.ok ? "service region" : "service region refused");
+    },
+    // A service page draft written, then discarded — or, one turn in four, published.
+    async (at, lane, turn) => {
+      const service = await serviceOf();
+      if (!service) return void count("no service");
+      const pageId = documentEditorKey({ kind: "service", id: service.id });
+      const sectionId = editorKeyOf({ type: "serviceHero", id: service.id });
+      const region = await act<{ ok: boolean; section?: { revision: number; values: Record<string, unknown> } }>(
+        at,
+        ROUTE,
+        "loadRouteRegion",
+        [sectionId, pageId],
+      );
+      if (!region?.ok || !region.section) return void count("service draft: region refused");
+      const values = region.section.values;
+      const saved = await act<{ ok: boolean; reason?: string }>(at, ROUTE, "saveRouteRegionDraft", [
+        form({
+          sectionId,
+          pageId,
+          expectedRevision: region.section.revision,
+          values: JSON.stringify({ ...values, timeline: { ...(values.timeline as object), en: `Activity timeline ${lane}-${turn}` } }),
+        }),
+      ]);
+      count(saved?.ok ? "service draft saved" : `service draft refused (${saved?.reason ?? "?"})`);
+      const summary = await act<{ token: string }>(at, ROUTE, "loadRouteSummary", [`service:${service.id}`]);
+      if (!summary?.token) return void count("service summary refused");
+      const verb = turn % 4 === 0 ? "publishRouteFromEditor" : "discardRouteFromEditor";
+      const done = await act<{ ok: boolean; reason?: string }>(at, ROUTE, verb, [
+        form({ routeKey: `service:${service.id}`, token: summary.token }),
+      ]);
+      count(`service ${verb === "publishRouteFromEditor" ? "publish" : "discard"} ${done?.ok ? "ok" : `refused (${done?.reason ?? "?"})`}`);
     },
     // A reusable component created and deleted through its own actions.
     async (at, lane, turn) => {

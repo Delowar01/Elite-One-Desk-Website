@@ -12,6 +12,7 @@
   "restore-selection": 7,
   "reusable": 7,
   "route-concurrency": 8,
+  "service-concurrency": 13,
   "smooth-scroll-wheel": 2,
   "undo": 10
 }

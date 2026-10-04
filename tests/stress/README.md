@@ -5,9 +5,10 @@ the server, many motion nodes on one page, a hundred Undo steps, the three
 intermittent failures Batch 19A closed and the selection defect it found, the
 editor's own speed and clean-up on a large page and the component screens'
 navigation under load (19B), admin saves that must show their answer
-untouched (19C), and drafts, publications and discards of a service-category
-page racing each other and the admin forms (21), each looped until a
-regression would show. Same runner, same rules and same requirements as the probes — see
+untouched (19C), drafts, publications and discards of a service-category
+page racing each other and the admin forms (21), and the same of a service's
+own page, with its reads, a move, a rename and the category page beside it
+(22), each looped until a regression would show. Same runner, same rules and same requirements as the probes — see
 [`tests/browser/README.md`](../browser/README.md).
 
 ```sh
@@ -36,6 +37,7 @@ would not, until something has changed that it is there to catch.
 | `editor-cleanup` | page switches, canvas reloads, Replay with a parallax sweep, the component drawer and the comparison's controls, each repeated: no observer, window/document listener, pending frame or interval outlives them (19B) | 8 |
 | `create-navigation` | three servers at once, each from cold: create a component from the list and land on its page, delete one from its page and land back on the list — the load under which a client navigation was left uncommitted; uses ports 3812–3814 (19B). Since 21A it runs under the diagnostics below, and N5 counts what failed behind the screen: a 5xx, a failed Server Action, an error row in an RSC payload, a failed request, a console error, an error in a server's output, a server exit nobody asked for | 5 |
 | `route-concurrency` | a service-category page in the Visual Editor: six saves of one region at one revision, five publications of one review, a publication against the Services list's show/hide and against the Services form in both orders, a publication while its regions are edited again, a discard while another region is edited — each answer checked in the database: one winner, whole or nothing, nothing published unseen, no draft lost, history capped at thirty, no record created or lost; API only, port 3818 (21) | 8 |
+| `service-concurrency` | a service's own page in the Visual Editor: six saves of one region at one revision, five publications of one review, eight readers of the public page in both editions, its preview, canvas, RSC payload, category page and the editor's reads while drafts are saved, discarded and published (no 5xx, no error row, no draft in public, and the very next read after a publication shows it), a publication against the Services form, against a move to another category and against a rename, in both orders, the category page and the service page publishing the same column at once (one lands, the other keeps its draft, neither waits for ever), a discard while another region is edited, components created and deleted beside publications — each answer checked in the database, then the histories capped at thirty, no record created or lost, and nothing failed in the server's output; API only, port 3819 (22) | 13 |
 | `admin-form-settle` | three servers at once, each restarted cold before every save: create an account on the Users screen and add a question on the FAQ screen, then touch nothing — every answer must reach the screen and release its button on its own, every row stored exactly once; uses ports 3815–3817 (19C) | 4 |
 
 `STRESS_LOOPS` sets the loop count where a script has one; each documents its
@@ -80,8 +82,10 @@ value, and cookies, tokens, passwords, credentials in URLs, `DATABASE_URL` and
 browser on every server (`tests/helpers/activity.ts`, three lanes a server, or
 `STRESS_ACTIVITY=<n>`): RSC navigations and document loads of the Components
 screens, the Visual Editor on a service category and its public page and
-preview, the Visual Editor's route reads, route drafts saved and discarded or
-published (which revalidates the caches), and components created and deleted.
+preview, the Visual Editor on a service's own page and that page in public
+and in preview (22), the Visual Editor's route reads of both, route drafts of
+both saved and discarded or published (which revalidates the caches), and
+components created and deleted.
 It pauses across every restart, so a refused connection is a failure, not a
 restart.
 

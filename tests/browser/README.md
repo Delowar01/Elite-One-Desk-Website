@@ -1,6 +1,6 @@
 # Browser QA — the tracked probes
 
-Thirty-three probes run in a real Chromium. Thirty-two drive the real application:
+Thirty-four probes run in a real Chromium. Thirty-three drive the real application:
 the public pages, ordinary Preview and the Visual Editor, in English and Arabic,
 at Desktop, Tablet and Mobile widths. One, `stress-diagnostics`, proves the
 stress suite's failure recorder against a stub server. Each prints one `PASS`
@@ -10,7 +10,7 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty-three probes, one file each |
+| `probes/*.probe.mts` | the thirty-four probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -181,3 +181,26 @@ Each must be recorded whole, with its digest where it has one, attributed to
 its step, and printed without the session, the CSRF token or a database
 password. The page errors this probe records are provoked by its own stub
 pages; it visits no application page.
+
+Batch 22 added one probe and changed none: `route-services` (109 checks, port
+3735) opens a service's own page in the Visual Editor. Its services are chosen
+from the data — the first published service of each of the first three
+categories — so no service is named. The first gets the full walk: reached
+from the admin's sidebar and the page list (every service, one group per
+category), the real route in the canvas with its header, footer and request
+form, every region in Layers, a region's fields in the Inspector, an Inspector
+edit, a direct edit taken back and put back, Escape abandoning one, a benefit
+added and its words and its row each taken back by Undo and put back by Redo, a
+step with its detail, a picture chosen from the library (and counted by the
+library while it is only a draft), Arabic right to left with its own field,
+Desktop/Tablet/Mobile, a style saved for Mobile only, a style and an entrance
+with its Replay, Preview, a public page whose `<title>` and structured data
+never moved, the same page by keyboard with every control named and nothing
+added inside the canvas, then Publish, the public result in both editions,
+history, compare, a version viewed, Restore and Discard. The second and third
+get the core of it, and the second is moved to another category on the
+Services screen — same document, same draft, one identity, the old address
+answering as a missing page always has — and moved back. Last, a service made
+on the Services screen while the probe runs is offered, edited, published and
+deleted again. The draft it leaves pending, and the service it makes, are gone
+at the end.
