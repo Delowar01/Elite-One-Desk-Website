@@ -17,6 +17,14 @@ implementations. The category page's behaviour described here is unchanged;
 the service page's design of record is
 [`service-detail.md`](service-detail.md), Part B.
 
+**Batch 24** opened the rest of the public site that is drawn from records:
+a package's page and a destination's page (both at `/packages/<slug>`), the
+package catalogue `/packages` and the services overview `/services` — four
+more route kinds (`package`, `destination`, `packageIndex`, `serviceIndex`)
+through four more implementations of the same interface. Nothing above the
+adapters changed shape. Their design of record, and the whole site's
+coverage, is [`whole-site-coverage.md`](whole-site-coverage.md), Parts B and C.
+
 ## 1. Vocabulary
 
 | Term | Meaning |
@@ -211,9 +219,12 @@ draft started from with their live order.
 
 ## 7. Existing admin forms — the conflict policy
 
-The Service Categories, Services, FAQs and Packages screens are unchanged in
-what they do: they write live, immediately, as before. They never read or write
-`route_nodes`.
+The Service Categories, Services, FAQs, Packages and Destinations screens
+write live, immediately, as before. They never read or write `route_nodes`.
+Three of them — Services (Batch 23), Packages and Destinations (Batch 24) —
+save only the fields they changed, against a base the edit page signed
+(`docs/admin/services-form-concurrency.md`, §3 and §10); Service Categories
+and FAQs still write the whole row.
 
 | Situation | What happens |
 |---|---|
@@ -223,6 +234,8 @@ what they do: they write live, immediately, as before. They never read or write
 | Admin form deletes a record a draft patches | The owner disappears from the route; its draft is ignored and is removed by the next publish or discard of that route. |
 | Admin reorders rows an order draft covers | Publish is refused for that order field, with the same two choices. |
 | Visual Editor publishes | Writes only the patched columns, through one transaction. |
+| A Services, Packages or Destinations form opened **before** a publication is saved **after** it | Only what the form changed is written. A field it did not change keeps the published value; a field it changed that the publication also changed refuses the whole save, naming the field (Batch 23 for Services, Batch 24 for Packages and Destinations). |
+| A package's page and its catalogue card, or a destination's page and its catalogue group, both draft the same column (Batch 24) | Each draft carries its own `base`; whichever is published second meets the moved column as a conflict and keeps its draft to resolve. |
 
 A pending draft is never silently overwritten, and the rule is the same for
 every category.
@@ -231,11 +244,12 @@ One form needed a field to keep this promise: the group form on the Service
 Categories screen saved both group summaries but showed only the English one,
 so every save emptied the Arabic summary. Harmless while nothing else could
 set it; the Visual Editor can, so the form now carries "Summary (العربية)"
-(browser-tested: shown, saved, kept). One case is the forms' own, unchanged: a form opened *before*
-a Visual Editor publication and saved *after* it writes every field it holds,
-as it always has — the same last-save-wins the forms have between two people
-using the forms. The admin forms carry no revision check today; adding one
-would change their behaviour for every user and is listed as an open item.
+(browser-tested: shown, saved, kept). One case was the forms' own: a form
+opened *before* a Visual Editor publication and saved *after* it wrote every
+field it held — the same last-save-wins the forms have between two people
+using the forms. The Services form stopped doing so in Batch 23, and the
+Packages and Destinations forms in Batch 24 (the table above); the Service
+Categories and FAQs forms still do, and are listed as an open item.
 
 ## 8. History, Compare, Restore
 
@@ -271,6 +285,9 @@ convenience, never the authority.
 | Read an owner | the same |
 | Save content of a category, group, card or template copy | `content.edit` + `services.manage` |
 | Save content of an FAQ | `content.edit` + `faqs.manage` |
+| Save content of a package, a destination, a package card or group, or the catalogue's wording (Batch 24) | `content.edit` + `packages.manage` |
+| Save the services overview's wording (Batch 24) | `content.edit` + `services.manage` |
+| Save a package card's destination or visibility (Batch 24) | `content.structure` + `packages.manage` (its featured flag is content, as a service card's) |
 | Save an ordering or a visibility (group, card, FAQ) | `content.structure` + the resource's capability |
 | Save style | `content.style` (+ `content.advanced_style` for advanced tokens) |
 | Save motion | `content.motion` |

@@ -196,3 +196,77 @@ The correction keeps the region save's shape and adds one field:
 
 Held by `tests/service-form-concurrency.test.ts` (three cases), the
 `services-form` probe (the real editor's buffer) and stress F5.
+
+## 10. The Packages and Destinations forms (Batch 24)
+
+Batch 24 lets the Visual Editor publish packages and destinations — a
+package's own page, its card on Tour packages, a destination's page and its
+group there — so the two forms that also write those rows met the defect of
+§1: `updatePackage` and `updateDestination` wrote the whole row, the
+destination's slug included (`whole-site-coverage.md`, A.9 F1–F2). They now
+follow this document's model exactly.
+
+**One mechanism.** What §3–§5 describe — units, canonical fingerprints, the
+signed token, the per-unit decision and the conflict message — moved, unchanged,
+into `src/lib/admin/form-base.ts` (`formBase({ purpose, units })`). Each form
+keeps only what is its own: its reader, its units and its transaction. The
+Services form's exports and its signing purpose (`service-form-base`) are the
+ones Batch 23 shipped, so a Services page drawn before the upgrade still
+saves after it, and its tests run unchanged.
+
+| | Packages | Destinations |
+|---|---|---|
+| Module | `src/lib/packages/form-fields.ts` (`PACKAGE_FORM`) | the same file (`DESTINATION_FORM`) |
+| Signing purpose | `package-form-base` | `destination-form-base` |
+| Units | destination it is listed under, legacy region, title, place, duration, summary, detail (each English and Arabic separately), the highlights list (one unit), image, featured, published, order | address, name and summary (English and Arabic separately), image, published, order |
+| Not a unit | the address — fixed once the package exists | — |
+| Validated on the merged row | an English title; a destination that still exists; the address still not taken by a destination | an English name; a well-formed address not taken by a package or another destination |
+
+**Lock order.** Every writer of these rows takes a destination before a
+package, and both before the route's regions. The Destinations form locks its
+one row. The Packages form locks its one package row — and, when it files the
+package under another destination, holds that destination first (`FOR KEY
+SHARE`), because the foreign-key check would otherwise take it *after* the
+package: the reverse of the catalogue's publication, which holds every
+destination and then every package. With the destination held first the two
+writers queue on the destination and cannot wait on each other. Without it
+they deadlock: replaying the two transactions' statements against
+PostgreSQL — the form holding its package, the catalogue holding every
+destination and asking for the packages, the form's foreign-key check then
+asking for the destination — aborts the catalogue's publication with `40P01`
+every time; with the destination taken first, both commit.
+
+**Unchanged**, as on the Services screen (§8): creating a package or a
+destination (nothing to be stale against), the lists' publish toggles (each
+reads its row and flips it, one statement, one row), and deleting either.
+
+**Scenarios.** The §7 table holds for both forms, with "the editor" meaning a
+package's page, its catalogue card, a destination's page or its catalogue
+group: a non-overlapping save keeps the editor's newer value, an overlapping
+one is refused whole, a stale form never moves a destination's address back
+or re-files a package, an untouched picture is never written back, and the
+highlights conflict as one list. Held by `tests/package-form-concurrency.test.ts`
+and stress `package-concurrency`.
+
+## 11. Pages and tabs opened before an upgrade
+
+Two kinds of client outlive a deployment, and the rules above treat them
+differently on purpose:
+
+* **An edit page drawn before the upgrade** posts no `_base` (Packages,
+  Destinations) — or, for Services before Batch 23, none either. It is refused
+  before anything is read: "This form is out of date … reload". One reload
+  fixes it. The new semantics are not weakened to accept a baseless save:
+  accepting it would be exactly the whole-row write this change removes.
+* **A Visual Editor tab opened before Batch 23** posts no `baseValues` with a
+  region save. Such a save is treated as it always was (§9, last point): the
+  buffer's values are drafted, and publication still checks every draft's
+  `base` against the live row. What that tab cannot do is tell an untouched
+  field from an edited one, so it can draft a value it never changed — the
+  Batch 22 behaviour — until it is reloaded. The editor protocol is unchanged
+  (version 7), so the server cannot ask such a tab to reload itself; the
+  release notes ask editors to reload any editor tab left open across the
+  deployment (`DEPLOYMENT.md` §9, "Admin pages and editor tabs left open
+  across a release"). A tab opened after the upgrade always sends `baseValues`.
+  Package and destination regions are new in Batch 24, so no tab from before
+  it can open one at all.

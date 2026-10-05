@@ -492,9 +492,13 @@ cannot be made into a reusable component.
   Each save redraws the canvas and briefly clears the selection, so the
   Inspector's form is drawn again and the box being typed in loses focus. Found
   while writing the service probe; it is the same on a CMS page and on a
-  category page (Batch 21), so it is not changed here.
+  category page (Batch 21), so it is not changed here. *Fixed in Batch 23:
+  the selection is held through the redraw and the Inspector keeps its focus
+  and caret (`inspector-focus` probe).*
 * The service's own questions are created on the FAQs screen; the category's
   questions are edited on the category's page.
 * The edit form's "Address" field is shown but ignored on save (A.5).
 * The category page's `ItemList` still lists services in a hidden group; the
-  Batch 21 follow-up stands.
+  Batch 21 follow-up stands. *Fixed in Batch 24: the list is the cards the page
+  draws (`listedServices` in `category-model.ts`, one layout shared with the
+  page), so a published service filed under a hidden group is no longer in it.*

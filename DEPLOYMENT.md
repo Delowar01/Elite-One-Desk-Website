@@ -301,6 +301,30 @@ fixtures to hold each of those rules. `RELEASE_SHA` empty keeps the old
 behaviour (the tip of `origin/main`) for development servers; a production
 release should never rely on it.
 
+### Admin pages and editor tabs left open across a release
+
+Tell every editor, before the switch, to **reload any admin page and any
+Visual Editor tab they have open once the release is live**. Since Batch 23
+(Services) and Batch 24 (Packages, Destinations) an edit form posts the base
+its page was drawn with, and the editor posts the values a region was loaded
+with (`baseValues`). Pages and tabs drawn by the previous release send
+neither:
+
+- **A Services, Packages or Destinations edit page** drawn before the switch is
+  refused when saved — "This form is out of date, so nothing was saved.
+  Reload the page…" — with nothing written. One reload fixes it. The refusal is
+  deliberate: accepting a save without a base would be the whole-row write
+  these releases removed.
+- **A Visual Editor tab** opened before Batch 23 keeps saving, and every
+  publication still checks each draft against the live record, but until it
+  is reloaded the tab cannot tell a field it never touched from one it edited,
+  so it can draft a value nobody changed. The server cannot ask an old tab to
+  reload itself (the editor protocol did not change), so this is the editors'
+  step.
+
+The reasoning, and what each kind of client does, is in
+`docs/admin/services-form-concurrency.md` §11.
+
 ### 9.1 The service restructure (one-off)
 
 The 2026 restructure — six service categories becoming five, Egypt becoming a
