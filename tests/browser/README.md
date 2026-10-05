@@ -1,6 +1,6 @@
 # Browser QA — the tracked probes
 
-Thirty-four probes run in a real Chromium. Thirty-three drive the real application:
+Thirty-seven probes run in a real Chromium. Thirty-six drive the real application:
 the public pages, ordinary Preview and the Visual Editor, in English and Arabic,
 at Desktop, Tablet and Mobile widths. One, `stress-diagnostics`, proves the
 stress suite's failure recorder against a stub server. Each prints one `PASS`
@@ -10,7 +10,7 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty-six probes, one file each |
+| `probes/*.probe.mts` | the thirty-seven probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -46,7 +46,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the thirty-six probes, once each
+npm run test:browser              # the thirty-seven probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -94,8 +94,9 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,425 `PASS`
-across the thirty-six as of Batch 23 (1,377 across thirty-four at Batch 22,
+Every probe clean, with the counts in `probes/expected.json` — 1,522 `PASS`
+across the thirty-seven as of Batch 24 (1,425 across thirty-six at Batch 23,
+1,377 across thirty-four at Batch 22,
 1,266 across thirty-three at Batch 21A, 1,255 across thirty-two at Batch 21,
 1,145 across thirty-one at Batch 19C,
 1,131 across thirty at Batch 19B, 1,089
@@ -225,3 +226,34 @@ message naming it and nothing of that save written; a reload saves normally;
 the same against the Visual Editor publishing the service's page; and the
 editor's own buffer, opened before a Services save, drafting only what is
 typed in it, so its publication keeps the Services screen's newer value.
+
+Batch 24 added one probe and extended one. `route-packages` (81 checks, port
+3738) opens the package catalogue, a package's own page, a destination's page
+and the services overview in the Visual Editor, choosing its records from the
+data. The catalogue gets the full walk: reached from the sidebar and the page
+list (both overviews, every destination, every package grouped under its
+destination), the real `/packages` in the canvas, Layers nesting each
+destination's group and its cards under the generated catalogue and naming
+them by their records, a card selected on the canvas with its words, picture
+and structure, a card's title typed on the canvas, a card re-filed to "Build
+your own" and drawn there at once, a card hidden from Layers and drawn dimmed,
+the Arabic eyebrow in its own field, Desktop/Tablet/Mobile, a Mobile-only
+style, an entrance and its Replay, Preview, a public page that never moved,
+the keyboard, then Publish, the public result (the hidden package's own page
+gone with it), history, compare, a version viewed, Restore and Discard. A
+category page's service card is typed into on the canvas too — the canvas fix
+this batch made (a card's link took the focus, and its `focusout` ended every
+edit of a card's words at once, since Batch 21). A package's page, a
+destination's page and the services overview get the core: their regions,
+their generated parts explaining themselves, an Inspector edit, a list row, a
+picture, Preview and Publish. The Packages screen, opened before the editor in
+another tab publishes the package, keeps the editor's work and refuses an
+overlapping save by name. Last, a package made on the Packages screen is
+offered under its destination, edited, published, given its catalogue card and
+deleted again. `inspector-focus` gained 16 checks (51): a package's title, a
+catalogue card's summary with the caret in the middle, a destination's Arabic
+summary on Mobile and the services overview's heading, each typed across a
+real autosave; and Layers keeping the keyboard's place — a card hidden from the
+keyboard on Tour packages and shown again from the focus the redraw gave back,
+a page's section moved down and back to the top, where its disabled Move up
+hands the focus to the section's own row.

@@ -640,3 +640,54 @@ describe("23 · a save does not end a direct edit", () => {
     assert.match(bodyOf(shell, "const freshCanvas = ("), /deferredRedraw\.current = null;/);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+
+describe("24 · Layers keeps the keyboard's place across a redraw", () => {
+  const shell = code(SHELL_SOURCE);
+  const focus = code(read("src/components/admin/visual-editor/layers-focus.ts"));
+  const layers = code(read("src/components/admin/visual-editor/layers.tsx"));
+  const routeLayers = code(read("src/components/admin/visual-editor/route-layers.tsx"));
+
+  test("where the focus was is taken before the rows go: at the redraw, and before a layout write disables its buttons", () => {
+    const fresh = bodyOf(shell, "const freshCanvas = (");
+    const taken = fresh.indexOf("layersFocus.current = layersFocusOf(document.activeElement) ?? layersFocus.current;");
+    assert.ok(taken > 0, "freshCanvas no longer takes the Layers focus");
+    assert.ok(taken < fresh.indexOf("setSections([]);"), "the rows are emptied before the focus is taken");
+    const structural = bodyOf(shell, "const runStructural = useCallback(");
+    const before = structural.indexOf("layersFocus.current = layersFocusOf(document.activeElement) ?? layersFocus.current;");
+    assert.ok(before > 0 && before < structural.indexOf("setStructureBusy(true);"), "a layout write disables its buttons before the focus is taken");
+  });
+
+  test("it comes back only to rows a panel has drawn and enabled, and never over a focus the person chose since", () => {
+    const restore = bodyOf(shell, "const restoreLayersFocus = useCallback(");
+    assert.match(restore, /layersFocus\.current = null;/);
+    assert.match(restore, /if \(active && active !== document\.body\) return;/);
+    assert.match(restore, /layersFocusTarget\(document, wanted\)\?\.focus\(\);/);
+    assert.equal(shell.match(/onRowsDrawn=\{restoreLayersFocus\}/g)?.length, 2, "both Layers panels are not told how to put the focus back");
+    // Each panel says when its rows are on screen. The page's panel draws `order`, which follows
+    // `sections` one render behind: it waits until both hold rows, or the focus lands on the old ones.
+    assert.match(layers, /if \(sections\.length && order\.length && !busy\) onRowsDrawn\?\.\(\);/);
+    assert.match(routeLayers, /if \(tree\.length && !busy\) onRowsDrawn\?\.\(\);/);
+  });
+
+  test("what is kept is an address and a control — never a row — and an address is compared, not put into a selector", () => {
+    assert.match(focus, /export type LayersFocus = \{ address: string; control: string \};/);
+    assert.ok(!/\$\{focus\.address\}|\$\{address\}/.test(focus), "an address is interpolated into a selector");
+    assert.ok(!/from "react"/.test(focus), "the focus module holds React state");
+    // A control that is gone or disabled falls back to its row, and a row that is gone to nothing.
+    assert.match(focus, /\?\? row\(\)/);
+    assert.match(focus, /element instanceof HTMLButtonElement && element\.disabled/);
+  });
+
+  test("both Layers panels mark themselves and every structural button they draw", () => {
+    for (const [name, source] of [["layers.tsx", layers], ["route-layers.tsx", routeLayers]] as const) {
+      assert.match(source, /aria-label="Page structure"[\s\S]{0,80}data-layers-panel/, `${name} does not mark its panel`);
+      assert.match(source, /data-layer-ops=\{section\.address\}/, `${name} does not mark its row strips`);
+      const buttons = source.match(/<RowButton\b[\s\S]*?\/>/g) ?? [];
+      assert.ok(buttons.length > 0, `${name} draws no row buttons`);
+      for (const button of buttons) assert.match(button, /\bop="[a-z]+"/, `${name}: a row button without an op`);
+    }
+    assert.match(layers, /data-layer-op=\{op\}/);
+  });
+});

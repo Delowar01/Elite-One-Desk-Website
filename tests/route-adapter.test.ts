@@ -190,6 +190,25 @@ describe("owner identity: one owner, two spellings, no collisions", () => {
       serviceNotices: 19,
       serviceRequest: 20,
       serviceRelated: 21,
+      // A package's page, a destination's page, the package catalogue and the
+      // services overview (Batch 24), appended after Batch 22's.
+      packageHero: 22,
+      packageCrumbs: 23,
+      packageBody: 24,
+      packageHighlights: 25,
+      packageRequest: 26,
+      destinationHero: 27,
+      destinationCrumbs: 28,
+      destinationPackages: 29,
+      packageIndexHero: 30,
+      packageIndexCrumbs: 31,
+      packageIndexCatalogue: 32,
+      destinationGroup: 33,
+      packageCard: 34,
+      packageIndexCustom: 35,
+      serviceIndexHero: 36,
+      serviceIndexCrumbs: 37,
+      serviceIndexCategories: 38,
     });
   });
 
@@ -602,6 +621,9 @@ describe("orders and visibility", () => {
       "categoryServices.order:groups",
       "categoryServices.order:services",
       "faq.isPublished",
+      // A package's card on the catalogue: its destination and whether it is shown (Batch 24).
+      "packageCard.destinationId",
+      "packageCard.isPublished",
       "service.isPublished",
       "service.subcategoryId",
       // The order of a service's own questions, on its own page (Batch 22).

@@ -3,8 +3,10 @@
  *
  * Every save redraws the canvas, and the Inspector used to be drawn again with
  * it — the box being typed in was replaced and the keyboard focus fell to the
- * page. The next keystroke went nowhere. This walks the three editors that
- * share the Inspector (a CMS page, a category page, a service page) and types
+ * page. The next keystroke went nowhere. This walks the editors that share the
+ * Inspector (a CMS page, a category page, a service page — and since Batch 24
+ * a package's page, a card on Tour packages, a destination's page and the
+ * services overview) and types
  * across real autosaves: a text box, a textarea with the caret in the middle,
  * a list row, Arabic, the three devices, several saves in a row, a save the
  * server is slow to answer and a direct edit on the canvas. Each case checks
@@ -14,7 +16,10 @@
  * Then the races: a selection changed while an older save is still on its way
  * stays where the person put it, focus moved to another box is not pulled
  * back, and a selected element that the save removed falls back to its
- * section instead of being held. Nothing here publishes.
+ * section instead of being held. And Layers (Batch 24): a row's control
+ * pressed from the keyboard — a card hidden on Tour packages, a section moved
+ * on a page — keeps the focus through the redraw it causes, or hands it to its
+ * row when the control is disabled there. Nothing here publishes.
  */
 
 import { canvasUrl, canvasRedrawn, editorIdle, editorSettled, inspectorAddress, selectCanvasNode, selectFromLayers, waitForInspector } from "../canvas";
@@ -63,15 +68,22 @@ try {
   const [service] = await sql<{ id: number; category_id: number }[]>`
     select s.id, s.category_id from services s join service_categories c on c.id = s.category_id
      where s.is_published and c.is_published order by c.sort_order, c.id, s.sort_order, s.id limit 1`;
-  if (!hero || !why?.first || !richText || !service) throw new Error("the fixture lacks a section or a service this probe needs");
+  // Batch 24: a package filed under a published destination, and that destination.
+  const [pkg] = await sql<{ id: number; destination_id: number }[]>`
+    select p.id, p.destination_id from travel_packages p join package_destinations d on d.id = p.destination_id
+     where p.is_published and d.is_published and length(p.summary_en) > 10 order by d.sort_order, p.sort_order, p.id limit 1`;
+  if (!hero || !why?.first || !richText || !service || !pkg) throw new Error("the fixture lacks a section, a service or a package this probe needs");
   const categoryId = service.category_id;
+  const destinationId = pkg.destination_id;
 
   // What is live before anything is typed: nothing here may publish.
   const liveBefore = JSON.stringify(
     await sql`
       select (select json_agg(published order by id) from page_sections where id in (${hero.id}, ${why.id}, ${richText.id})) as sections,
              (select row_to_json(s) from (select title_en, title_ar, intro_en, intro_ar, timeline_en, benefits from services where id = ${service.id}) s) as service,
-             (select row_to_json(c) from (select title_en, title_ar, summary_en from service_categories where id = ${categoryId}) c) as category`,
+             (select row_to_json(c) from (select title_en, title_ar, summary_en from service_categories where id = ${categoryId}) c) as category,
+             (select row_to_json(p) from (select title_en, summary_en from travel_packages where id = ${pkg.id}) p) as package,
+             (select row_to_json(d) from (select title_en, summary_ar from package_destinations where id = ${destinationId}) d) as destination`,
   );
 
   /* ------------------------------------------------------------------ */
@@ -86,6 +98,11 @@ try {
     device: Device;
     /** The region selected from Layers. */
     layer: string;
+    /**
+     * A node to click on the canvas instead, for a region Layers nests out of
+     * sight — a package's card sits under its destination on Tour packages.
+     */
+    canvasNode?: string;
     /** The Inspector control: `[data-field="title"] input`, a list row's box. */
     control: string;
     /** Every save moves it. */
@@ -113,7 +130,10 @@ try {
     return settled && sized;
   };
   const choose = async (target: Target) => {
-    await selectFromLayers(page, target.layer);
+    if (target.canvasNode) {
+      const picked = await selectCanvasNode(page, target.canvasNode);
+      if (!picked.ok) throw new Error(`selecting ${target.canvasNode} on the canvas ended on ${picked.shows}`);
+    } else await selectFromLayers(page, target.layer);
     await page.getByRole("tab", { name: /Content/ }).click();
     const box = inspector.locator(target.control).first();
     await box.waitFor({ timeout: 15_000 });
@@ -254,6 +274,67 @@ try {
     },
     "نص",
     " عربي",
+  );
+
+  // Batch 24: the package routes, their catalogue and the services overview share the Inspector.
+  await acrossOneSave(
+    {
+      label: "Package page · title · English · Desktop",
+      open: `route=package:${pkg.id}`,
+      lang: "en",
+      device: "desktop",
+      layer: `packageHero:${pkg.id}`,
+      control: '[data-field="title"] input',
+      saves: nodeRevision(`packageHero:${pkg.id}`),
+      stored: nodeDraft(`packageHero:${pkg.id}`, "titleEn"),
+    },
+    " Epsilon",
+    " Zeta",
+  );
+  await acrossOneSave(
+    {
+      label: "Tour packages · a card's summary textarea, caret in the middle · English · Tablet",
+      open: "route=packageIndex:1",
+      lang: "en",
+      device: "tablet",
+      layer: `packageCard:${pkg.id}`,
+      canvasNode: `packageCard:${pkg.id}/field:title`,
+      control: '[data-field="summary"] textarea',
+      saves: nodeRevision(`packageCard:${pkg.id}`),
+      stored: nodeDraft(`packageCard:${pkg.id}`, "summaryEn"),
+    },
+    "[one]",
+    "[two]",
+    5,
+  );
+  await acrossOneSave(
+    {
+      label: "Destination page · summary textarea · Arabic · Mobile",
+      open: `route=destination:${destinationId}`,
+      lang: "ar",
+      device: "mobile",
+      layer: `destinationHero:${destinationId}`,
+      control: '[data-field="summary"] textarea',
+      saves: nodeRevision(`destinationHero:${destinationId}`),
+      stored: nodeDraft(`destinationHero:${destinationId}`, "summaryAr"),
+    },
+    "مرحبا",
+    " بكم",
+    0,
+  );
+  await acrossOneSave(
+    {
+      label: "Services overview · heading · English · Desktop",
+      open: "route=serviceIndex:1",
+      lang: "en",
+      device: "desktop",
+      layer: "serviceIndexHero:1",
+      control: '[data-field="heading"] input',
+      saves: nodeRevision("serviceIndexHero:1"),
+      stored: nodeDraft("serviceIndexHero:1", "copy:headingEn"),
+    },
+    "Our",
+    " services",
   );
 
   // A list row: the box exists once the row has been added and saved.
@@ -480,16 +561,114 @@ try {
   }
 
   /* ================================================================== */
+  /* Layers: a control pressed from the keyboard keeps the focus (24)     */
+  /* ================================================================== */
+  // The tree has no rows from the redraw until the new document reports in, so
+  // the focus used to fall to the page with them. It comes back to the same
+  // control of the same row — or to the row, where the control is disabled.
+  const focusedControl = () =>
+    page.evaluate(() => {
+      const element = document.activeElement as HTMLElement | null;
+      return {
+        tag: element?.tagName ?? "",
+        op: element?.getAttribute("data-layer-op") ?? "",
+        strip: element?.closest("[data-layer-ops]")?.getAttribute("data-layer-ops") ?? "",
+        row: element?.getAttribute("data-layer-row") ?? "",
+        label: element?.getAttribute("aria-label") ?? "",
+      };
+    });
+  const layersControl = (address: string, op: string) =>
+    page.locator(`aside[aria-label='Page structure'] [data-layer-ops="${address}"] [data-layer-op="${op}"]`);
+
+  {
+    // A card on Tour packages: hidden, then shown again — the second time from the focus the first redraw gave back.
+    await open({ open: "route=packageIndex:1", lang: "en", device: "desktop" });
+    const card = `packageCard:${pkg.id}`;
+    // Layers nests a card under its destination: selecting it on the canvas opens the tree to it.
+    const picked = await selectCanvasNode(page, `${card}/field:title`);
+    const toggle = layersControl(card, "visibility");
+    await toggle.waitFor({ timeout: 15_000 });
+    const saves = nodeRevision(card);
+    const steps: { cycled: boolean; back: boolean; label: string }[] = [];
+    for (const first of [true, false]) {
+      const before = await saves();
+      const url = canvasUrl(page);
+      if (first) await toggle.focus();
+      await page.keyboard.press("Enter");
+      const cycled = await savedAndRedrawn(saves, before, url);
+      const back = await until(async () => {
+        const now = await focusedControl();
+        return now.strip === card && now.op === "visibility";
+      }, 15_000);
+      steps.push({ cycled, back, label: (await focusedControl()).label });
+    }
+    const [hidden, shown] = steps as [(typeof steps)[0], (typeof steps)[0]];
+    say(
+      "Layers · a card hidden from the keyboard on Tour packages: after the redraw the focus is back on its button, which now says Show",
+      picked.ok && hidden.cycled && hidden.back && /^Show .+ when published$/.test(hidden.label),
+      JSON.stringify(hidden),
+    );
+    say(
+      "Layers · …and Enter on the focus it was given shows the card again, and the focus stays through that redraw too",
+      shown.cycled && shown.back && /^Hide .+ when published$/.test(shown.label),
+      JSON.stringify(shown),
+    );
+    await editorIdle(page);
+  }
+
+  {
+    // A page's layout: the first section moved down, then back up to the top.
+    await open({ open: "page=about", lang: "en", device: "desktop" });
+    const [top] = await sql<{ id: number }[]>`
+      select ps.id from page_sections ps join pages p on p.id = ps.page_id where p.slug = 'about' order by ps.position limit 1`;
+    const section = `section:${top!.id}`;
+    const layoutRevision = async () => (await sql<{ r: number }[]>`select revision as r from pages where slug = 'about'`)[0]!.r;
+    const move = async (op: "down" | "up", focusFirst: boolean) => {
+      const before = await layoutRevision();
+      const url = canvasUrl(page);
+      if (focusFirst) await layersControl(section, op).focus();
+      await page.keyboard.press("Enter");
+      return savedAndRedrawn(layoutRevision, before, url);
+    };
+    await layersControl(section, "down").waitFor({ timeout: 15_000 });
+    const downCycled = await move("down", true);
+    const downBack = await until(async () => {
+      const now = await focusedControl();
+      return now.strip === section && now.op === "down";
+    }, 15_000);
+    const afterDown = await focusedControl();
+    // From there the keyboard alone: Shift+Tab reaches Move up, and the section goes back to the top —
+    // where Move up is disabled, so the focus lands on the section's own row.
+    await page.keyboard.press("Shift+Tab");
+    const onUp = (await focusedControl()).op === "up";
+    const upCycled = await move("up", false);
+    const upBack = await until(async () => (await focusedControl()).row === section, 15_000);
+    say(
+      "Layers · a section moved down from the keyboard: the layout's buttons are disabled while it saves, and the focus still comes back to its Move down",
+      downCycled && downBack,
+      JSON.stringify({ downCycled, afterDown }),
+    );
+    say(
+      "Layers · …moved back to the top from the keyboard, where Move up is disabled: the focus lands on the section's own row",
+      onUp && upCycled && upBack,
+      JSON.stringify({ onUp, upCycled, now: await focusedControl() }),
+    );
+    await editorIdle(page);
+  }
+
+  /* ================================================================== */
   /* Nothing was published                                               */
   /* ================================================================== */
   const liveAfter = JSON.stringify(
     await sql`
       select (select json_agg(published order by id) from page_sections where id in (${hero.id}, ${why.id}, ${richText.id})) as sections,
              (select row_to_json(s) from (select title_en, title_ar, intro_en, intro_ar, timeline_en, benefits from services where id = ${service.id}) s) as service,
-             (select row_to_json(c) from (select title_en, title_ar, summary_en from service_categories where id = ${categoryId}) c) as category`,
+             (select row_to_json(c) from (select title_en, title_ar, summary_en from service_categories where id = ${categoryId}) c) as category,
+             (select row_to_json(p) from (select title_en, summary_en from travel_packages where id = ${pkg.id}) p) as package,
+             (select row_to_json(d) from (select title_en, summary_ar from package_destinations where id = ${destinationId}) d) as destination`,
   );
   const [{ versions }] = await sql<{ versions: number }[]>`select count(*)::int as versions from route_versions`;
-  say("no autosave published anything: the live page sections, category and service are unchanged", liveAfter === liveBefore && versions === 0);
+  say("no autosave published anything: the live page sections, category, service, package and destination are unchanged", liveAfter === liveBefore && versions === 0);
   say("no page errors in the editor or the canvas", errors.length === 0, errors.join(" | "));
 } finally {
   await browser.close();
