@@ -120,6 +120,7 @@ import { isTextTarget, shortcutFor, type ShortcutCommand } from "@/lib/visual-ed
 import { withDomainValue } from "@/lib/visual-editor/buffer-state";
 import { ROUTE_KIND_TEXT } from "@/lib/visual-editor/route-kinds";
 import { LayersPanel, type StructuralOps } from "./layers";
+import { layersFocusOf, layersFocusTarget, type LayersFocus } from "./layers-focus";
 import { PagePanel } from "./page-panel";
 import { RouteLayersPanel } from "./route-layers";
 import { RoutePanel } from "./route-panel";
@@ -391,6 +392,14 @@ export function VisualEditorShell({
    * replaced.
    */
   const holding = useRef<(RestoreTarget & { asked: boolean }) | null>(null);
+  /**
+   * Where the keyboard focus was in Layers when the canvas began to redraw
+   * (Batch 24): the tree has no rows until the new document reports in, so the
+   * focus goes with them — and comes back to the same control of the same row
+   * once the new tree draws it (`layers-focus.ts`). The rows themselves are
+   * never kept: they would describe the document that is going away.
+   */
+  const layersFocus = useRef<LayersFocus | null>(null);
   /**
    * A redraw put off because a direct edit is under way on the canvas
    * (Batch 23): the section whose save asked for it.
@@ -732,6 +741,22 @@ export function VisualEditorShell({
   const onCanvasState = useCallback((next: CanvasState) => setCanvas(next), []);
   const onStructure = useCallback((next: EditorSectionMeta[]) => setSections(next), []);
 
+  /**
+   * A Layers panel has drawn its rows, enabled — the new tree after a redraw,
+   * or the same one after a layout step that was refused (the panel says when:
+   * only it knows when its rows are on screen). The focus that went with the old
+   * rows, or with a disabled button, comes back to the same control — unless
+   * something else has taken it since, which was the person's own doing and
+   * wins.
+   */
+  const restoreLayersFocus = useCallback(() => {
+    const wanted = layersFocus.current;
+    if (!wanted) return;
+    layersFocus.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    layersFocusTarget(document, wanted)?.focus();
+  }, []);
   /** One request to the canvas to select `address`, or to clear when it is `null`. */
   const requestSelection = useCallback(
     (address: string | null) =>
@@ -797,6 +822,10 @@ export function VisualEditorShell({
    * thrown away, a page or language change — starts from nothing, as before.
    */
   const freshCanvas = (keep?: RestoreTarget | null) => {
+    // Layers loses its rows until the new document reports in; where the focus
+    // was among them is kept for the new tree. A second redraw before that finds
+    // no row focused and keeps what the first one took.
+    layersFocus.current = layersFocusOf(document.activeElement) ?? layersFocus.current;
     setCanvas(EMPTY_CANVAS);
     setSections([]);
     setEditRequest(null);
@@ -2228,6 +2257,10 @@ export function VisualEditorShell({
       history: { op: StructureOp; sectionId: number | null; visible?: boolean } | null,
     ): Promise<VisualStructureResult | null> => {
       if (!allowed("editStructure") || !page || !structure || structureBusy) return null;
+      // The layout's buttons are disabled while the write is on its way, and a
+      // disabled button loses the focus at once — before the redraw could see
+      // it. Where it was is taken now, for the tree the redraw brings back.
+      layersFocus.current = layersFocusOf(document.activeElement) ?? layersFocus.current;
       setStructureBusy(true);
       setStructureFailure(null);
       closeHistoryGroup();
@@ -3674,6 +3707,7 @@ export function VisualEditorShell({
             onMove={(section, direction) => void routeMove(section, direction)}
             onVisibility={(section, visible) => void routeVisibility(section, visible)}
             busy={pageBusy}
+            onRowsDrawn={restoreLayersFocus}
           />
         ) : (
         <LayersPanel
@@ -3707,6 +3741,7 @@ export function VisualEditorShell({
               blockType: entry.kind.slice("block:".length),
               usage: usageHeadline(entry.usage),
             }))}
+          onRowsDrawn={restoreLayersFocus}
         />
         )}
 

@@ -112,6 +112,7 @@ export function RouteLayersPanel({
   onMove,
   onVisibility,
   busy,
+  onRowsDrawn,
 }: {
   /** Which kind of page this is, for the panel's own heading (Batch 22; every route kind since Batch 24). */
   kind?: RouteKind;
@@ -133,10 +134,17 @@ export function RouteLayersPanel({
   onMove: (section: EditorSectionMeta, direction: "up" | "down") => void;
   onVisibility: (section: EditorSectionMeta, visible: boolean) => void;
   busy: boolean;
+  /** Called once the rows are drawn and enabled, for the keyboard focus a redraw took with them (`layers-focus.ts`). */
+  onRowsDrawn?: () => void;
 }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   const tree = useMemo(() => nest(sections), [sections]);
   const lockSet = useMemo(() => new Set(locks), [locks]);
+
+  // The rows are the canvas's report, drawn in the same render as it arrives.
+  useEffect(() => {
+    if (tree.length && !busy) onRowsDrawn?.();
+  }, [tree, busy, onRowsDrawn]);
 
   // The tree opens to whatever the canvas selected — the region's ancestors
   // among the regions, and the node's ancestors inside it.
@@ -217,10 +225,11 @@ export function RouteLayersPanel({
         </div>
 
         {hideable && canStructure ? (
-          <div className="flex items-center gap-0.5 px-1.5 pb-1.5" data-route-ops={section.address}>
+          <div className="flex items-center gap-0.5 px-1.5 pb-1.5" data-route-ops={section.address} data-layer-ops={section.address}>
             {movable ? (
               <>
                 <RowButton
+                  op="up"
                   label={`Move ${label} up`}
                   icon="chevronDown"
                   rotate
@@ -228,6 +237,7 @@ export function RouteLayersPanel({
                   onClick={() => onMove(section, "up")}
                 />
                 <RowButton
+                  op="down"
                   label={`Move ${label} down`}
                   icon="chevronDown"
                   disabled={busy || at < 0 || at >= sameKind.length - 1}
@@ -236,6 +246,7 @@ export function RouteLayersPanel({
               </>
             ) : null}
             <RowButton
+              op="visibility"
               label={section.visible ? `Hide ${label} when published` : `Show ${label} when published`}
               icon={section.visible ? "eyeOff" : "eye"}
               disabled={busy}
@@ -276,6 +287,7 @@ export function RouteLayersPanel({
       className="hidden w-60 shrink-0 flex-col border-e border-[var(--admin-line)] bg-[var(--admin-shell)] xl:flex"
       aria-label="Page structure"
       data-route-layers
+      data-layers-panel
     >
       <div className="shrink-0 px-3.5 pb-2 pt-3.5">
         <h2 className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">

@@ -75,6 +75,7 @@ export function LayersPanel({
   onEditText,
   reuseOf,
   reusableBlocks = [],
+  onRowsDrawn,
 }: {
   sections: EditorSectionMeta[];
   structure: PageStructure | null;
@@ -119,6 +120,8 @@ export function LayersPanel({
   reuseOf?: (sectionId: number) => { slot: string; name: string; fields: string[] }[];
   /** Published, active reusable blocks; the picker offers those whose block this page may add. */
   reusableBlocks?: { id: number; name: string; blockType: string; usage: string }[];
+  /** Called once the rows are drawn and enabled, for the keyboard focus a redraw took with them (`layers-focus.ts`). */
+  onRowsDrawn?: () => void;
 }) {
   const [order, setOrder] = useState<EditorSectionMeta[]>(sections);
   const [dragging, setDragging] = useState<number | null>(null);
@@ -169,6 +172,16 @@ export function LayersPanel({
     setOrder(sections);
   }, [signature, sections]);
 
+  /*
+   * The rows are drawn and enabled — a new tree after a redraw, or the same one
+   * after a layout step that was refused. The rows are `order`, which follows
+   * `sections` one render behind: while only one of them holds rows, what is on
+   * screen is the old document's or nothing, and the focus must not land there.
+   */
+  useEffect(() => {
+    if (sections.length && order.length && !busy) onRowsDrawn?.();
+  }, [sections, order, busy, onRowsDrawn]);
+
   const dropOnto = (target: number) => {
     if (dragging === null || dragging === target) return;
     const next = [...order];
@@ -186,6 +199,7 @@ export function LayersPanel({
     <aside
       className="hidden w-60 shrink-0 flex-col border-e border-[var(--admin-line)] bg-[var(--admin-shell)] xl:flex"
       aria-label="Page structure"
+      data-layers-panel
     >
       <div className="flex shrink-0 items-center justify-between gap-2 px-3.5 pb-2 pt-3.5">
         <h2 className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">
@@ -410,8 +424,9 @@ export function LayersPanel({
                   ) : null}
 
                   {canStructure ? (
-                    <div className="flex items-center gap-0.5 px-1.5 pb-1.5">
+                    <div className="flex items-center gap-0.5 px-1.5 pb-1.5" data-layer-ops={section.address}>
                       <RowButton
+                        op="up"
                         label="Move up"
                         icon="chevronDown"
                         rotate
@@ -419,18 +434,21 @@ export function LayersPanel({
                         onClick={() => ops.onMove(section.sectionId, "up")}
                       />
                       <RowButton
+                        op="down"
                         label="Move down"
                         icon="chevronDown"
                         disabled={busy || index === order.length - 1}
                         onClick={() => ops.onMove(section.sectionId, "down")}
                       />
                       <RowButton
+                        op="duplicate"
                         label="Duplicate"
                         icon="layers"
                         disabled={busy}
                         onClick={() => ops.onDuplicate(section.sectionId)}
                       />
                       <RowButton
+                        op="visibility"
                         label={
                           section.visible
                             ? "Hide when the layout is published"
@@ -441,6 +459,7 @@ export function LayersPanel({
                         onClick={() => ops.onVisibility(section.sectionId, !section.visible)}
                       />
                       <RowButton
+                        op="remove"
                         label="Remove from the layout"
                         icon="trash"
                         disabled={busy}
@@ -771,12 +790,15 @@ function BlockPicker({
 }
 
 export function RowButton({
+  op,
   label,
   icon,
   rotate,
   disabled,
   onClick,
 }: {
+  /** Which of the row's structural actions it is — how focus finds it again after a redraw (`layers-focus.ts`). */
+  op: string;
   label: string;
   icon: string;
   rotate?: boolean;
@@ -790,6 +812,7 @@ export function RowButton({
       disabled={disabled}
       aria-label={label}
       title={label}
+      data-layer-op={op}
       className="admin-btn admin-btn-sm px-1.5"
     >
       <Icon name={icon} size={11} className={rotate ? "rotate-180" : undefined} />
