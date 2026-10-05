@@ -79,6 +79,8 @@ export async function saveBrand(_prev: ActionState, form: FormData): Promise<Act
         taglineAr: field(form, "taglineAr", 190),
         legalNameEn: field(form, "legalNameEn", 190),
         legalNameAr: field(form, "legalNameAr", 190),
+        footerLineEn: field(form, "footerLineEn", 300),
+        footerLineAr: field(form, "footerLineAr", 300),
       },
       form,
       "settings.manage",

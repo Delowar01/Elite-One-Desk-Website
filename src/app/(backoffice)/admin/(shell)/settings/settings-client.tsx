@@ -109,6 +109,10 @@ export function SettingsClient({
               hint: "Used in the copyright line and the Organization structured data.",
             })}
             {text("legalNameAr", "legalNameAr", "Legal name (العربية)", settings.brand.legalNameAr, { rtl: true })}
+            {text("footerLineEn", "footerLineEn", "Footer line (English)", settings.brand.footerLineEn, {
+              hint: "The sentence under the logo in the footer. Leave empty to use the standard one.",
+            })}
+            {text("footerLineAr", "footerLineAr", "Footer line (العربية)", settings.brand.footerLineAr, { rtl: true })}
           </div>
           <div className="mt-5">
             <SubmitButton />

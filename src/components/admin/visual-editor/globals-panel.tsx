@@ -918,7 +918,7 @@ export function GlobalsPanel({
                   key={`brand-${settings.brand.siteNameEn}`}
                   phase={phaseOf("brand")}
                   onPhase={setPhaseOf("brand")}
-                  title="Names and tagline"
+                  title="Names, tagline and footer line"
                   description="Used in the header, the footer and the copyright line."
                   csrf={csrf}
                   action={saveBrand}
@@ -943,6 +943,17 @@ export function GlobalsPanel({
                       </Row>
                       <Row label="Legal name (العربية)">
                         <input name="legalNameAr" defaultValue={settings.brand.legalNameAr} dir="rtl" className="admin-input" />
+                      </Row>
+                      <Row label="Footer line (English)" hint="Under the logo in the footer. Empty uses the standard sentence.">
+                        <input name="footerLineEn" defaultValue={settings.brand.footerLineEn ?? ""} className="admin-input" />
+                      </Row>
+                      <Row label="Footer line (العربية)">
+                        <input
+                          name="footerLineAr"
+                          defaultValue={settings.brand.footerLineAr ?? ""}
+                          dir="rtl"
+                          className="admin-input"
+                        />
                       </Row>
                     </div>
                   )}

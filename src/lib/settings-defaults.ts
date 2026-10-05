@@ -13,6 +13,13 @@ export const SETTINGS_DEFAULTS = {
     taglineAr: "سفر. أعمال. خدمات حكومية. مكتب واحد.",
     legalNameEn: "Elite One Desk",
     legalNameAr: "إيليت ون ديسك",
+    /**
+     * The footer's descriptive line (Batch 24). Empty is the site's standard
+     * sentence *in that edition* — an Arabic footer left empty reads the
+     * standard Arabic, never somebody's English.
+     */
+    footerLineEn: "" as string,
+    footerLineAr: "" as string,
   },
   contact: {
     phone: "",

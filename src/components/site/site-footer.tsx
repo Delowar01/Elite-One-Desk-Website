@@ -27,6 +27,9 @@ export async function SiteFooter({ locale }: { locale: Locale }) {
   const country = pick(locale, contact.countryEn, contact.countryAr);
   const hours = pick(locale, contact.hoursEn, contact.hoursAr);
   const disclaimer = pick(locale, disclaimers.governmentEn, disclaimers.governmentAr);
+  // The brand's own line for this edition, else the standard sentence for this
+  // edition (Batch 24) — never the other language's custom line.
+  const line = (locale === "ar" ? brand.footerLineAr : brand.footerLineEn)?.trim() || dict.footer.builtLine;
 
   const columns = [
     { title: dict.footer.services, items: services },
@@ -38,7 +41,7 @@ export async function SiteFooter({ locale }: { locale: Locale }) {
       <div className="shell shell-wide grid gap-12 pt-[clamp(3.5rem,5vw,5.5rem)] pb-10 lg:grid-cols-[1.35fr_repeat(3,minmax(0,1fr))] lg:gap-10">
         <div className="max-w-sm">
           <Logo height={46} />
-          <p className="mt-5 text-small text-muted">{dict.footer.builtLine}</p>
+          <p className="mt-5 text-small text-muted">{line}</p>
           {social.length ? (
             <div className="mt-6">
               <p className="eyebrow mb-3">{dict.footer.followUs}</p>
