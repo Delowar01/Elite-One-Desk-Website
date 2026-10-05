@@ -5,6 +5,7 @@ import { eq, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { routeDraftMedia } from "@/lib/routes/media-usage";
 import {
+  packageDestinations,
   pageSections,
   pages,
   reusableComponents,
@@ -31,8 +32,17 @@ export type MediaUse = { label: string; where: string; href: string };
 export async function mediaUsage(id: number): Promise<MediaUse[]> {
   const uses: MediaUse[] = [];
 
-  const [sections, categories, serviceRows, packageRows, videoRows, testimonialRows, componentRows, routeDrafts] =
-    await Promise.all([
+  const [
+    sections,
+    categories,
+    serviceRows,
+    packageRows,
+    destinationRows,
+    videoRows,
+    testimonialRows,
+    componentRows,
+    routeDrafts,
+  ] = await Promise.all([
       db
         .select({
           id: pageSections.id,
@@ -59,6 +69,16 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
         .select({ id: travelPackages.id, title: travelPackages.titleEn })
         .from(travelPackages)
         .where(eq(travelPackages.imageId, id)),
+      /**
+       * A destination's picture (Batch 24): its page's hero. Missing here
+       * until then, so a destination's only picture could be deleted as
+       * "unused" and the page lose it without a word (`image_id` is
+       * `ON DELETE SET NULL`).
+       */
+      db
+        .select({ id: packageDestinations.id, title: packageDestinations.titleEn })
+        .from(packageDestinations)
+        .where(eq(packageDestinations.imageId, id)),
       db
         .select({ id: videos.id, title: videos.titleEn })
         .from(videos)
@@ -84,8 +104,9 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
           `,
         ),
       /**
-       * A dynamic route's draft (Batch 22): a picture a category's or a
-       * service's page has chosen and not yet published. Deleting it would
+       * A dynamic route's draft (Batch 22): a picture a category's, a
+       * service's, a package's or a destination's page — or a package's card
+       * on the Tour packages page (Batch 24) — has chosen and not yet published. Deleting it would
        * leave the draft unpublishable, so it is placed as surely as a
        * section's draft — while its record exists to publish it.
        */
@@ -107,6 +128,9 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
   }
   for (const row of packageRows) {
     uses.push({ label: row.title, where: "Travel packages", href: `/admin/packages/${row.id}` });
+  }
+  for (const row of destinationRows) {
+    uses.push({ label: row.title, where: "Destinations", href: `/admin/packages/destinations/${row.id}` });
   }
   for (const row of videoRows) {
     uses.push({ label: row.title, where: "Videos", href: `/admin/videos` });

@@ -6,6 +6,7 @@ import { requirePermission } from "@/lib/auth/guard";
 import { db } from "@/lib/db";
 import {
   media,
+  packageDestinations,
   pageSections,
   reusableComponents,
   serviceCategories,
@@ -52,6 +53,7 @@ export default async function MediaPage({
         union all select ${serviceCategories.imageId} from ${serviceCategories} where ${serviceCategories.imageId} is not null
         union all select ${services.imageId} from ${services} where ${services.imageId} is not null
         union all select ${travelPackages.imageId} from ${travelPackages} where ${travelPackages.imageId} is not null
+        union all select ${packageDestinations.imageId} from ${packageDestinations} where ${packageDestinations.imageId} is not null
         union all select ${videos.thumbnailId} from ${videos} where ${videos.thumbnailId} is not null
         union all select ${testimonials.imageId} from ${testimonials} where ${testimonials.imageId} is not null
         union all
