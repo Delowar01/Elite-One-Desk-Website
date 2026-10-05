@@ -8,8 +8,9 @@
  * filed under none. The catalogue gets the full walk — reached through the
  * admin's own navigation and the page list, the real page in the canvas,
  * Layers named by the records, a card selected on the canvas, a direct edit, a
- * card re-filed and hidden, Arabic, Desktop/Tablet/Mobile, a Mobile style, an
- * entrance and its Replay, Preview, a public page that never moves, Publish,
+ * card re-filed and hidden, the hide taken back by Undo and put back by Redo,
+ * Arabic, Desktop/Tablet/Mobile, a Mobile style, an entrance and its Replay,
+ * Preview, a public page that never moves, Publish,
  * the public result, history, compare, Restore and Discard, then keyboard and
  * accessible names. A package's page, a destination's page and the services
  * overview get the core of it; a package made on the Packages screen while the
@@ -224,6 +225,19 @@ try {
   say("Catalogue: Hide in Layers is a draft of the package's visibility", hidden);
   say("Catalogue: …and the canvas draws the card dimmed rather than dropping it", dimmed);
 
+  // Undo and Redo, from the toolbar: the visibility draft goes, and comes back as it was.
+  const dimmedCard = () => frame().locator(`[data-eod-address="packageCard:${loose.id}"][data-eod-hidden]`).count();
+  await page.locator('[data-history="undo"]').click();
+  const shownAgain = await until(async () => (await draftOf(`packageCard:${loose.id}`))?.draft_content?.isPublished === undefined, 20_000);
+  await editorSettled(page, 60_000);
+  const whole = await until(async () => (await dimmedCard()) === 0, 15_000);
+  say("Catalogue: Undo shows the card again — its visibility draft goes, and the canvas draws it whole", shownAgain && whole);
+  await page.locator('[data-history="redo"]').click();
+  const hiddenAgain = await until(async () => (await draftOf(`packageCard:${loose.id}`))?.draft_content?.isPublished?.value === false, 20_000);
+  await editorSettled(page, 60_000);
+  const dimmedAgain = await until(async () => (await dimmedCard()) === 1, 15_000);
+  say("Catalogue: Redo hides it again, as the same draft, dimmed again", hiddenAgain && dimmedAgain);
+
   // The hero's wording, in Arabic: its own field, right to left — and switching wrote nothing.
   const writes = await revisions();
   await page.getByRole("button", { name: "العربية", exact: true }).click();
@@ -399,6 +413,14 @@ try {
     await place.fill("Three cities and the coast");
     say("Package: an Inspector edit is a draft of the package", await until(async () => (await draftOf(`packageHero:${main.id}`))?.draft_content?.destinationEn?.value === "Three cities and the coast", 20_000));
     await editorIdle(page);
+    // Undo and Redo on the package's own page: the edit goes, and comes back as the draft.
+    await page.locator('[data-history="undo"]').click();
+    const placeUndone = await until(async () => (await draftOf(`packageHero:${main.id}`))?.draft_content?.destinationEn === undefined, 20_000);
+    await editorIdle(page);
+    await page.locator('[data-history="redo"]').click();
+    const placeRedone = await until(async () => (await draftOf(`packageHero:${main.id}`))?.draft_content?.destinationEn?.value === "Three cities and the coast", 20_000);
+    await editorIdle(page);
+    say("Package: Undo takes the Inspector edit back, and Redo puts it back as the draft", placeUndone && placeRedone);
     await selectFromLayers(page, `packageHighlights:${main.id}`);
     await contentTab();
     await field("highlights").getByRole("button", { name: /^Add/ }).click();

@@ -94,7 +94,7 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,522 `PASS`
+Every probe clean, with the counts in `probes/expected.json` — 1,525 `PASS`
 across the thirty-seven as of Batch 24 (1,425 across thirty-six at Batch 23,
 1,377 across thirty-four at Batch 22,
 1,266 across thirty-three at Batch 21A, 1,255 across thirty-two at Batch 21,
@@ -227,7 +227,7 @@ the same against the Visual Editor publishing the service's page; and the
 editor's own buffer, opened before a Services save, drafting only what is
 typed in it, so its publication keeps the Services screen's newer value.
 
-Batch 24 added one probe and extended one. `route-packages` (81 checks, port
+Batch 24 added one probe and extended one. `route-packages` (84 checks, port
 3738) opens the package catalogue, a package's own page, a destination's page
 and the services overview in the Visual Editor, choosing its records from the
 data. The catalogue gets the full walk: reached from the sidebar and the page
@@ -236,7 +236,8 @@ destination), the real `/packages` in the canvas, Layers nesting each
 destination's group and its cards under the generated catalogue and naming
 them by their records, a card selected on the canvas with its words, picture
 and structure, a card's title typed on the canvas, a card re-filed to "Build
-your own" and drawn there at once, a card hidden from Layers and drawn dimmed,
+your own" and drawn there at once, a card hidden from Layers and drawn dimmed, shown again by Undo and hidden
+again by Redo,
 the Arabic eyebrow in its own field, Desktop/Tablet/Mobile, a Mobile-only
 style, an entrance and its Replay, Preview, a public page that never moved,
 the keyboard, then Publish, the public result (the hidden package's own page
@@ -245,7 +246,8 @@ category page's service card is typed into on the canvas too — the canvas fix
 this batch made (a card's link took the focus, and its `focusout` ended every
 edit of a card's words at once, since Batch 21). A package's page, a
 destination's page and the services overview get the core: their regions,
-their generated parts explaining themselves, an Inspector edit, a list row, a
+their generated parts explaining themselves, an Inspector edit (taken back by
+Undo and put back by Redo on the package's page), a list row, a
 picture, Preview and Publish. The Packages screen, opened before the editor in
 another tab publishes the package, keeps the editor's work and refuses an
 overlapping save by name. Last, a package made on the Packages screen is
