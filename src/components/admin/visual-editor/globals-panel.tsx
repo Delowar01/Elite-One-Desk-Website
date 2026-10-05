@@ -918,7 +918,7 @@ export function GlobalsPanel({
                   key={`brand-${settings.brand.siteNameEn}`}
                   phase={phaseOf("brand")}
                   onPhase={setPhaseOf("brand")}
-                  title="Names, tagline and footer line"
+                  title="Names and tagline"
                   description="Used in the header, the footer and the copyright line."
                   csrf={csrf}
                   action={saveBrand}

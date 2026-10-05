@@ -2,8 +2,9 @@
  * Batch 11 acceptance: the Globals drawer's settings half, in a browser.
  *
  * Contact, Brand and the feature switches, each proved where it actually shows
- * — the footer, the copyright line, the header — and each proved not to touch
- * the page on the canvas. The last section is the one that worried me most:
+ * — the footer, the copyright line, the footer's own line (Batch 24, in its
+ * edition only), the header — and each proved not to touch the page on the
+ * canvas. The last section is the one that worried me most:
  * a global save while a section autosave is still in flight.
  */
 
@@ -150,11 +151,16 @@ try {
   await openGlobals();
   const brand = drawer().locator("form", { hasText: "Names and tagline" });
   await brand.locator('input[name="legalNameEn"]').fill("Probe Holdings LLC");
+  // Batch 24: the footer's descriptive line is the brand's own, per edition.
+  await brand.locator('input[name="footerLineEn"]').fill("One desk, as the probe writes it.");
   canvasBefore = canvasUrl();
   await brand.getByRole("button", { name: "Save" }).click();
   await brand.getByText("Saved live.").first().waitFor({ timeout: 30_000 });
   await editor.getByText("Ready", { exact: true }).waitFor({ timeout: 60_000 });
-  say("the copyright line follows the legal name", (await visitorHtml()).includes("Probe Holdings LLC"));
+  const branded = await visitorHtml();
+  say("the copyright line follows the legal name", branded.includes("Probe Holdings LLC"));
+  say("the footer's line is the one typed in the Globals drawer", branded.includes("One desk, as the probe writes it."));
+  say("…in its own edition only: the Arabic footer keeps its standard sentence", !(await visitorHtml("/ar")).includes("One desk, as the probe writes it."));
   say(
     "Brand still says Saved live. after the refresh remounted it",
     await savedStillShowing(drawer().locator("form", { hasText: "Names and tagline" }), canvasBefore),

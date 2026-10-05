@@ -94,7 +94,7 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,525 `PASS`
+Every probe clean, with the counts in `probes/expected.json` — 1,527 `PASS`
 across the thirty-seven as of Batch 24 (1,425 across thirty-six at Batch 23,
 1,377 across thirty-four at Batch 22,
 1,266 across thirty-three at Batch 21A, 1,255 across thirty-two at Batch 21,
@@ -227,7 +227,7 @@ the same against the Visual Editor publishing the service's page; and the
 editor's own buffer, opened before a Services save, drafting only what is
 typed in it, so its publication keeps the Services screen's newer value.
 
-Batch 24 added one probe and extended one. `route-packages` (84 checks, port
+Batch 24 added one probe and extended two. `route-packages` (84 checks, port
 3738) opens the package catalogue, a package's own page, a destination's page
 and the services overview in the Visual Editor, choosing its records from the
 data. The catalogue gets the full walk: reached from the sidebar and the page
@@ -258,4 +258,7 @@ summary on Mobile and the services overview's heading, each typed across a
 real autosave; and Layers keeping the keyboard's place — a card hidden from the
 keyboard on Tour packages and shown again from the focus the redraw gave back,
 a page's section moved down and back to the top, where its disabled Move up
-hands the focus to the section's own row.
+hands the focus to the section's own row. `globals-settings` gained 2 checks
+(26): the footer's descriptive line typed in the Globals drawer is the public
+footer's, in its own edition only — the Arabic footer keeps its standard
+sentence.
