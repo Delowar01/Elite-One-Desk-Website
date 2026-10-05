@@ -175,6 +175,15 @@ export type BlockDef = {
    * navigation, and an entrance on it would only delay the way back.
    */
   still?: true;
+  /**
+   * A section whose cards are drawn live from records another screen manages
+   * (Batch 24) — categories, packages, testimonials, videos, questions. Its
+   * own fields are the words around the cards; the cards themselves carry no
+   * address of their own, so a click on one selects the section, and the
+   * Inspector says here where they come from and links to the screen that
+   * changes them. Nothing about it is stored.
+   */
+  live?: { explain: string; source: { label: string; href: string } };
 };
 
 const localisedText = (name: string, label: string, extra: Partial<FieldDef> = {}): FieldDef => ({
@@ -319,6 +328,11 @@ export const BLOCKS: BlockDef[] = [
     name: "Main services",
     description: "The service groups, drawn live from Service Categories.",
     scope: "home",
+    live: {
+      explain:
+        "Each card is a published service category — its icon, title, summary and picture — in the categories' own order. Change a card on that category's own page in the Visual Editor, or on the Service Categories screen.",
+      source: { label: "Service Categories", href: "/admin/categories" },
+    },
     fields: [
       localisedText("eyebrow", "Eyebrow"),
       localisedText("title", "Title"),
@@ -433,6 +447,11 @@ export const BLOCKS: BlockDef[] = [
     name: "Package grid",
     description: "Tour packages drawn live from the Packages screen.",
     scope: "any",
+    live: {
+      explain:
+        "Each card is a published package — featured first — drawn as it is on the Tour packages page. Change a card there in the Visual Editor (choose Tour packages from the page list), or on the Packages screen.",
+      source: { label: "Packages", href: "/admin/packages" },
+    },
     fields: [
       localisedText("eyebrow", "Eyebrow"),
       localisedText("title", "Title"),
@@ -453,6 +472,10 @@ export const BLOCKS: BlockDef[] = [
     name: "Video showcase",
     description: "Poster-first YouTube gallery. Nothing loads from YouTube until a visitor presses play.",
     scope: "any",
+    live: {
+      explain: "Each video is a published entry on the Videos screen — its title, poster and link — featured first.",
+      source: { label: "Videos", href: "/admin/videos" },
+    },
     fields: [
       localisedText("eyebrow", "Eyebrow"),
       localisedText("title", "Title"),
@@ -532,6 +555,10 @@ export const BLOCKS: BlockDef[] = [
     name: "Testimonials",
     description: "Published testimonials, featured ones first.",
     scope: "any",
+    live: {
+      explain: "Each quote is a published testimonial — its words, name, role and picture — featured first.",
+      source: { label: "Testimonials", href: "/admin/testimonials" },
+    },
     fields: [
       localisedText("eyebrow", "Eyebrow"),
       localisedText("title", "Title"),
@@ -543,6 +570,11 @@ export const BLOCKS: BlockDef[] = [
     name: "FAQ",
     description: "Questions from the FAQ screen. Choose global questions or one category's.",
     scope: "any",
+    live: {
+      explain:
+        "Each question and answer is a published entry on the FAQs screen, in its order there. This section chooses which set is shown.",
+      source: { label: "FAQs", href: "/admin/faqs" },
+    },
     fields: [
       localisedText("eyebrow", "Eyebrow"),
       localisedText("title", "Title"),

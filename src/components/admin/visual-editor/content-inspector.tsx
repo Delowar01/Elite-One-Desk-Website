@@ -2,6 +2,7 @@
 
 import { BlockEditor } from "@/components/admin/block-editor";
 import type { MediaOption } from "@/components/admin/media-picker";
+import { Icon } from "@/components/ui/icon";
 import type { BlockDef } from "@/lib/cms/blocks";
 import { ROUTE_STRUCTURAL_FIELDS } from "@/lib/routes/blocks";
 import { readReuse, slotDef } from "@/lib/cms/reuse/reference";
@@ -103,6 +104,19 @@ export function ContentBody({
         screen of empty boxes would be a different, and false, answer to "what
         does this section say".
       */}
+      {block.live && !route ? (
+        // A section drawn from another screen's records (Batch 24): its cards
+        // have no address of their own, so this is what a click on one shows.
+        <div className="admin-card p-2.5" role="note" data-block-live={block.type}>
+          <p className="text-[0.74rem] font-semibold text-strong">Cards drawn live — not typed here</p>
+          <p className="mt-1 text-[0.72rem] leading-relaxed text-muted">{block.live.explain}</p>
+          <a href={block.live.source.href} target="_blank" rel="noopener" className="admin-btn admin-btn-sm mt-1.5">
+            <Icon name="arrowUpRight" size={11} />
+            {block.live.source.label}
+          </a>
+          <p className="mt-1.5 text-[0.7rem] text-muted">The words around them are this section’s own, below.</p>
+        </div>
+      ) : null}
       {canContent ? null : (
         <p className="text-[0.72rem] leading-relaxed text-muted" role="note" data-permission-note="content.edit">
           You can view this section’s content, but your role does not allow editing it.
