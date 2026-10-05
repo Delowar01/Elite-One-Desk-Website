@@ -24,8 +24,12 @@ export type RouteOwnerSummary = {
 
 export type RouteSummaryView = {
   routeKey: string;
-  /** Which kind of page this is: a category's (Batch 21) or a service's own (Batch 22). */
-  kind: "category" | "service";
+  /**
+   * Which kind of page this is: a category's (Batch 21), a service's own
+   * (Batch 22), a package's, a destination's, the package catalogue or the
+   * services overview (Batch 24).
+   */
+  kind: "category" | "service" | "package" | "destination" | "packageIndex" | "serviceIndex";
   title: string;
   /** The public path, without a locale prefix: `/services/<slug>`, `/services/<category>/<service>`. */
   path: string;

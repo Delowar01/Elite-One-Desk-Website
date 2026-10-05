@@ -3,7 +3,7 @@ import "server-only";
 import { eq, inArray } from "drizzle-orm";
 
 import type { Executor } from "@/lib/db/revision";
-import { faqs, serviceCategories, serviceSubcategories, services } from "@/lib/db/schema";
+import { faqs, packageDestinations, serviceCategories, serviceSubcategories, services, travelPackages } from "@/lib/db/schema";
 
 import {
   adminHrefOf,
@@ -17,6 +17,49 @@ import {
   type CategoryData,
 } from "./category";
 import { ownerKeyOf, parseOwnerKey, type RouteDocument, type RouteKind, type RouteOwner, type RouteOwnerType } from "./owners";
+import {
+  CATALOGUE_PATH,
+  catalogueAdminHrefOf,
+  catalogueOptions,
+  catalogueOwnerBelongs,
+  catalogueOwnerLabel,
+  catalogueOwnersOf,
+  catalogueRegionVisible,
+  catalogueStoredValuesOf,
+  describeCatalogueValue,
+  describePackageValue,
+  destinationAdminHrefOf,
+  destinationOwnerBelongs,
+  destinationOwnerLabel,
+  destinationOwnersOf,
+  destinationPathOf,
+  destinationStoredValuesOf,
+  effectiveCatalogueData,
+  effectiveDestinationData,
+  effectivePackageData,
+  loadCatalogueData,
+  loadDestinationData,
+  loadPackageData,
+  packageAdminHrefOf,
+  packageOwnerBelongs,
+  packageOwnerLabel,
+  packageOwnersOf,
+  packagePathOf,
+  packageRegionVisible,
+  packageStoredValuesOf,
+  type CatalogueData,
+  type DestinationData,
+  type PackageData,
+} from "./packages";
+import {
+  SERVICE_INDEX_PATH,
+  serviceIndexAdminHrefOf,
+  serviceIndexOwnerBelongs,
+  serviceIndexOwnerLabel,
+  serviceIndexOwnersOf,
+  serviceIndexStoredValuesOf,
+  type ServiceIndexData,
+} from "./service-index-model";
 import {
   effectiveServiceData,
   loadServiceData,
@@ -72,7 +115,7 @@ import type { NodeRow } from "./store";
  * that way. The context always pairs an adapter with its own route's data.
  */
 
-export type RouteData = CategoryData | ServiceData;
+export type RouteData = CategoryData | ServiceData | PackageData | DestinationData | CatalogueData | ServiceIndexData;
 
 export type RouteOption = { value: string; label: string };
 
@@ -94,8 +137,12 @@ export interface RouteAdapter<D extends RouteData = RouteData> {
   title(data: D): string;
   path(data: D): string;
   published(data: D): boolean;
-  /** The record the activity log files a change under. */
-  entity(data: D): { type: "category" | "service"; id: number };
+  /**
+   * The record the activity log files a change under: the category, service,
+   * package or destination — or, for an overview, which is no record, the
+   * route itself (Batch 24).
+   */
+  entity(data: D): { type: "category" | "service" | "package" | "destination" | "route"; id: number | string };
   /** Writes the patched columns of the patched rows, and the new orders — nothing else. */
   apply(tx: Executor, context: RouteContext<D>): Promise<void>;
   /** Of these owners — regions stored against this route but no longer drawn on it — the ones whose record still exists. */
@@ -379,7 +426,198 @@ export const serviceAdapter: RouteAdapter<ServiceData> = {
   },
 };
 
-const ADAPTERS: Record<RouteKind, RouteAdapter> = { category: categoryAdapter, service: serviceAdapter };
+/* -------------------------------------------------------------------------- */
+/* A package's own page (Batch 24)                                            */
+/* -------------------------------------------------------------------------- */
+
+const NO_IDS: ReadonlySet<number> = new Set();
+
+export const packageAdapter: RouteAdapter<PackageData> = {
+  kind: "package",
+  load: (on, id, options) => loadPackageData(on, id, options),
+  owners: (data) => packageOwnersOf(data),
+  belongs: (owner, data) => packageOwnerBelongs(owner, data),
+  storedValues: (owner, data, copy) => packageStoredValuesOf(owner, data, copy),
+  members: () => [],
+  effective: (data, patches) => effectivePackageData(data, patches),
+  groupIds: () => NO_IDS,
+  label: (owner, data) => packageOwnerLabel(owner, data),
+  adminHref: (owner, data) => packageAdminHrefOf(owner, data),
+  visible: (owner, effective) => packageRegionVisible(owner, effective),
+  options: () => ({}),
+  describe: (spec, value) => describePackageValue(spec, value),
+  title: (data) => data.pkg.titleEn,
+  path: (data) => packagePathOf(data.pkg),
+  published: (data) => data.pkg.isPublished,
+  entity: (data) => ({ type: "package", id: data.pkg.id }),
+
+  /** The package row's patched columns — whichever regions patched them — in one update. */
+  async apply(tx, context) {
+    const set: Record<string, unknown> = {};
+    for (const [ownerKey, patch] of context.patches) {
+      const owner = parseOwnerKey(ownerKey);
+      if (!owner || owner.id !== context.data.pkg.id) continue;
+      for (const [key, entry] of Object.entries(patch)) {
+        if (key.startsWith("copy:") || key.startsWith("order:")) continue;
+        const spec = specOf(owner.type, key);
+        if (spec) set[key] = publishedValue(spec, entry.value);
+      }
+    }
+    if (!Object.keys(set).length) return;
+    await tx.update(travelPackages).set({ ...set, updatedAt: new Date() }).where(eq(travelPackages.id, context.data.pkg.id));
+  },
+
+  existing: async () => new Set(),
+};
+
+/* -------------------------------------------------------------------------- */
+/* A destination's own page (Batch 24)                                        */
+/* -------------------------------------------------------------------------- */
+
+export const destinationAdapter: RouteAdapter<DestinationData> = {
+  kind: "destination",
+  load: (on, id, options) => loadDestinationData(on, id, options),
+  owners: (data) => destinationOwnersOf(data),
+  belongs: (owner, data) => destinationOwnerBelongs(owner, data),
+  storedValues: (owner, data, copy) => destinationStoredValuesOf(owner, data, copy),
+  members: () => [],
+  effective: (data, patches) => effectiveDestinationData(data, patches),
+  groupIds: () => NO_IDS,
+  label: (owner, data) => destinationOwnerLabel(owner, data),
+  adminHref: (owner, data) => destinationAdminHrefOf(owner, data),
+  visible: () => true,
+  options: () => ({}),
+  describe: (spec, value) => describePackageValue(spec, value),
+  title: (data) => data.destination.titleEn,
+  path: (data) => destinationPathOf(data.destination),
+  published: (data) => data.destination.isPublished,
+  entity: (data) => ({ type: "destination", id: data.destination.id }),
+
+  /** The destination row's patched columns. Its packages are the catalogue's to write. */
+  async apply(tx, context) {
+    const set: Record<string, unknown> = {};
+    for (const [ownerKey, patch] of context.patches) {
+      const owner = parseOwnerKey(ownerKey);
+      if (!owner || owner.type !== "destinationHero" || owner.id !== context.data.destination.id) continue;
+      for (const [key, entry] of Object.entries(patch)) {
+        if (key.startsWith("copy:") || key.startsWith("order:")) continue;
+        const spec = specOf(owner.type, key);
+        if (spec) set[key] = publishedValue(spec, entry.value);
+      }
+    }
+    if (!Object.keys(set).length) return;
+    await tx
+      .update(packageDestinations)
+      .set({ ...set, updatedAt: new Date() })
+      .where(eq(packageDestinations.id, context.data.destination.id));
+  },
+
+  existing: async () => new Set(),
+};
+
+/* -------------------------------------------------------------------------- */
+/* The package catalogue, /packages (Batch 24)                                */
+/* -------------------------------------------------------------------------- */
+
+export const catalogueAdapter: RouteAdapter<CatalogueData> = {
+  kind: "packageIndex",
+  load: (on, id, options) => loadCatalogueData(on, id, options),
+  owners: (data) => catalogueOwnersOf(data),
+  belongs: (owner, data) => catalogueOwnerBelongs(owner, data),
+  storedValues: (owner, data, copy) => catalogueStoredValuesOf(owner, data, copy),
+  members: () => [],
+  effective: (data, patches) => effectiveCatalogueData(data, patches),
+  /** A card may be filed under any destination, a not-yet-published one included — as on the Packages screen. */
+  groupIds: (data) => new Set(data.destinations.map((row) => row.id)),
+  label: (owner, data) => catalogueOwnerLabel(owner, data),
+  adminHref: (owner) => catalogueAdminHrefOf(owner),
+  visible: (owner, effective) => catalogueRegionVisible(owner, effective),
+  options: (owner, data) => catalogueOptions(owner, data),
+  describe: (spec, value, data) => describeCatalogueValue(spec, value, data),
+  title: () => "Tour packages",
+  path: () => CATALOGUE_PATH,
+  published: () => true,
+  entity: () => ({ type: "route", id: "packageIndex:1" }),
+
+  /** Each patched destination's and package's patched columns, one update per row. */
+  async apply(tx, context) {
+    const now = new Date();
+    const writes = new Writes();
+    for (const [ownerKey, patch] of context.patches) {
+      const owner = parseOwnerKey(ownerKey);
+      if (!owner) continue;
+      const row = owner.type === "destinationGroup" ? `destination:${owner.id}` : owner.type === "packageCard" ? `package:${owner.id}` : null;
+      if (!row) continue;
+      for (const [key, entry] of Object.entries(patch)) {
+        if (key.startsWith("copy:") || key.startsWith("order:")) continue;
+        const spec = specOf(owner.type, key);
+        if (spec) writes.add(row, key, publishedValue(spec, entry.value));
+      }
+    }
+    for (const [row, set] of writes.entries()) {
+      const [kind, raw] = row.split(":");
+      const id = Number(raw);
+      const values = { ...set, updatedAt: now };
+      if (kind === "destination") await tx.update(packageDestinations).set(values).where(eq(packageDestinations.id, id));
+      else await tx.update(travelPackages).set(values).where(eq(travelPackages.id, id));
+    }
+  },
+
+  async existing(tx, owners) {
+    const out = new Set<string>();
+    const destinationIds = idsOf(owners, "destinationGroup");
+    if (destinationIds.length) {
+      const rows = await tx
+        .select({ id: packageDestinations.id })
+        .from(packageDestinations)
+        .where(inArray(packageDestinations.id, destinationIds));
+      // A group is drawn only for a published destination; an unpublished one's region is kept, dormant.
+      for (const row of rows) out.add(`destinationGroup:${row.id}`);
+    }
+    const packageIds = idsOf(owners, "packageCard");
+    if (packageIds.length) {
+      const rows = await tx.select({ id: travelPackages.id }).from(travelPackages).where(inArray(travelPackages.id, packageIds));
+      for (const row of rows) out.add(`packageCard:${row.id}`);
+    }
+    return out;
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/* The services overview, /services (Batch 24)                                */
+/* -------------------------------------------------------------------------- */
+
+export const serviceIndexAdapter: RouteAdapter<ServiceIndexData> = {
+  kind: "serviceIndex",
+  load: async (_on, id) => (id === 1 ? { id: 1 } : null),
+  owners: () => serviceIndexOwnersOf(),
+  belongs: (owner) => serviceIndexOwnerBelongs(owner),
+  storedValues: (owner, _data, copy) => serviceIndexStoredValuesOf(owner, copy),
+  members: () => [],
+  effective: (data) => data,
+  groupIds: () => NO_IDS,
+  label: (owner) => serviceIndexOwnerLabel(owner),
+  adminHref: (owner) => serviceIndexAdminHrefOf(owner),
+  visible: () => true,
+  options: () => ({}),
+  describe: (spec, value) => describePackageValue(spec, value),
+  title: () => "Services overview",
+  path: () => SERVICE_INDEX_PATH,
+  published: () => true,
+  entity: () => ({ type: "route", id: "serviceIndex:1" }),
+  /** Its regions hold template copy only, which publishing promotes on their own rows. No record is written. */
+  apply: async () => undefined,
+  existing: async () => new Set(),
+};
+
+const ADAPTERS: Record<RouteKind, RouteAdapter> = {
+  category: categoryAdapter,
+  service: serviceAdapter,
+  package: packageAdapter,
+  destination: destinationAdapter,
+  packageIndex: catalogueAdapter,
+  serviceIndex: serviceIndexAdapter,
+};
 
 export const adapterOf = (kind: RouteKind): RouteAdapter => ADAPTERS[kind];
 
@@ -387,4 +625,8 @@ export const adapterOf = (kind: RouteKind): RouteAdapter => ADAPTERS[kind];
 export const RECORD_OWNERS: Record<RouteKind, readonly RouteOwnerType[]> = {
   category: ["service", "faq", "subcategory"],
   service: ["faq"],
+  package: [],
+  destination: [],
+  packageIndex: ["destinationGroup", "packageCard"],
+  serviceIndex: [],
 };

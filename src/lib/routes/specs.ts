@@ -81,12 +81,16 @@ const order = (list: ListName, label: string): FieldSpec => ({
   list,
 });
 
-/** A service list: the Services screen's limits — 16 items of at most 400 characters. */
-const items = (column: string, label: string): FieldSpec => ({
+/**
+ * A plain `{ en, ar }` list: 16 items of at most 400 characters by default —
+ * the Services screen's limits; a package's highlights keep the Packages
+ * screen's 300 (Batch 24).
+ */
+const items = (column: string, label: string, max = 400): FieldSpec => ({
   key: column,
   field: column,
   check: "items",
-  max: 400,
+  max,
   rows: 16,
   label,
 });
@@ -173,6 +177,73 @@ export const SPECS: Record<RouteOwnerType, FieldSpec[]> = {
   serviceNotices: [],
   serviceRequest: [...copyPair("heading", "Heading", 190), ...copyPair("intro", "Introduction", 300)],
   serviceRelated: [...copyPair("heading", "Heading", 190)],
+
+  /*
+   * A package's own page (Batch 24). The columns and their limits are the
+   * Packages screen's (`packages/actions.ts`). The package's slug, legacy
+   * region, destination, featured flag, visibility and order are absent on
+   * purpose: identity and structure, kept on the Packages screen and on the
+   * catalogue's card. "Place" is the free-text label beside the map pin
+   * (`destination_en` / `_ar`) — not the destination the package is filed
+   * under, which is `destinationId`.
+   */
+  packageHero: [
+    ...pair("title", "title", "Title", "text", 190, true),
+    ...pair("place", "destination", "Place", "text", 120),
+    ...pair("duration", "duration", "Duration", "text", 80),
+    ...pair("summary", "summary", "Summary", "text", 2000),
+    { key: "imageId", field: "image", check: "media", label: "Picture" },
+    ...copyPair("ctaLabel", "Request button text", 64),
+  ],
+  packageCrumbs: [],
+  packageBody: [...pair("body", "body", "Description", "rich", 20000)],
+  packageHighlights: [...copyPair("heading", "Heading", 190), items("highlights", "Highlights", 300)],
+  packageRequest: [...copyPair("heading", "Heading", 190), ...copyPair("intro", "Introduction", 300)],
+
+  /* A destination's own page (Batch 24): the Destinations screen's columns and limits. */
+  destinationHero: [
+    ...copyPair("eyebrow", "Eyebrow", 120),
+    ...pair("title", "title", "Title", "text", 190, true),
+    ...pair("summary", "summary", "Summary", "text", 2000),
+    { key: "imageId", field: "image", check: "media", label: "Picture" },
+  ],
+  destinationCrumbs: [],
+  destinationPackages: [...copyPair("backLabel", "Link back text", 64)],
+
+  /*
+   * The catalogue, `/packages` (Batch 24). A group is its destination: its
+   * title is the destination's own column. A card is its package's: the same
+   * columns as the package's page, plus the structure a service card offers —
+   * which destination it is filed under, featured, and shown or hidden.
+   */
+  packageIndexHero: [
+    ...copyPair("eyebrow", "Eyebrow", 120),
+    ...copyPair("heading", "Heading", 190),
+    ...copyPair("intro", "Introduction", 600),
+  ],
+  packageIndexCrumbs: [],
+  packageIndexCatalogue: [],
+  destinationGroup: [...pair("title", "title", "Destination name", "text", 190, true), ...copyPair("linkLabel", "Link text", 64)],
+  packageCard: [
+    ...pair("title", "title", "Title", "text", 190, true),
+    ...pair("place", "destination", "Place", "text", 120),
+    ...pair("duration", "duration", "Duration", "text", 80),
+    ...pair("summary", "summary", "Summary", "text", 2000),
+    { key: "imageId", field: "image", check: "media", label: "Card picture" },
+    { key: "destinationId", field: "group", check: "group", structural: true, label: "Destination" },
+    { key: "isFeatured", field: "featured", check: "flag", label: "Featured" },
+    { key: "isPublished", field: "published", check: "flag", structural: true, label: "Shown on the website" },
+  ],
+  packageIndexCustom: [...copyPair("heading", "Heading", 190), ...copyPair("intro", "Introduction", 600)],
+
+  /* The services overview, `/services` (Batch 24): its own wording only; every row is a category's. */
+  serviceIndexHero: [
+    ...copyPair("eyebrow", "Eyebrow", 120),
+    ...copyPair("heading", "Heading", 190),
+    ...copyPair("intro", "Introduction", 600),
+  ],
+  serviceIndexCrumbs: [],
+  serviceIndexCategories: [],
 };
 
 export const specOf = (type: RouteOwnerType, key: string): FieldSpec | undefined =>
@@ -181,7 +252,10 @@ export const specOf = (type: RouteOwnerType, key: string): FieldSpec | undefined
 export const blockTypeOf = (owner: RouteOwner): string => ROUTE_BLOCK_OF[owner.type];
 
 /** The record an owner's columns live on; `template` for a region that holds only its route's own wording. */
-export type RouteResource = { kind: "category" | "subcategory" | "service" | "faq" | "template"; id: number };
+export type RouteResource = {
+  kind: "category" | "subcategory" | "service" | "faq" | "package" | "destination" | "template";
+  id: number;
+};
 
 /** Which record an owner edits. A service's page regions all edit the service's own row (Batch 22). */
 export function resourceOf(owner: RouteOwner): RouteResource {
@@ -202,19 +276,50 @@ export function resourceOf(owner: RouteOwner): RouteResource {
       return { kind: "service", id: owner.id };
     case "faq":
       return { kind: "faq", id: owner.id };
+    case "packageHero":
+    case "packageBody":
+    case "packageHighlights":
+    case "packageCard":
+      return { kind: "package", id: owner.id };
+    case "destinationHero":
+    case "destinationGroup":
+      return { kind: "destination", id: owner.id };
     default:
       return { kind: "template", id: owner.id };
   }
 }
 
+/** The capability that owns a region's record, beside the editor's own (`content.edit`, …). */
+export type RouteDomain = "services.manage" | "faqs.manage" | "packages.manage";
+
+/** Every region of a package's page, a destination's page and the catalogue (Batch 24). */
+const PACKAGE_DOMAIN: ReadonlySet<RouteOwnerType> = new Set<RouteOwnerType>([
+  "packageHero",
+  "packageCrumbs",
+  "packageBody",
+  "packageHighlights",
+  "packageRequest",
+  "destinationHero",
+  "destinationCrumbs",
+  "destinationPackages",
+  "packageIndexHero",
+  "packageIndexCrumbs",
+  "packageIndexCatalogue",
+  "destinationGroup",
+  "packageCard",
+  "packageIndexCustom",
+]);
+
 /**
  * The resource capability an owner's content needs, beside `content.edit`.
- * The questions are the FAQ screen's; everything else on a route — a
- * category, its groups and cards, a service and its page, and their template
- * copy — is the services screens'.
+ * The questions are the FAQ screen's; a package, a destination, the
+ * catalogue and their wording are the Packages screens' (Batch 24);
+ * everything else on a route — a category, its groups and cards, a service
+ * and its page, the services overview, and their template copy — is the
+ * services screens'.
  */
-export const domainPermissionOf = (type: RouteOwnerType): "services.manage" | "faqs.manage" =>
-  type === "faq" ? "faqs.manage" : "services.manage";
+export const domainPermissionOf = (type: RouteOwnerType): RouteDomain =>
+  type === "faq" ? "faqs.manage" : PACKAGE_DOMAIN.has(type) ? "packages.manage" : "services.manage";
 
 /* -------------------------------------------------------------------------- */
 /* Comparing                                                                  */
@@ -507,7 +612,8 @@ export function readSubmittedWith(
       case "group": {
         const id = text ? Number(text) : null;
         if (id !== null && !context.groupIds.has(id)) {
-          return { ok: false, problem: { key: spec.key, message: "Choose a group from this category." } };
+          const message = spec.key === "destinationId" ? "Choose one of the destinations." : "Choose a group from this category.";
+          return { ok: false, problem: { key: spec.key, message } };
         }
         out[spec.key] = id;
         break;
@@ -724,7 +830,9 @@ export function storedProblem(
     case "group":
       return value === null || (typeof value === "number" && groupIds.has(value))
         ? null
-        : `${spec.label} names a group that no longer exists.`;
+        : spec.key === "destinationId"
+          ? `${spec.label} names a destination that no longer exists.`
+          : `${spec.label} names a group that no longer exists.`;
     case "order":
       return Array.isArray(value) && value.every((id) => Number.isInteger(id)) ? null : `${spec.label} is not valid.`;
     case "items":

@@ -96,7 +96,16 @@ export type RouteOwnerInfo = {
   /** "Service “Hotel Reservation”". */
   label: string;
   /** The record behind it; `template` for the route's own wording. */
-  resource: { kind: "category" | "subcategory" | "service" | "faq" | "template"; id: number };
+  resource: {
+    kind: "category" | "subcategory" | "service" | "faq" | "package" | "destination" | "template";
+    id: number;
+  };
+  /**
+   * The capability that owns the record, beside the editor's own (Batch 24):
+   * what decides, in the editor as on the server, whether this role may change
+   * the region's words and structure.
+   */
+  domain: "services.manage" | "faqs.manage" | "packages.manage";
   /** The admin screen that manages the record, when there is one. */
   adminHref: string | null;
   /**

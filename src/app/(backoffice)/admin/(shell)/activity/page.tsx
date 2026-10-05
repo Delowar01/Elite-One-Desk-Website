@@ -20,6 +20,10 @@ const ENTITY_LABEL: Record<string, string> = {
   subcategory: "Group",
   service: "Service",
   package: "Package",
+  destination: "Destination",
+  // A Visual Editor publication of a page that is no one record (Batch 24):
+  // the Tour packages catalogue or the services overview.
+  route: "Overview page",
   video: "Video",
   testimonial: "Testimonial",
   faq: "FAQ",

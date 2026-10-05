@@ -4,7 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Icon } from "@/components/ui/icon";
 import type { Locale } from "@/lib/i18n/config";
+import type { RouteKind } from "@/lib/routes/owners";
 import { blockNameOf } from "@/lib/visual-editor/labels";
+import { ROUTE_KIND_TEXT } from "@/lib/visual-editor/route-kinds";
 import type { EditorSectionMeta } from "@/lib/visual-editor/protocol";
 import { ancestorAddresses, buildLayerTree } from "@/lib/visual-editor/tree";
 
@@ -30,10 +32,26 @@ import { Badge, editableOf, LayerRow, LockButton, NO_ADDRESSES, RowButton } from
  * and each of those is a draft of the record, published with the rest.
  */
 
-/** The regions that can be reordered and hidden, and what they are called. */
+/** The regions that can be reordered. */
 const MOVABLE = new Set(["route-subcategory", "route-service-card", "route-faq"]);
-/** Regions with nothing to type at all: the site's own chrome. */
-const GENERATED = new Set(["route-category-crumbs", "route-service-crumbs", "route-service-notices"]);
+/**
+ * The regions that can be hidden: every movable one, and a package's card
+ * (Batch 24), whose order is the Packages screen's but whose visibility is the
+ * card's own.
+ */
+const HIDEABLE = new Set([...MOVABLE, "route-package-card"]);
+/** Regions with nothing to type at all: the site's own chrome, and lists drawn from other records. */
+const GENERATED = new Set([
+  "route-category-crumbs",
+  "route-service-crumbs",
+  "route-service-notices",
+  "route-package-crumbs",
+  "route-destination-crumbs",
+  "route-package-index-crumbs",
+  "route-package-index-catalogue",
+  "route-service-index-crumbs",
+  "route-service-index-categories",
+]);
 
 /** A region's name in the tree: its own words where it has some, its block's name otherwise. */
 function regionLabel(section: EditorSectionMeta): string {
@@ -41,7 +59,15 @@ function regionLabel(section: EditorSectionMeta): string {
   switch (section.blockType) {
     case "route-category-hero":
     case "route-service-hero":
+    case "route-package-hero":
+    case "route-destination-hero":
+    case "route-package-index-hero":
+    case "route-service-index-hero":
       return "Hero";
+    case "route-destination-group":
+      return own("field:title") ?? "Destination";
+    case "route-package-card":
+      return own("field:title") ?? "Package";
     case "route-subcategory":
       return own("field:title") ?? "Group";
     case "route-service-card":
@@ -87,8 +113,8 @@ export function RouteLayersPanel({
   onVisibility,
   busy,
 }: {
-  /** Which kind of page this is, for the panel's own heading (Batch 22). */
-  kind?: "category" | "service";
+  /** Which kind of page this is, for the panel's own heading (Batch 22; every route kind since Batch 24). */
+  kind?: RouteKind;
   title: string;
   sections: EditorSectionMeta[];
   selectedSectionId: number | null;
@@ -148,6 +174,7 @@ export function RouteLayersPanel({
     const active = section.sectionId === selectedSectionId;
     const expanded = open.has(section.address);
     const movable = MOVABLE.has(section.blockType);
+    const hideable = HIDEABLE.has(section.blockType);
     const nodes = buildLayerTree(section.blockType, section.nodes, { values: valuesOf(section.sectionId), locale });
     const sameKind = siblings.filter((entry) => entry.section.blockType === section.blockType);
     const at = sameKind.indexOf(branch);
@@ -189,21 +216,25 @@ export function RouteLayersPanel({
           <LockButton address={section.address} locked={lockSet.has(section.address)} label={label} onToggle={onToggleLock} />
         </div>
 
-        {movable && canStructure ? (
+        {hideable && canStructure ? (
           <div className="flex items-center gap-0.5 px-1.5 pb-1.5" data-route-ops={section.address}>
-            <RowButton
-              label={`Move ${label} up`}
-              icon="chevronDown"
-              rotate
-              disabled={busy || at <= 0}
-              onClick={() => onMove(section, "up")}
-            />
-            <RowButton
-              label={`Move ${label} down`}
-              icon="chevronDown"
-              disabled={busy || at < 0 || at >= sameKind.length - 1}
-              onClick={() => onMove(section, "down")}
-            />
+            {movable ? (
+              <>
+                <RowButton
+                  label={`Move ${label} up`}
+                  icon="chevronDown"
+                  rotate
+                  disabled={busy || at <= 0}
+                  onClick={() => onMove(section, "up")}
+                />
+                <RowButton
+                  label={`Move ${label} down`}
+                  icon="chevronDown"
+                  disabled={busy || at < 0 || at >= sameKind.length - 1}
+                  onClick={() => onMove(section, "down")}
+                />
+              </>
+            ) : null}
             <RowButton
               label={section.visible ? `Hide ${label} when published` : `Show ${label} when published`}
               icon={section.visible ? "eyeOff" : "eye"}
@@ -248,15 +279,13 @@ export function RouteLayersPanel({
     >
       <div className="shrink-0 px-3.5 pb-2 pt-3.5">
         <h2 className="text-[0.7rem] font-semibold uppercase tracking-[0.08em] text-muted">
-          {kind === "service" ? "Service" : "Service category"}
+          {ROUTE_KIND_TEXT[kind].heading}
         </h2>
         <p className="mt-0.5 truncate text-[0.78rem] text-strong">{title}</p>
       </div>
       {canStructure ? null : (
         <p className="mx-3.5 mb-2 shrink-0 text-[0.68rem] leading-relaxed text-muted" role="note" data-permission-note="content.structure">
-          {kind === "service"
-            ? "You can view this page’s structure, but your role does not allow reordering or hiding its questions."
-            : "You can view this page’s structure, but your role does not allow reordering or hiding its groups, services or questions."}
+          {ROUTE_KIND_TEXT[kind].structureNote}
         </p>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">

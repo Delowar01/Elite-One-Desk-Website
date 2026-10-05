@@ -63,7 +63,7 @@ import { removedSections, type PageStructure } from "@/lib/cms/structure";
 import { LOCALE_LABELS, LOCALES, type Locale } from "@/lib/i18n/config";
 import { previewPagePath, previewRoutePath } from "@/lib/page-path";
 import { ORDER_KEY, ROUTE_LIST_OF, ROUTE_STRUCTURAL_FIELDS } from "@/lib/routes/blocks";
-import { isRouteEditorKey, parseOwnerKey } from "@/lib/routes/owners";
+import { isRouteEditorKey, parseOwnerKey, type RouteKind } from "@/lib/routes/owners";
 import type { RouteActionResult, RouteHistoryView, RouteSummaryView } from "@/lib/routes/views";
 import type { RouteOwnerInfo, VisualSectionData, VisualStructureResult } from "@/lib/visual-editor/content";
 import {
@@ -118,6 +118,7 @@ import {
 } from "@/lib/visual-editor/history";
 import { isTextTarget, shortcutFor, type ShortcutCommand } from "@/lib/visual-editor/protocol";
 import { withDomainValue } from "@/lib/visual-editor/buffer-state";
+import { ROUTE_KIND_TEXT } from "@/lib/visual-editor/route-kinds";
 import { LayersPanel, type StructuralOps } from "./layers";
 import { PagePanel } from "./page-panel";
 import { RouteLayersPanel } from "./route-layers";
@@ -136,17 +137,15 @@ export type EditablePage = {
   isPublished: boolean;
   /**
    * What the document is: a CMS page, a service category's route (Batch 21),
-   * or a service's own page (Batch 22).
+   * a service's own page (Batch 22), a package's or a destination's page, the
+   * package catalogue or the services overview (Batch 24).
    */
-  kind: "page" | "category" | "service";
-  /** For a service: its category's name, which is the group it is listed under. */
+  kind: "page" | RouteKind;
+  /**
+   * The group the picker lists it under, where its kind has groups: a
+   * service's category, a package's destination.
+   */
   group?: string;
-};
-
-/** What a route document is called in the editor's own sentences. */
-const ROUTE_NOUN: Record<Exclude<EditablePage["kind"], "page">, string> = {
-  category: "category page",
-  service: "service page",
 };
 
 const STATUS: Record<CanvasState["status"], { label: string; tone: string }> = {
@@ -256,7 +255,7 @@ export function VisualEditorShell({
    * and template wording, `faqs.manage` for its questions. The route actions
    * check them again on every write.
    */
-  domains: { services: boolean; faqs: boolean };
+  domains: { services: boolean; faqs: boolean; packages: boolean };
   /** `navigation.manage` — may edit the header and footer menus. */
   canManageNavigation: boolean;
   /** `settings.manage` — may edit brand, contact, WhatsApp, disclaimers, features, social. */
@@ -506,12 +505,22 @@ export function VisualEditorShell({
    * what the page drawer publishes, and what Layers may do.
    */
   const isRoute = Boolean(page) && page.kind !== "page";
-  const routeNoun = page && page.kind !== "page" ? ROUTE_NOUN[page.kind] : "page";
-  /** Whether this session may change a route region's record — its resource's own capability. */
+  const routeKind: RouteKind = page && page.kind !== "page" ? page.kind : "category";
+  const routeNoun = page && page.kind !== "page" ? ROUTE_KIND_TEXT[page.kind].noun : "page";
+  /**
+   * Whether this session may change a route region's record — the capability
+   * of the domain the server named for it (Batch 24: packages too).
+   */
   const mayRecord = useCallback(
-    (info: RouteOwnerInfo): boolean => (info.resource.kind === "faq" ? domains.faqs : domains.services),
+    (info: RouteOwnerInfo): boolean =>
+      info.domain === "faqs.manage" ? domains.faqs : info.domain === "packages.manage" ? domains.packages : domains.services,
     [domains],
   );
+  /** Whether the page's own structure — order, visibility — is this role's to change at all. */
+  const routeStructureDomain =
+    routeKind === "package" || routeKind === "destination" || routeKind === "packageIndex"
+      ? domains.packages
+      : domains.services || domains.faqs;
   /** Which page is being edited, as a value — `page` itself is a new object on every refresh. */
   const pageId = page?.id ?? null;
   pageRef.current = page?.id ?? null;
@@ -722,6 +731,7 @@ export function VisualEditorShell({
 
   const onCanvasState = useCallback((next: CanvasState) => setCanvas(next), []);
   const onStructure = useCallback((next: EditorSectionMeta[]) => setSections(next), []);
+
   /** One request to the canvas to select `address`, or to clear when it is `null`. */
   const requestSelection = useCallback(
     (address: string | null) =>
@@ -3646,7 +3656,7 @@ export function VisualEditorShell({
       <div className="flex min-h-0 flex-1">
         {isRoute ? (
           <RouteLayersPanel
-            kind={page.kind === "service" ? "service" : "category"}
+            kind={routeKind}
             title={page.title}
             sections={sections}
             selectedSectionId={activeId}
@@ -3656,7 +3666,7 @@ export function VisualEditorShell({
             valuesOf={valuesOf}
             dirtyIds={dirtyIds}
             ready={ready}
-            canStructure={may("editStructure") && (domains.services || domains.faqs)}
+            canStructure={may("editStructure") && routeStructureDomain}
             canEditText={may("editContent")}
             onSelect={ask}
             onToggleLock={toggleLock}
@@ -3728,7 +3738,7 @@ export function VisualEditorShell({
 
           {isRoute ? (
             <RoutePanel
-              kind={page.kind === "service" ? "service" : "category"}
+              kind={routeKind}
               open={pagePanel}
               onClose={() => setPagePanel(false)}
               locale={locale}
@@ -3881,24 +3891,32 @@ export function VisualEditorShell({
 
 /**
  * The page picker's groups, in the order the editor lists documents: the CMS
- * pages, the service categories, and then one group per category holding its
- * services (Batch 22) — so seventy services are found by the category a
- * person already knows them by, and a category's services stay together
- * whatever their ids.
+ * pages, the two overviews (Batch 24), the service categories, one group per
+ * category holding its services (Batch 22), the destinations, and one group
+ * per destination holding its packages (Batch 24) — so seventy services and
+ * every package are found by the place a person already knows them by.
  */
 function pickerGroups(pages: EditablePage[]): { key: string; label: string; rows: EditablePage[] }[] {
   const out: { key: string; label: string; rows: EditablePage[] }[] = [];
   const pagesOnly = pages.filter((row) => row.kind === "page");
   if (pagesOnly.length) out.push({ key: "page", label: "Pages", rows: pagesOnly });
+  const overviews = pages.filter((row) => row.kind === "serviceIndex" || row.kind === "packageIndex");
+  if (overviews.length) out.push({ key: "overview", label: "Overviews", rows: overviews });
   const categories = pages.filter((row) => row.kind === "category");
   if (categories.length) out.push({ key: "category", label: "Service Categories", rows: categories });
-  const byGroup = new Map<string, EditablePage[]>();
-  for (const row of pages) {
-    if (row.kind !== "service") continue;
-    const group = row.group ?? "Services";
-    byGroup.set(group, [...(byGroup.get(group) ?? []), row]);
-  }
-  for (const [group, rows] of byGroup) out.push({ key: `service:${group}`, label: `Services · ${group}`, rows });
+  const grouped = (kind: "service" | "package", fallback: string, prefix: string) => {
+    const byGroup = new Map<string, EditablePage[]>();
+    for (const row of pages) {
+      if (row.kind !== kind) continue;
+      const group = row.group ?? fallback;
+      byGroup.set(group, [...(byGroup.get(group) ?? []), row]);
+    }
+    for (const [group, rows] of byGroup) out.push({ key: `${kind}:${group}`, label: `${prefix} · ${group}`, rows });
+  };
+  grouped("service", "Services", "Services");
+  const destinations = pages.filter((row) => row.kind === "destination");
+  if (destinations.length) out.push({ key: "destination", label: "Destinations", rows: destinations });
+  grouped("package", "No destination", "Packages");
   return out;
 }
 

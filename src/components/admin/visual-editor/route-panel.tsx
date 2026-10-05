@@ -5,8 +5,10 @@ import { useState } from "react";
 import { Icon } from "@/components/ui/icon";
 import type { Locale } from "@/lib/i18n/config";
 import { localeHref } from "@/lib/i18n/config";
-import { UNDO_SCOPE_NOTE } from "@/lib/visual-editor/history";
+import type { RouteKind } from "@/lib/routes/owners";
 import type { RouteCompareView, RouteHistoryView, RouteSummaryView } from "@/lib/routes/views";
+import { UNDO_SCOPE_NOTE } from "@/lib/visual-editor/history";
+import { ROUTE_KIND_TEXT } from "@/lib/visual-editor/route-kinds";
 
 /**
  * A dynamic route's own drawer (Batch 21): what is waiting on the page, the
@@ -39,8 +41,8 @@ export function RoutePanel({
   onCompare,
   onRefresh,
 }: {
-  /** Which kind of page this is: a category's (Batch 21) or a service's own (Batch 22). */
-  kind?: "category" | "service";
+  /** Which kind of page this is: a category's (Batch 21), a service's own (Batch 22), or one of Batch 24's. */
+  kind?: RouteKind;
   open: boolean;
   onClose: () => void;
   locale: Locale;
@@ -85,7 +87,7 @@ export function RoutePanel({
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-[var(--admin-line)] px-3.5 py-2.5">
         <h2 className="flex-1 truncate text-[0.82rem] font-semibold text-strong">
-          {summary?.title ?? (kind === "service" ? "Service" : "Service category")}
+          {summary?.title ?? ROUTE_KIND_TEXT[kind].heading}
         </h2>
         <button
           type="button"
@@ -183,16 +185,10 @@ export function RoutePanel({
             </p>
           )}
 
-          <p className="text-[0.7rem] leading-relaxed text-muted">
-            {kind === "service"
-              ? "Publishing changes what visitors see on this service's page and writes the service and its own questions in one step. The Services and FAQs screens keep working as before."
-              : "Publishing changes what visitors see on this category page and writes the category, its groups, services and questions in one step. The Service Categories, Services and FAQs screens keep working as before."}
-          </p>
+          <p className="text-[0.7rem] leading-relaxed text-muted">{ROUTE_KIND_TEXT[kind].publishNote}</p>
           {summary && !summary.isPublished ? (
             <p className="text-[0.7rem] leading-relaxed" style={{ color: "var(--color-peach)" }} role="note" data-route-unpublished>
-              {kind === "service"
-                ? "This service — or its category — is not published, so visitors cannot open this page yet. That is set on the Services and Service Categories screens."
-                : "This category is not published, so visitors cannot open this page yet. That is set on the Service Categories screen."}
+              {ROUTE_KIND_TEXT[kind].unpublishedNote}
             </p>
           ) : null}
           {summary ? (

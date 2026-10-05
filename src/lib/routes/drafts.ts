@@ -7,12 +7,18 @@ import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 
 import {
   adapterOf,
+  catalogueAdapter,
   categoryAdapter,
+  destinationAdapter,
+  packageAdapter,
   serviceAdapter,
+  serviceIndexAdapter,
   type RouteAdapter,
   type RouteContext,
   type RouteData,
 } from "./adapter";
+import type { CatalogueData, DestinationData, PackageData } from "./packages";
+import type { ServiceIndexData } from "./service-index-model";
 import type { CategoryData } from "./category";
 import {
   documentEditorKey,
@@ -29,6 +35,7 @@ import {
   applyOrder,
   blockTypeOf,
   conflictsOf,
+  domainPermissionOf,
   nextPatchWith,
   pendingPatch,
   readSubmittedWith,
@@ -105,6 +112,22 @@ export const readCategoryContext = (on: Executor, categoryId: number, options: {
 /** A service's own page, typed as one (Batch 22). */
 export const readServiceContext = (on: Executor, serviceId: number, options: { lock?: boolean } = {}) =>
   buildContext<ServiceData>(serviceAdapter, on, { kind: "service", id: serviceId }, options);
+
+/** A package's own page, typed as one (Batch 24). */
+export const readPackageContext = (on: Executor, packageId: number, options: { lock?: boolean } = {}) =>
+  buildContext<PackageData>(packageAdapter, on, { kind: "package", id: packageId }, options);
+
+/** A destination's own page, typed as one (Batch 24). */
+export const readDestinationContext = (on: Executor, destinationId: number, options: { lock?: boolean } = {}) =>
+  buildContext<DestinationData>(destinationAdapter, on, { kind: "destination", id: destinationId }, options);
+
+/** The package catalogue, typed as one (Batch 24). */
+export const readCatalogueContext = (on: Executor, options: { lock?: boolean } = {}) =>
+  buildContext<CatalogueData>(catalogueAdapter, on, { kind: "packageIndex", id: 1 }, options);
+
+/** The services overview, typed as one (Batch 24). */
+export const readServiceIndexContext = (on: Executor, options: { lock?: boolean } = {}) =>
+  buildContext<ServiceIndexData>(serviceIndexAdapter, on, { kind: "serviceIndex", id: 1 }, options);
 
 /** The owner an address names, if it is drawn on this route. */
 export function ownerIn(context: RouteContext, ownerKey: unknown): RouteOwner | null {
@@ -228,6 +251,7 @@ export function ownerData(context: RouteContext, owner: RouteOwner): VisualSecti
       routeKey: context.routeKey,
       label: context.adapter.label(owner, context.effective),
       resource: resourceOf(owner),
+      domain: domainPermissionOf(owner.type),
       adminHref: context.adapter.adminHref(owner, context.data),
       conflicts,
       options: context.adapter.options(owner, context.effective),

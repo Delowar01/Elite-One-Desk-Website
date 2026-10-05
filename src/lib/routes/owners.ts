@@ -55,6 +55,36 @@ export const ROUTE_OWNER_CODES = {
   serviceNotices: 19,
   serviceRequest: 20,
   serviceRelated: 21,
+  /**
+   * A package's own page (Batch 24), keyed by the package's id — never its
+   * address — so a rename or a move to another destination never moves a
+   * region, a draft or a style.
+   */
+  packageHero: 22,
+  packageCrumbs: 23,
+  packageBody: 24,
+  packageHighlights: 25,
+  packageRequest: 26,
+  /** A destination's own page (Batch 24), keyed by the destination's id: its slug can change, its id cannot. */
+  destinationHero: 27,
+  destinationCrumbs: 28,
+  destinationPackages: 29,
+  /**
+   * The packages catalogue, `/packages` (Batch 24). Its own regions are keyed by
+   * the catalogue's singleton id, 1; a destination's group by the destination's
+   * id, a card by its package's. `packageCard` is the package's *card* on the
+   * catalogue — a different element from its page's hero, with its own styles.
+   */
+  packageIndexHero: 30,
+  packageIndexCrumbs: 31,
+  packageIndexCatalogue: 32,
+  destinationGroup: 33,
+  packageCard: 34,
+  packageIndexCustom: 35,
+  /** The services overview, `/services` (Batch 24): the singleton id 1. */
+  serviceIndexHero: 36,
+  serviceIndexCrumbs: 37,
+  serviceIndexCategories: 38,
 } as const;
 
 export type RouteOwnerType = keyof typeof ROUTE_OWNER_CODES;
@@ -127,6 +157,14 @@ export const ownerKeyOfEditorKey = (key: unknown): string | null => {
  *     the service's: renaming it, or moving it to another category, changes
  *     its address and never its document — so its drafts and its history stay
  *     with it.
+ *   · `package`, `destination` — a package's or a destination's own page
+ *     (Batch 24), by the row's id. Both answer at `/packages/<slug>`; a
+ *     destination's slug can change on the Destinations screen, its document
+ *     cannot.
+ *   · `packageIndex`, `serviceIndex` — the `/packages` catalogue and the
+ *     `/services` overview (Batch 24). There is one of each, so the id is
+ *     always 1 — the key grammar wants a number, and the adapters accept no
+ *     other.
  *
  * A route key and an owner key are different vocabularies, stored in
  * different columns (`route_nodes.route_key`, `route_versions.route_key`
@@ -134,13 +172,26 @@ export const ownerKeyOfEditorKey = (key: unknown): string | null => {
  * `service:12` is a page, the owner `service:12` is a card on its category's
  * page, and neither parser accepts the other's meaning.
  */
-export type RouteKind = "category" | "service";
+export type RouteKind = "category" | "service" | "package" | "destination" | "packageIndex" | "serviceIndex";
 
 export type RouteDocument = { kind: RouteKind; id: number };
 
-export const ROUTE_KINDS: readonly RouteKind[] = ["category", "service"];
+export const ROUTE_KINDS: readonly RouteKind[] = [
+  "category",
+  "service",
+  "package",
+  "destination",
+  "packageIndex",
+  "serviceIndex",
+];
 
-const ROUTE_KEY = /^(category|service):([1-9][0-9]{0,8})$/;
+/** The one id a singleton route — an overview, not a record — answers to. */
+export const SINGLETON_ID = 1;
+
+/** Route kinds that are one page each rather than one page per record. */
+export const SINGLETON_KINDS: ReadonlySet<RouteKind> = new Set(["packageIndex", "serviceIndex"]);
+
+const ROUTE_KEY = /^(category|service|package|destination|packageIndex|serviceIndex):([1-9][0-9]{0,8})$/;
 
 export const routeKeyOf = (document: RouteDocument): string => `${document.kind}:${document.id}`;
 
@@ -149,7 +200,9 @@ export function parseRouteKey(input: unknown): RouteDocument | null {
   const match = ROUTE_KEY.exec(input);
   if (!match) return null;
   const id = Number(match[2]);
-  return isOwnerRecordId(id) ? { kind: match[1] as RouteKind, id } : null;
+  const kind = match[1] as RouteKind;
+  if (!isOwnerRecordId(id)) return null;
+  return SINGLETON_KINDS.has(kind) && id !== SINGLETON_ID ? null : { kind, id };
 }
 
 /**
@@ -157,7 +210,14 @@ export function parseRouteKey(input: unknown): RouteDocument | null {
  * category route is its category's hero; a service route is its service's
  * hero. Append-only, like the codes.
  */
-const ROOT_OWNER: Record<RouteKind, RouteOwnerType> = { category: "category", service: "serviceHero" };
+const ROOT_OWNER: Record<RouteKind, RouteOwnerType> = {
+  category: "category",
+  service: "serviceHero",
+  package: "packageHero",
+  destination: "destinationHero",
+  packageIndex: "packageIndexHero",
+  serviceIndex: "serviceIndexHero",
+};
 const KIND_OF_ROOT = new Map<RouteOwnerType, RouteKind>(
   (Object.entries(ROOT_OWNER) as [RouteKind, RouteOwnerType][]).map(([kind, type]) => [type, kind]),
 );

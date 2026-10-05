@@ -25,6 +25,7 @@ import {
   storedProblem,
   type FieldSpec,
   type StoredPatch,
+  type RouteDomain,
 } from "./specs";
 import { publishedOf, writeNodeGuarded, type NodeRow } from "./store";
 import {
@@ -60,7 +61,14 @@ import {
  */
 
 /** The authority a caller holds, asked about one resource capability at a time. */
-export type Allowed = (permission: "services.manage" | "faqs.manage") => boolean;
+export type Allowed = (permission: RouteDomain) => boolean;
+
+/** What publishing needs that the publisher lacks, in a sentence (Batch 24: packages too). */
+const PUBLISH_DENIED: Record<RouteDomain, string> = {
+  "services.manage": "Publishing these changes needs permission to manage services. Nothing was published.",
+  "faqs.manage": "Publishing these changes needs permission to manage FAQs. Nothing was published.",
+  "packages.manage": "Publishing these changes needs permission to manage packages. Nothing was published.",
+};
 
 export type Actor = { id: number | null; name: string };
 
@@ -293,14 +301,7 @@ export async function publishRoute(input: {
         if (!context.patches.has(ownerKeyOf(owner))) continue;
         const permission = domainPermissionOf(owner.type);
         if (!input.allowed(permission)) {
-          throw new Refusal({
-            ok: false,
-            reason: "denied",
-            message:
-              permission === "faqs.manage"
-                ? "Publishing these changes needs permission to manage FAQs. Nothing was published."
-                : "Publishing these changes needs permission to manage services. Nothing was published.",
-          });
+          throw new Refusal({ ok: false, reason: "denied", message: PUBLISH_DENIED[permission] });
         }
       }
 

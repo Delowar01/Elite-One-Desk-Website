@@ -117,23 +117,29 @@ export function motionSignature(regions: Region[]): string {
  * attributes (`data-m-reveal` and its variables) and run by the shared
  * `MotionRuntime`, exactly as a node's is — so no wrapper is added and the
  * layout is the template's whatever the region does.
+ *
+ * `atmosphere` is the template's own `data-atmosphere` (Batch 24): a landing
+ * hero lights the page behind it (`body:has([data-atmosphere])` in
+ * `globals.css`), and a hero that became a region must keep doing so.
  */
 export function RegionRoot({
   region,
   as = "section",
   className,
   id,
+  atmosphere,
   children,
 }: {
   region: Region;
   as?: ElementType;
   className?: string;
   id?: string;
+  atmosphere?: "landing" | "form" | "home";
   children: ReactNode;
 }) {
   const Tag = as;
   return (
-    <Tag id={id} {...region.root} className={className}>
+    <Tag id={id} data-atmosphere={atmosphere} {...region.root} className={className}>
       {children}
     </Tag>
   );

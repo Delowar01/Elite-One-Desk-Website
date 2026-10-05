@@ -26,6 +26,7 @@ import {
   ownerOfEditorKey,
   parseRouteKey,
   routeKeyOf,
+  SINGLETON_KINDS,
   type RouteOwner,
 } from "@/lib/routes/owners";
 import {
@@ -37,6 +38,7 @@ import {
   SPECS,
   staleStartingPoints,
   withUntouchedFromServer,
+  type RouteDomain,
   type StoredPatch,
 } from "@/lib/routes/specs";
 import {
@@ -101,10 +103,11 @@ const MESSAGES = {
     "or your colleague's work would be overwritten.",
   services: "Your role does not allow changing services and categories. Nothing was saved.",
   faqs: "Your role does not allow changing FAQs. Nothing was saved.",
+  packages: "Your role does not allow changing packages and destinations. Nothing was saved.",
 } as const;
 
-const domainDenied = (permission: "services.manage" | "faqs.manage") =>
-  permission === "faqs.manage" ? MESSAGES.faqs : MESSAGES.services;
+const domainDenied = (permission: RouteDomain) =>
+  permission === "faqs.manage" ? MESSAGES.faqs : permission === "packages.manage" ? MESSAGES.packages : MESSAGES.services;
 
 /** The record the activity log files a route's change under: its category, or its service (Batch 22). */
 const entityOf = (context: RouteContext) => {
@@ -535,10 +538,17 @@ const answer = (outcome: RouteOutcome): RouteActionResult =>
         ...(outcome.details ? { details: outcome.details } : {}),
       };
 
-/** The record a route key names, for the activity log: a category, or a service (Batch 22). */
-const routeEntity = (routeKey: string): { entityType: "category" | "service" | "route"; entityId: number | string } => {
+/**
+ * The record a route key names, for the activity log: a category, a service
+ * (Batch 22), a package or a destination (Batch 24) — and for an overview,
+ * which is no record, the route itself.
+ */
+const routeEntity = (
+  routeKey: string,
+): { entityType: "category" | "service" | "package" | "destination" | "route"; entityId: number | string } => {
   const document = parseRouteKey(routeKey);
-  return document ? { entityType: document.kind, entityId: document.id } : { entityType: "route", entityId: routeKey };
+  if (!document || SINGLETON_KINDS.has(document.kind)) return { entityType: "route", entityId: routeKey };
+  return { entityType: document.kind as "category" | "service" | "package" | "destination", entityId: document.id };
 };
 
 /**
@@ -566,14 +576,18 @@ export async function publishRouteFromEditor(form: FormData): Promise<RouteActio
       metadata: { route: routeKey, changes: outcome.changes, resources: outcome.resources },
     });
     /**
-     * A publication changes what visitors get: the catalogue and FAQ loaders
-     * and the route presentation are dropped by tag — the same tags the admin
-     * forms drop — and the admin screens that list these records are told.
+     * A publication changes what visitors get: the catalogue, FAQ and package
+     * loaders and the route presentation are dropped by tag — the same tags
+     * the admin forms drop — and the admin screens that list these records are
+     * told. After the commit, never inside it: a cache refilled from a
+     * transaction that then rolled back would serve what was never written.
      */
-    revalidate(TAGS.catalog, TAGS.faqs, TAGS.routes);
+    revalidate(TAGS.catalog, TAGS.faqs, TAGS.packages, TAGS.routes);
     revalidatePath("/admin/categories");
     revalidatePath("/admin/services");
     revalidatePath("/admin/faqs");
+    revalidatePath("/admin/packages");
+    revalidatePath("/admin/packages/destinations");
     return answer(outcome);
   } catch (error) {
     if (error instanceof AccessError) return { ok: false, reason: "denied", message: error.message };

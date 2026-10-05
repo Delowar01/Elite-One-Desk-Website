@@ -8,7 +8,11 @@ import type { EditorNodeMeta } from "@/lib/visual-editor/protocol";
 
 /** What the Inspector needs from the shell to act on a dynamic route's region (Batch 21). */
 export type RouteControls = {
-  /** Whether this session may change the region's record: `services.manage`, or `faqs.manage` for a question. */
+  /**
+   * Whether this session may change the region's record: the capability its
+   * domain names — `services.manage`, `faqs.manage` for a question,
+   * `packages.manage` for a package, a destination or the catalogue (Batch 24).
+   */
   mayRecord: (info: RouteOwnerInfo) => boolean;
   /** `content.structure`: order and visibility. */
   canStructure: boolean;
@@ -22,7 +26,16 @@ const KIND_WORD: Record<RouteOwnerInfo["resource"]["kind"], string> = {
   subcategory: "Service group",
   service: "Service",
   faq: "FAQ",
+  package: "Package",
+  destination: "Destination",
   template: "This page's wording",
+};
+
+/** What a role without the region's capability may not change, in words. */
+const DOMAIN_WORDS: Record<RouteOwnerInfo["domain"], string> = {
+  "services.manage": "services and categories",
+  "faqs.manage": "FAQs",
+  "packages.manage": "packages and destinations",
 };
 
 /**
@@ -85,9 +98,8 @@ export function RouteSource({
           </p>
         ) : null}
         {!mayRecord && info.resource.kind !== "template" ? (
-          <p className="mt-1.5 text-[0.7rem] leading-relaxed text-muted" role="note" data-permission-note={info.resource.kind === "faq" ? "faqs.manage" : "services.manage"}>
-            Your role does not allow changing {info.resource.kind === "faq" ? "FAQs" : "services and categories"}. You can
-            still view it here.
+          <p className="mt-1.5 text-[0.7rem] leading-relaxed text-muted" role="note" data-permission-note={info.domain}>
+            Your role does not allow changing {DOMAIN_WORDS[info.domain]}. You can still view it here.
           </p>
         ) : null}
       </div>

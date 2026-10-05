@@ -8,8 +8,10 @@ import { db } from "@/lib/db";
 import { media, pages } from "@/lib/db/schema";
 import { localeOrDefault, publicPathForPage } from "@/lib/page-path";
 import { listCategoryDocuments } from "@/lib/routes/category";
-import { documentEditorKey, parseRouteKey, routeKeyOf } from "@/lib/routes/owners";
+import { documentEditorKey, parseRouteKey, routeKeyOf, SINGLETON_ID, type RouteDocument } from "@/lib/routes/owners";
+import { CATALOGUE_PATH, listDestinationDocuments, listPackageDocuments } from "@/lib/routes/packages";
 import { listServiceDocuments } from "@/lib/routes/service";
+import { SERVICE_INDEX_PATH } from "@/lib/routes/service-index-model";
 import { globalsCapabilities } from "@/lib/visual-editor/globals";
 import { deviceOrDefault } from "@/lib/visual-editor/viewport";
 
@@ -97,6 +99,23 @@ export default async function VisualEditorPage({
   }));
 
   /**
+   * The two overviews, `/services` and `/packages` (Batch 24): one each, so
+   * their documents are fixed — but drawn at their real addresses like every
+   * other document, never from the query string.
+   */
+  const overview = (document: RouteDocument, title: string, path: string) =>
+    editable.push({
+      id: documentEditorKey(document),
+      slug: routeKeyOf(document),
+      title,
+      path,
+      isPublished: true,
+      kind: document.kind,
+    });
+  overview({ kind: "serviceIndex", id: SINGLETON_ID }, "Services overview", SERVICE_INDEX_PATH);
+  overview({ kind: "packageIndex", id: SINGLETON_ID }, "Tour packages", CATALOGUE_PATH);
+
+  /**
    * Every service category, as a document of its own (Batch 21). Read from the
    * table like the pages are, so a category created tomorrow is in this list
    * the moment it exists — named by its own title, opened by its id, and
@@ -138,6 +157,37 @@ export default async function VisualEditorPage({
     });
   }
 
+  /**
+   * Every destination's page and every package's page, as documents of their
+   * own (Batch 24), each package listed under the destination it is filed
+   * under. Read from the tables like the services are, so a package created
+   * tomorrow — or a destination — is in this list the moment it exists, opened
+   * by its id and drawn at its real public address. Nothing is named in code.
+   */
+  for (const row of await listDestinationDocuments()) {
+    const document = { kind: "destination" as const, id: row.id };
+    editable.push({
+      id: documentEditorKey(document),
+      slug: routeKeyOf(document),
+      title: row.titleEn,
+      path: `/packages/${row.slug}`,
+      isPublished: row.isPublished,
+      kind: "destination",
+    });
+  }
+  for (const row of await listPackageDocuments()) {
+    const document = { kind: "package" as const, id: row.id };
+    editable.push({
+      id: documentEditorKey(document),
+      slug: routeKeyOf(document),
+      title: row.titleEn,
+      path: `/packages/${row.slug}`,
+      isPublished: row.isPublished,
+      kind: "package",
+      group: row.destinationTitle ?? "No destination",
+    });
+  }
+
   // The address can say anything. The canvas URL is always built from a row we
   // found, never from the query string, so no value here can become an iframe
   // src of its own devising.
@@ -167,6 +217,7 @@ export default async function VisualEditorPage({
       domains={{
         services: session.permissions.has("services.manage"),
         faqs: session.permissions.has("faqs.manage"),
+        packages: session.permissions.has("packages.manage"),
       }}
       canManageNavigation={capabilities.canManageNavigation}
       canManageSettings={capabilities.canManageSettings}

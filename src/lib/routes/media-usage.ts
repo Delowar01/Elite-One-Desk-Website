@@ -3,17 +3,21 @@ import "server-only";
 import { inArray, isNotNull } from "drizzle-orm";
 
 import { db } from "@/lib/db";
-import { routeNodes, serviceCategories, services } from "@/lib/db/schema";
+import { packageDestinations, routeNodes, serviceCategories, services, travelPackages } from "@/lib/db/schema";
 
-import { parseOwnerKey, type RouteOwner } from "./owners";
+import { isPackageRegion } from "./package-model";
+import { parseOwnerKey, SINGLETON_ID, type RouteOwner } from "./owners";
 import { isServiceRegion } from "./service-model";
 import { resourceOf, SPECS } from "./specs";
 
 /**
- * Pictures a Visual Editor draft of a dynamic route has chosen (Batch 22).
+ * Pictures a Visual Editor draft of a dynamic route has chosen (Batch 22;
+ * packages and destinations since Batch 24).
  *
  * Batch 21 let a category's hero and a service's card choose a picture as a
- * draft, and Batch 22 adds a service's own page; the choice lives in
+ * draft, Batch 22 adds a service's own page, and Batch 24 a package's hero,
+ * a package's card on the Tour packages page and a destination's hero; the
+ * choice lives in
  * `route_nodes.draft_content` until it is published. The media library's
  * delete guard counted page-section drafts and reusable-component drafts but
  * not these, so a picture a pending draft was about to publish could be
@@ -46,7 +50,17 @@ export type RouteDraftMedia = {
 };
 
 /** Which records a region's picture belongs to, and where that region is edited now. */
-type Resolved = { title: string; routeKey: string; kind: "category page" | "card on its category page" | "service page" };
+type Resolved = {
+  title: string;
+  routeKey: string;
+  kind:
+    | "category page"
+    | "card on its category page"
+    | "service page"
+    | "package page"
+    | "card on the Tour packages page"
+    | "destination page";
+};
 
 export async function routeDraftMedia(): Promise<RouteDraftMedia[]> {
   const rows = await db
@@ -70,9 +84,14 @@ export async function routeDraftMedia(): Promise<RouteDraftMedia[]> {
   }
   if (!picks.length) return [];
 
-  // The records behind them, in two queries whatever the number of drafts.
-  const categoryIds = [...new Set(picks.filter((pick) => resourceOf(pick.owner).kind === "category").map((pick) => pick.owner.id))];
-  const serviceIds = [...new Set(picks.filter((pick) => resourceOf(pick.owner).kind === "service").map((pick) => pick.owner.id))];
+  // The records behind them, one query per kind of record whatever the number of drafts.
+  const idsOf = (kind: ReturnType<typeof resourceOf>["kind"]) => [
+    ...new Set(picks.filter((pick) => resourceOf(pick.owner).kind === kind).map((pick) => pick.owner.id)),
+  ];
+  const categoryIds = idsOf("category");
+  const serviceIds = idsOf("service");
+  const packageIds = idsOf("package");
+  const destinationIds = idsOf("destination");
   const categories = categoryIds.length
     ? await db
         .select({ id: serviceCategories.id, title: serviceCategories.titleEn })
@@ -85,8 +104,22 @@ export async function routeDraftMedia(): Promise<RouteDraftMedia[]> {
         .from(services)
         .where(inArray(services.id, serviceIds))
     : [];
+  const packageRows = packageIds.length
+    ? await db
+        .select({ id: travelPackages.id, title: travelPackages.titleEn })
+        .from(travelPackages)
+        .where(inArray(travelPackages.id, packageIds))
+    : [];
+  const destinationRows = destinationIds.length
+    ? await db
+        .select({ id: packageDestinations.id, title: packageDestinations.titleEn })
+        .from(packageDestinations)
+        .where(inArray(packageDestinations.id, destinationIds))
+    : [];
   const categoryById = new Map(categories.map((row) => [row.id, row]));
   const serviceById = new Map(serviceRows.map((row) => [row.id, row]));
+  const packageById = new Map(packageRows.map((row) => [row.id, row]));
+  const destinationById = new Map(destinationRows.map((row) => [row.id, row]));
 
   const resolve = (owner: RouteOwner): Resolved | null => {
     if (owner.type === "category") {
@@ -101,6 +134,21 @@ export async function routeDraftMedia(): Promise<RouteDraftMedia[]> {
     if (isServiceRegion(owner.type)) {
       const row = serviceById.get(owner.id);
       return row ? { title: row.title, routeKey: `service:${row.id}`, kind: "service page" } : null;
+    }
+    if (owner.type === "packageCard") {
+      // A package's card is edited on the one catalogue, wherever it is filed.
+      const row = packageById.get(owner.id);
+      return row
+        ? { title: row.title, routeKey: `packageIndex:${SINGLETON_ID}`, kind: "card on the Tour packages page" }
+        : null;
+    }
+    if (isPackageRegion(owner.type)) {
+      const row = packageById.get(owner.id);
+      return row ? { title: row.title, routeKey: `package:${row.id}`, kind: "package page" } : null;
+    }
+    if (owner.type === "destinationHero") {
+      const row = destinationById.get(owner.id);
+      return row ? { title: row.title, routeKey: `destination:${row.id}`, kind: "destination page" } : null;
     }
     return null;
   };
