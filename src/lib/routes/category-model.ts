@@ -133,6 +133,51 @@ export const routeKeyOfCategory = (categoryId: number) => `category:${categoryId
 export const documentOfCategory = (categoryId: number): RouteDocument => ({ kind: "category", id: categoryId });
 
 /* -------------------------------------------------------------------------- */
+/* What the services section draws                                            */
+/* -------------------------------------------------------------------------- */
+
+export type ServiceLayout = {
+  /** Each group that holds a card, its cards featured first and then in the editor's order. */
+  grouped: { sub: GroupRow; rows: ServiceRow[] }[];
+  /** The cards in no group, in the same order. */
+  ungrouped: ServiceRow[];
+};
+
+/**
+ * The services section's layout: one group per subcategory that holds a
+ * card, then the cards in no group — featured first inside each, so the two
+ * services a customer most often wants lead the list they are in.
+ *
+ * The page draws exactly this, and its `ItemList` lists exactly what this
+ * draws (`listedServices`): one rule for both, so structured data can never
+ * describe a card the page does not show (Batch 24, A.9 F4).
+ */
+export function serviceLayout(data: Pick<CategoryData, "groups" | "services">): ServiceLayout {
+  const featuredFirst = (rows: ServiceRow[]) => [...rows].sort((a, b) => Number(b.isFeatured) - Number(a.isFeatured));
+  const grouped = data.groups
+    .map((sub) => ({ sub, rows: featuredFirst(data.services.filter((service) => service.subcategoryId === sub.id)) }))
+    .filter((group) => group.rows.length > 0);
+  const ungrouped = featuredFirst(data.services.filter((service) => !service.subcategoryId));
+  return { grouped, ungrouped };
+}
+
+/**
+ * The services the category page's `ItemList` names: the cards a visitor
+ * gets, in the services' own order. Until Batch 24 the list was every
+ * published service of the category, so a published service filed under a
+ * hidden group — drawn nowhere on the page — was still advertised in it.
+ * `hidden` is the render's own set: empty for a visitor, the regions the
+ * canvas draws dimmed for an editor.
+ */
+export function listedServices(data: Pick<CategoryData, "groups" | "services">, hidden: ReadonlySet<string>): ServiceRow[] {
+  const { grouped, ungrouped } = serviceLayout(data);
+  const drawn = new Set([...grouped.flatMap((group) => group.rows), ...ungrouped].map((service) => service.id));
+  return data.services.filter(
+    (service) => service.isPublished && drawn.has(service.id) && !hidden.has(ownerKeyOf({ type: "service", id: service.id })),
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Live values, and the draft laid over them                                  */
 /* -------------------------------------------------------------------------- */
 

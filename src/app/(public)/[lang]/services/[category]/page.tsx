@@ -19,6 +19,7 @@ import { isLocale, localeHref, pick, type Locale } from "@/lib/i18n/config";
 import { getDictionary } from "@/lib/i18n/dictionary";
 import { getCategoryBySlug, getPackageCatalog, type ServiceRow } from "@/lib/queries/catalog";
 import { getMediaMap } from "@/lib/queries/site";
+import { listedServices, serviceLayout } from "@/lib/routes/category-model";
 import { resolveCategoryRender } from "@/lib/routes/category-view";
 import { documentEditorKey } from "@/lib/routes/owners";
 import { hasPackageHub } from "@/lib/routes/package-hub";
@@ -120,13 +121,9 @@ export default async function CategoryPage({ params, searchParams }: Params) {
   ];
 
   // Featured first inside each group, then the editor's order — so the two
-  // services a customer most often wants lead the list they are in.
-  const featuredFirst = (rows: ServiceRow[]) => [...rows].sort((a, b) => Number(b.isFeatured) - Number(a.isFeatured));
-
-  const grouped = groups
-    .map((sub) => ({ sub, rows: featuredFirst(services.filter((s) => s.subcategoryId === sub.id)) }))
-    .filter((group) => group.rows.length > 0);
-  const ungrouped = featuredFirst(services.filter((s) => !s.subcategoryId));
+  // services a customer most often wants lead the list they are in. The same
+  // layout decides the ItemList below, so the two cannot disagree.
+  const { grouped, ungrouped } = serviceLayout({ groups, services });
 
   // The Tour Packages panel renders only where there is a catalogue to point
   // at: the route's own package-hub category, and at least one destination
@@ -420,14 +417,14 @@ export default async function CategoryPage({ params, searchParams }: Params) {
             "@context": "https://schema.org",
             "@type": "ItemList",
             name: title,
-            itemListElement: services
-              .filter((service) => service.isPublished)
-              .map((service, index) => ({
-                "@type": "ListItem",
-                position: index + 1,
-                name: pick(lang, service.titleEn, service.titleAr),
-                url: `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}${localeHref(lang, `/services/${slug}/${service.slug}`)}`,
-              })),
+            // The cards a visitor gets — never a published service filed
+            // under a hidden group, which the page draws nowhere.
+            itemListElement: listedServices({ groups, services }, view.hidden).map((service, index) => ({
+              "@type": "ListItem",
+              position: index + 1,
+              name: pick(lang, service.titleEn, service.titleAr),
+              url: `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}${localeHref(lang, `/services/${slug}/${service.slug}`)}`,
+            })),
           },
         ]}
       />
