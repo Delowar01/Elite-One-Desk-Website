@@ -6,6 +6,7 @@ import { AdminPageHeader } from "@/components/admin/page-header";
 import { requirePermission } from "@/lib/auth/guard";
 import { db } from "@/lib/db";
 import { media, packageDestinations, travelPackages } from "@/lib/db/schema";
+import { PACKAGE_FORM, packageRowValues } from "@/lib/packages/form-fields";
 import { DeletePackage, PackageForm, type PackageValues } from "../package-form";
 
 export const dynamic = "force-dynamic";
@@ -106,6 +107,7 @@ export default async function PackageEditor({ params }: { params: Promise<{ id: 
         <PackageForm
           csrf={session.csrfToken}
           pkg={row as unknown as PackageValues}
+          base={PACKAGE_FORM.signBase(row.id, packageRowValues(row))}
           media={library}
           destinations={destinations}
         />

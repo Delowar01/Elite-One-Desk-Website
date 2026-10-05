@@ -6,6 +6,7 @@ import { AdminPageHeader } from "@/components/admin/page-header";
 import { requirePermission } from "@/lib/auth/guard";
 import { db } from "@/lib/db";
 import { media, packageDestinations, travelPackages } from "@/lib/db/schema";
+import { DESTINATION_FORM, destinationRowValues } from "@/lib/packages/form-fields";
 import { DeleteDestination, DestinationForm, type DestinationValues } from "../destination-form";
 
 export const dynamic = "force-dynamic";
@@ -113,6 +114,7 @@ export default async function DestinationEditor({ params }: { params: Promise<{ 
             isPublished: row.isPublished,
             sortOrder: row.sortOrder,
           }}
+          base={DESTINATION_FORM.signBase(row.id, destinationRowValues(row))}
           media={library}
         />
         <DeleteDestination

@@ -5,13 +5,13 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
-import {
-  checkbox, fail, field, numberField, ok, optionalId, runAction, type ActionState,
-} from "@/lib/admin/actions";
+import { fail, ok, runAction, type ActionState } from "@/lib/admin/actions";
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { db } from "@/lib/db";
+import type { Executor } from "@/lib/db/revision";
 import { packageDestinations, travelPackages } from "@/lib/db/schema";
+import { DESTINATION_FORM, destinationRowValues, readDestinationForm } from "@/lib/packages/form-fields";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -23,15 +23,15 @@ const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
  * directions, here and in the package actions, with a message that says which
  * record is in the way rather than silently shadowing a page.
  */
-async function slugTaken(slug: string, exceptDestinationId?: number) {
-  const [pkg] = await db
+async function slugTaken(slug: string, exceptDestinationId?: number, on: Executor = db) {
+  const [pkg] = await on
     .select({ title: travelPackages.titleEn })
     .from(travelPackages)
     .where(eq(travelPackages.slug, slug))
     .limit(1);
   if (pkg) return `The package “${pkg.title}” already uses that address.`;
 
-  const [destination] = await db
+  const [destination] = await on
     .select({ title: packageDestinations.titleEn })
     .from(packageDestinations)
     .where(
@@ -53,24 +53,15 @@ const refresh = () => {
   revalidatePath("/admin/packages");
 };
 
-function readDestination(form: FormData) {
-  return {
-    titleEn: field(form, "titleEn", 190),
-    titleAr: field(form, "titleAr", 190),
-    summaryEn: field(form, "summaryEn", 2000),
-    summaryAr: field(form, "summaryAr", 2000),
-    imageId: optionalId(form, "imageId"),
-    isPublished: checkbox(form, "isPublished"),
-    sortOrder: numberField(form, "sortOrder", 0),
-  };
-}
+/** Refused before anything is read: the form carries no base this server signed for this destination. */
+const STALE_FORM =
+  "This form is out of date, so nothing was saved. Reload the page to see the destination as it is now, then make your change again.";
 
 export async function createDestination(_prev: ActionState, form: FormData): Promise<ActionState> {
   let newId = 0;
   const result = await runAction("destination-create", async () => {
     const session = await guardAction("packages.manage", form);
-    const slug = field(form, "slug", 120).toLowerCase();
-    const values = readDestination(form);
+    const { slug, ...values } = readDestinationForm(form);
 
     if (!values.titleEn) return fail("Give the destination a name.", { titleEn: "Required." });
     if (!SLUG.test(slug)) {
@@ -98,32 +89,95 @@ export async function createDestination(_prev: ActionState, form: FormData): Pro
   redirect(`/admin/packages/destinations/${newId}`);
 }
 
+/**
+ * Saves what the form changed — and only that (Batch 24, the Services form's
+ * rule since Batch 23: docs/admin/services-form-concurrency.md §10).
+ *
+ * The form posts the signed base it was drawn with. Under the row's lock, each
+ * unit it changed from that base is compared with the row as it is now: an
+ * untouched unit is never written, so a newer name, summary or picture
+ * published from the destination's page or its group on Tour packages stays;
+ * a unit changed here *and* elsewhere is a conflict, and any conflict refuses
+ * the whole save. The address is a unit like any other: a stale form never
+ * moves it back, and one that changes it is checked against both tables.
+ */
 export async function updateDestination(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("destination-update", async () => {
     const session = await guardAction("packages.manage", form);
     const id = Number(form.get("id"));
-    const slug = field(form, "slug", 120).toLowerCase();
-    const values = readDestination(form);
+    if (!Number.isInteger(id) || id <= 0) return fail("That destination no longer exists.");
+    const base = DESTINATION_FORM.readBase(String(form.get("_base") ?? ""), id);
+    if (!base) return fail(STALE_FORM);
 
-    if (!values.titleEn) return fail("Give the destination a name.", { titleEn: "Required." });
-    if (!SLUG.test(slug)) {
-      return fail("The address must be lower-case words joined by hyphens.", { slug: "Invalid." });
+    const submitted = readDestinationForm(form);
+    const mine = DESTINATION_FORM.printsOf(submitted);
+    const posted = DESTINATION_FORM.submittedUnits(form);
+    // Decided before the row is even read: a form that changed nothing writes nothing.
+    if (!DESTINATION_FORM.decide(base, mine, base, posted).changed.length) return ok("No changes to save.");
+
+    type Outcome =
+      | { kind: "missing" }
+      | { kind: "invalid"; state: ActionState }
+      | { kind: "conflict"; units: string[] }
+      | { kind: "done"; writes: string[]; title: string };
+
+    const outcome = await db.transaction(async (tx): Promise<Outcome> => {
+      const [row] = await tx
+        .select()
+        .from(packageDestinations)
+        .where(eq(packageDestinations.id, id))
+        .limit(1)
+        .for("update");
+      if (!row) return { kind: "missing" };
+      const liveValues = destinationRowValues(row);
+      const decision = DESTINATION_FORM.decide(base, mine, DESTINATION_FORM.printsOf(liveValues), posted);
+      if (decision.conflicts.length) return { kind: "conflict", units: decision.conflicts };
+
+      const writes = decision.writes;
+      const changes = DESTINATION_FORM.valuesOfUnits(submitted, writes);
+      const merged = { ...liveValues, ...changes };
+      if (writes.includes("titleEn") && !merged.titleEn) {
+        return { kind: "invalid", state: fail("Give the destination a name.", { titleEn: "Required." }) };
+      }
+      if (writes.includes("slug")) {
+        if (!SLUG.test(merged.slug)) {
+          return {
+            kind: "invalid",
+            state: fail("The address must be lower-case words joined by hyphens.", { slug: "Invalid." }),
+          };
+        }
+        const clash = await slugTaken(merged.slug, id, tx);
+        if (clash) return { kind: "invalid", state: fail(clash, { slug: "Already taken." }) };
+      }
+      if (writes.length) {
+        await tx
+          .update(packageDestinations)
+          .set({ ...changes, updatedAt: new Date() })
+          .where(eq(packageDestinations.id, id));
+      }
+      return { kind: "done", writes, title: merged.titleEn };
+    });
+
+    if (outcome.kind === "missing") return fail("That destination no longer exists.");
+    if (outcome.kind === "invalid") return outcome.state;
+    if (outcome.kind === "conflict") {
+      const refusal = DESTINATION_FORM.conflictMessage(outcome.units);
+      return { ...fail(refusal.message, refusal.errors), conflicts: outcome.units };
     }
-    const clash = await slugTaken(slug, id);
-    if (clash) return fail(clash, { slug: "Already taken." });
 
-    const [row] = await db
-      .update(packageDestinations)
-      .set({ ...values, slug, updatedAt: new Date() })
-      .where(eq(packageDestinations.id, id))
-      .returning({ id: packageDestinations.id });
-    if (!row) return fail("That destination no longer exists.");
+    // What the form changed was already so — made the same way elsewhere. Nothing
+    // is written or logged; the page is drawn again so the form shows the row.
+    if (!outcome.writes.length) {
+      revalidatePath(`/admin/packages/destinations/${id}`);
+      return ok("Destination saved.");
+    }
 
     await logActivity(session, {
       action: "destination.updated",
       entityType: "destination",
       entityId: id,
-      summary: `Updated the destination “${values.titleEn}”`,
+      summary: `Updated the destination “${outcome.title}”`,
+      metadata: { fields: outcome.writes },
     });
     refresh();
     revalidatePath(`/admin/packages/destinations/${id}`);

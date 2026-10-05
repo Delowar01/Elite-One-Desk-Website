@@ -63,19 +63,20 @@ function Pair({
   );
 }
 
-export function DestinationForm({
-  csrf,
-  destination,
-  media,
-}: {
+type DestinationFormProps = {
   csrf: string;
   destination: DestinationValues;
+  /**
+   * The signed base the page drew `destination` with (Batch 24, as the
+   * Services form since Batch 23). Posted back, so the server writes only what
+   * this form changed from it; absent for a new destination.
+   */
+  base?: string;
   media: MediaOption[];
-}) {
-  const isNew = !destination.id;
-  const [imageId, setImageId] = useState<number | null>(destination.imageId);
-  const values = destination as unknown as Record<string, string>;
+};
 
+export function DestinationForm({ csrf, destination, base, media }: DestinationFormProps) {
+  const isNew = !destination.id;
   return (
     <AdminForm
       action={isNew ? createDestination : updateDestination}
@@ -84,6 +85,26 @@ export function DestinationForm({
     >
       <input type="hidden" name="_csrf" value={csrf} />
       {destination.id ? <input type="hidden" name="id" value={destination.id} /> : null}
+      {base ? <input type="hidden" name="_base" value={base} /> : null}
+      {/*
+        Keyed by the base, so the picture's own state is drawn afresh from the
+        stored row with the base that describes it after every save.
+      */}
+      <DestinationFields key={base ?? "new"} destination={destination} media={media} />
+
+      <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
+        <SubmitButton>{isNew ? "Create destination" : "Save changes"}</SubmitButton>
+      </div>
+    </AdminForm>
+  );
+}
+
+function DestinationFields({ destination, media }: Omit<DestinationFormProps, "csrf" | "base">) {
+  const [imageId, setImageId] = useState<number | null>(destination.imageId);
+  const values = destination as unknown as Record<string, string>;
+
+  return (
+    <>
       <input type="hidden" name="imageId" value={imageId ?? ""} />
 
       <div className="space-y-5">
@@ -144,11 +165,7 @@ export function DestinationForm({
           Published
         </label>
       </div>
-
-      <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
-        <SubmitButton>{isNew ? "Create destination" : "Save changes"}</SubmitButton>
-      </div>
-    </AdminForm>
+    </>
   );
 }
 

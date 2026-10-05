@@ -102,21 +102,21 @@ function Pair({
 
 export type DestinationOption = { id: number; titleEn: string };
 
-export function PackageForm({
-  csrf,
-  pkg,
-  media,
-  destinations,
-}: {
+type PackageFormProps = {
   csrf: string;
   pkg: PackageValues;
+  /**
+   * The signed base the page drew `pkg` with (Batch 24, as the Services form
+   * since Batch 23). Posted back, so the server writes only what this form
+   * changed from it; absent for a new package.
+   */
+  base?: string;
   media: MediaOption[];
   destinations: DestinationOption[];
-}) {
-  const isNew = !pkg.id;
-  const [imageId, setImageId] = useState<number | null>(pkg.imageId);
-  const values = pkg as unknown as Record<string, string>;
+};
 
+export function PackageForm({ csrf, pkg, base, media, destinations }: PackageFormProps) {
+  const isNew = !pkg.id;
   return (
     <AdminForm
       action={isNew ? createPackage : updatePackage}
@@ -125,6 +125,30 @@ export function PackageForm({
     >
       <input type="hidden" name="_csrf" value={csrf} />
       {pkg.id ? <input type="hidden" name="id" value={pkg.id} /> : null}
+      {base ? <input type="hidden" name="_base" value={base} /> : null}
+      {/*
+        Keyed by the base. The picture and the highlights keep their own state,
+        which a re-rendered page does not reach; when a save comes back with the
+        stored row and its new base, every field is drawn afresh from that row —
+        so what the form shows and the base it posts are always the same
+        snapshot.
+      */}
+      <PackageFields key={base ?? "new"} pkg={pkg} media={media} destinations={destinations} />
+
+      <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
+        <SubmitButton>{isNew ? "Create package" : "Save changes"}</SubmitButton>
+      </div>
+    </AdminForm>
+  );
+}
+
+function PackageFields({ pkg, media, destinations }: Omit<PackageFormProps, "csrf" | "base">) {
+  const isNew = !pkg.id;
+  const [imageId, setImageId] = useState<number | null>(pkg.imageId);
+  const values = pkg as unknown as Record<string, string>;
+
+  return (
+    <>
       <input type="hidden" name="imageId" value={imageId ?? ""} />
 
       <div className="space-y-5">
@@ -238,11 +262,7 @@ export function PackageForm({
           </label>
         </div>
       </div>
-
-      <div className="mt-6 border-t border-[var(--admin-line)] pt-5">
-        <SubmitButton>{isNew ? "Create package" : "Save changes"}</SubmitButton>
-      </div>
-    </AdminForm>
+    </>
   );
 }
 

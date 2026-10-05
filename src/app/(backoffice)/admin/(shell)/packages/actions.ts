@@ -5,42 +5,30 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
-import {
-  checkbox, fail, field, numberField, ok, optionalId, runAction, type ActionState,
-} from "@/lib/admin/actions";
+import { fail, field, ok, runAction, type ActionState } from "@/lib/admin/actions";
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
-import { sanitizeRichText } from "@/lib/cms/sanitize";
 import { db } from "@/lib/db";
+import type { Executor } from "@/lib/db/revision";
 import { packageDestinations, travelPackages } from "@/lib/db/schema";
-import type { LocalisedItem } from "@/lib/db/schema";
+import { PACKAGE_FORM, packageRowValues, readPackageForm } from "@/lib/packages/form-fields";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
-/**
- * LEGACY. `region` is no longer how packages are grouped — `destinationId` is —
- * but the column keeps the values it already holds, `egypt` among them, and
- * nothing here rewrites one. A saved record therefore comes back with the
- * region it went in with.
- */
-const REGIONS = ["egypt", "international", "holiday", "corporate"] as const;
-type Region = (typeof REGIONS)[number];
-const isRegion = (value: string): value is Region => (REGIONS as readonly string[]).includes(value);
 
 /**
  * `/packages/[slug]` is one route shared by packages and destinations, which is
  * what keeps every existing package address working. The price is that the two
  * tables must not collide, checked from both sides.
  */
-async function slugTaken(slug: string, exceptPackageId?: number) {
-  const [destination] = await db
+async function slugTaken(slug: string, exceptPackageId?: number, on: Executor = db) {
+  const [destination] = await on
     .select({ title: packageDestinations.titleEn })
     .from(packageDestinations)
     .where(eq(packageDestinations.slug, slug))
     .limit(1);
   if (destination) return `The destination “${destination.title}” already uses that address.`;
 
-  const [pkg] = await db
+  const [pkg] = await on
     .select({ id: travelPackages.id, title: travelPackages.titleEn })
     .from(travelPackages)
     .where(eq(travelPackages.slug, slug))
@@ -56,54 +44,16 @@ const refresh = () => {
   revalidatePath("/admin/packages");
 };
 
-function highlights(form: FormData): LocalisedItem[] {
-  try {
-    const raw = JSON.parse(String(form.get("highlights") ?? "[]")) as unknown;
-    if (!Array.isArray(raw)) return [];
-    return raw
-      .map((row) => {
-        const record = (typeof row === "object" && row ? row : {}) as Record<string, unknown>;
-        return {
-          en: String(record.en ?? "").slice(0, 300).trim(),
-          ar: String(record.ar ?? "").slice(0, 300).trim(),
-        };
-      })
-      .filter((row) => row.en || row.ar)
-      .slice(0, 16);
-  } catch {
-    return [];
-  }
-}
-
-function readPackage(form: FormData) {
-  const region = field(form, "region", 32);
-  return {
-    region: isRegion(region) ? region : ("international" as Region),
-    destinationId: optionalId(form, "destinationId"),
-    titleEn: field(form, "titleEn", 190),
-    titleAr: field(form, "titleAr", 190),
-    destinationEn: field(form, "destinationEn", 120),
-    destinationAr: field(form, "destinationAr", 120),
-    durationEn: field(form, "durationEn", 80),
-    durationAr: field(form, "durationAr", 80),
-    summaryEn: field(form, "summaryEn", 2000),
-    summaryAr: field(form, "summaryAr", 2000),
-    bodyEn: sanitizeRichText(field(form, "bodyEn", 20000)),
-    bodyAr: sanitizeRichText(field(form, "bodyAr", 20000)),
-    highlights: highlights(form),
-    imageId: optionalId(form, "imageId"),
-    isFeatured: checkbox(form, "isFeatured"),
-    isPublished: checkbox(form, "isPublished"),
-    sortOrder: numberField(form, "sortOrder", 0),
-  };
-}
+/** Refused before anything is read: the form carries no base this server signed for this package. */
+const STALE_FORM =
+  "This form is out of date, so nothing was saved. Reload the page to see the package as it is now, then make your change again.";
 
 export async function createPackage(_prev: ActionState, form: FormData): Promise<ActionState> {
   let newId = 0;
   const result = await runAction("package-create", async () => {
     const session = await guardAction("packages.manage", form);
     const slug = field(form, "slug", 120).toLowerCase();
-    const values = readPackage(form);
+    const values = readPackageForm(form);
 
     if (!values.titleEn) return fail("Give the package a title.", { titleEn: "Required." });
     if (!SLUG.test(slug)) return fail("The address must be lower-case words joined by hyphens.", { slug: "Invalid." });
@@ -130,37 +80,107 @@ export async function createPackage(_prev: ActionState, form: FormData): Promise
   redirect(`/admin/packages/${newId}`);
 }
 
+/**
+ * Saves what the form changed — and only that (Batch 24, the Services form's
+ * rule since Batch 23: docs/admin/services-form-concurrency.md §10).
+ *
+ * The form posts the signed base it was drawn with. Under the row's lock, each
+ * unit the form changed from that base is compared with the row as it is now:
+ * untouched units are never written, so a newer value — published from the
+ * package's page or its card in the Visual Editor, or saved by somebody else
+ * here — stays; a unit changed here *and* elsewhere is a conflict, and any
+ * conflict refuses the whole save with nothing written. The activity entry
+ * and the cache drop follow the commit, and only a write.
+ *
+ * Lock order is every writer's: a destination before a package. A form that
+ * files the package under another destination holds that destination first —
+ * the foreign key would otherwise take it after the package, the reverse of the
+ * catalogue's publication, and the two could wait on each other.
+ */
 export async function updatePackage(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("package-update", async () => {
     const session = await guardAction("packages.manage", form);
     const id = Number(form.get("id"));
-    const values = readPackage(form);
-    if (!values.titleEn) return fail("Give the package a title.", { titleEn: "Required." });
+    if (!Number.isInteger(id) || id <= 0) return fail("That package no longer exists.");
+    const base = PACKAGE_FORM.readBase(String(form.get("_base") ?? ""), id);
+    if (!base) return fail(STALE_FORM);
 
-    // The address is not editable from the update form, but the guard runs
-    // anyway: a destination created since this page loaded could have taken it.
-    const [current] = await db
-      .select({ slug: travelPackages.slug })
-      .from(travelPackages)
-      .where(eq(travelPackages.id, id))
-      .limit(1);
-    if (current) {
-      const clash = await slugTaken(current.slug, id);
-      if (clash) return fail(clash, { slug: "Already taken." });
+    const submitted = readPackageForm(form);
+    const mine = PACKAGE_FORM.printsOf(submitted);
+    const posted = PACKAGE_FORM.submittedUnits(form);
+    // Decided before the row is even read: a form that changed nothing writes nothing.
+    const asked = PACKAGE_FORM.decide(base, mine, base, posted).changed;
+    if (!asked.length) return ok("No changes to save.");
+
+    type Outcome =
+      | { kind: "missing" }
+      | { kind: "invalid"; state: ActionState }
+      | { kind: "conflict"; units: string[] }
+      | { kind: "done"; writes: string[]; title: string };
+
+    const outcome = await db.transaction(async (tx): Promise<Outcome> => {
+      // The destination this form files the package under, first — the order
+      // every writer takes them in — and only if it still exists.
+      if (asked.includes("destinationId") && submitted.destinationId !== null) {
+        const [destination] = await tx
+          .select({ id: packageDestinations.id })
+          .from(packageDestinations)
+          .where(eq(packageDestinations.id, submitted.destinationId))
+          .limit(1)
+          .for("key share");
+        if (!destination) {
+          return {
+            kind: "invalid",
+            state: fail("Choose one of the destinations.", { destinationId: "That destination no longer exists." }),
+          };
+        }
+      }
+      const [row] = await tx.select().from(travelPackages).where(eq(travelPackages.id, id)).limit(1).for("update");
+      if (!row) return { kind: "missing" };
+      const liveValues = packageRowValues(row);
+      const decision = PACKAGE_FORM.decide(base, mine, PACKAGE_FORM.printsOf(liveValues), posted);
+      if (decision.conflicts.length) return { kind: "conflict", units: decision.conflicts };
+
+      const writes = decision.writes;
+      const changes = PACKAGE_FORM.valuesOfUnits(submitted, writes);
+      const merged = { ...liveValues, ...changes };
+      if (writes.includes("titleEn") && !merged.titleEn) {
+        return { kind: "invalid", state: fail("Give the package a title.", { titleEn: "Required." }) };
+      }
+      // The address is not editable here, but the guard runs anyway: a
+      // destination created since this page loaded could have taken it.
+      const clash = await slugTaken(row.slug, id, tx);
+      if (clash) return { kind: "invalid", state: fail(clash, { slug: "Already taken." }) };
+
+      if (writes.length) {
+        await tx
+          .update(travelPackages)
+          .set({ ...changes, updatedAt: new Date() })
+          .where(eq(travelPackages.id, id));
+      }
+      return { kind: "done", writes, title: merged.titleEn };
+    });
+
+    if (outcome.kind === "missing") return fail("That package no longer exists.");
+    if (outcome.kind === "invalid") return outcome.state;
+    if (outcome.kind === "conflict") {
+      const refusal = PACKAGE_FORM.conflictMessage(outcome.units);
+      return { ...fail(refusal.message, refusal.errors), conflicts: outcome.units };
     }
 
-    const [row] = await db
-      .update(travelPackages)
-      .set({ ...values, updatedAt: new Date() })
-      .where(eq(travelPackages.id, id))
-      .returning({ slug: travelPackages.slug });
-    if (!row) return fail("That package no longer exists.");
+    // What the form changed was already so — made the same way elsewhere. Nothing
+    // is written or logged; the page is drawn again so the form shows the row.
+    if (!outcome.writes.length) {
+      revalidatePath(`/admin/packages/${id}`);
+      return ok("Package saved.");
+    }
 
     await logActivity(session, {
       action: "package.updated",
       entityType: "package",
       entityId: id,
-      summary: `Updated the package “${values.titleEn}”`,
+      summary: `Updated the package “${outcome.title}”`,
+      metadata: { fields: outcome.writes },
     });
     refresh();
     revalidatePath(`/admin/packages/${id}`);

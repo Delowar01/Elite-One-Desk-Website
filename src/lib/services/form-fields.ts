@@ -1,11 +1,9 @@
 import "server-only";
 
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-
+import { formBase, type FormUnit, type Prints, type SaveDecision } from "@/lib/admin/form-base";
 import { checkbox, field, numberField, optionalId } from "@/lib/admin/form-readers";
 import { sanitizeRichText } from "@/lib/cms/sanitize";
 import type { LocalisedItem, LocalisedStep } from "@/lib/db/schema";
-import { getAuthSecret } from "@/lib/env";
 import { isPresetKey } from "@/lib/forms/presets";
 
 /**
@@ -16,7 +14,10 @@ import { isPresetKey } from "@/lib/forms/presets";
  * somebody else's change put the older values back when it was saved. Now the
  * page signs what each field was when it was drawn, the form posts that back,
  * and the server writes only what the form changed — refusing, whole, a change
- * to a field that moved elsewhere in the meantime.
+ * to a field that moved elsewhere in the meantime. The mechanism is shared
+ * with the Packages and Destinations forms since Batch 24
+ * (`lib/admin/form-base.ts`); what is here is the Services form's own: its
+ * fields, its reader and its units.
  */
 
 /** Parses one of the hidden JSON lists the list editors submit. */
@@ -92,29 +93,11 @@ export type ServiceFormValues = ReturnType<typeof readServiceForm>;
 type FieldName = keyof ServiceFormValues;
 
 /**
- * How a browser hands an untouched value back, so that it is never read as an
- * edit: a textarea posts its line breaks as CRLF, and a single-line input
- * strips them from its value altogether.
- */
-type Canon = "line" | "text" | "value";
-
-type Unit = {
-  /** The key in the base, the activity log and `conflicts`. */
-  key: string;
-  /** What the operator calls it, in a conflict message. */
-  label: string;
-  fields: FieldName[];
-  canon: Canon;
-  /** A checkbox: absent from a submission means off, as in HTML. */
-  checkbox?: true;
-};
-
-/**
  * The units a save is decided in. One per column, except the category and the
  * group, which only make sense together (a group belongs to a category), and
  * each list, which is a positional array with nothing finer to merge on.
  */
-export const SERVICE_FORM_UNITS: readonly Unit[] = [
+export const SERVICE_FORM_UNITS: readonly FormUnit<FieldName>[] = [
   { key: "placement", label: "Category and group", fields: ["categoryId", "subcategoryId"], canon: "value" },
   { key: "titleEn", label: "Title (English)", fields: ["titleEn"], canon: "line" },
   { key: "titleAr", label: "Title (Arabic)", fields: ["titleAr"], canon: "line" },
@@ -137,27 +120,12 @@ export const SERVICE_FORM_UNITS: readonly Unit[] = [
   { key: "sortOrder", label: "Order", fields: ["sortOrder"], canon: "value" },
 ];
 
-const UNIT_KEYS = SERVICE_FORM_UNITS.map((unit) => unit.key);
+/** The signing purpose is the one Batch 23 shipped, so a page drawn before an upgrade still saves after it. */
+const BASE = formBase<ServiceFormValues>({ purpose: "service-form-base", units: SERVICE_FORM_UNITS });
 
-const canonical = (value: unknown, canon: Canon): unknown => {
-  if (typeof value !== "string") return value;
-  if (canon === "line") return value.replace(/[\r\n]/g, "");
-  if (canon === "text") return value.replace(/\r\n?/g, "\n");
-  return value;
-};
+export type { Prints };
 
-/** A unit's value, as one comparable string: what is compared, never what is stored. */
-const fingerprint = (values: ServiceFormValues, unit: Unit): string =>
-  createHash("sha256")
-    .update(JSON.stringify(unit.fields.map((name) => canonical(values[name], unit.canon))))
-    .digest("base64url")
-    .slice(0, 22);
-
-export type Prints = Record<string, string>;
-
-export function printsOf(values: ServiceFormValues): Prints {
-  return Object.fromEntries(SERVICE_FORM_UNITS.map((unit) => [unit.key, fingerprint(values, unit)]));
-}
+export const printsOf = BASE.printsOf;
 
 /** The columns of a stored service the form edits. */
 export type ServiceFormRow = Omit<ServiceFormValues, "formPreset"> & { formPreset: string };
@@ -191,83 +159,24 @@ export const rowValues = (row: ServiceFormRow): ServiceFormValues => readService
  * anything else is not taken as an instruction to blank a column — except a
  * checkbox, whose absence is how HTML says "off".
  */
-export function submittedUnits(form: FormData): Set<string> {
-  return new Set(
-    SERVICE_FORM_UNITS.filter((unit) => unit.checkbox || form.has(unit.fields[0]!)).map((unit) => unit.key),
-  );
-}
+export const submittedUnits = BASE.submittedUnits;
 
 /* -------------------------------------------------------------------------- */
-/* The signed base                                                            */
+/* The signed base and the decision                                           */
 /* -------------------------------------------------------------------------- */
-
-const BASE_VERSION = 1;
-
-/** A key for this one purpose, so a base can never stand in for a session or a preview token. */
-const signingKey = () => createHmac("sha256", getAuthSecret()).update("elite-one-desk:service-form-base:v1").digest();
-
-const sign = (payload: string) => createHmac("sha256", signingKey()).update(payload).digest();
 
 /** The base the edit page renders beside the values it drew: fingerprints only, never values. */
-export function signServiceBase(id: number, values: ServiceFormValues): string {
-  const payload = Buffer.from(JSON.stringify({ v: BASE_VERSION, id, f: printsOf(values) })).toString("base64url");
-  return `${payload}.${sign(payload).toString("base64url")}`;
-}
+export const signServiceBase = BASE.signBase;
 
 /** The fingerprints a form was drawn with, if the token is ours, current and for this service — otherwise `null`. */
-export function readServiceBase(token: string, id: number): Prints | null {
-  const parts = token.split(".");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
-  const [payload, signature] = parts as [string, string];
-  const given = Buffer.from(signature, "base64url");
-  const expected = sign(payload);
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
-  try {
-    const body = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { v?: unknown; id?: unknown; f?: unknown };
-    if (body.v !== BASE_VERSION || body.id !== id || typeof body.f !== "object" || body.f === null) return null;
-    const prints = body.f as Record<string, unknown>;
-    if (Object.keys(prints).length !== UNIT_KEYS.length) return null;
-    for (const key of UNIT_KEYS) if (typeof prints[key] !== "string") return null;
-    return prints as Prints;
-  } catch {
-    return null;
-  }
-}
+export const readServiceBase = BASE.readBase;
 
-/* -------------------------------------------------------------------------- */
-/* The decision                                                               */
-/* -------------------------------------------------------------------------- */
-
-export type ServiceSaveDecision = {
-  /** Units the form changed from its base. */
-  changed: string[];
-  /** Changed here and, differently, elsewhere since the base: the save is refused. */
-  conflicts: string[];
-  /** Changed here and not already so: what is written. */
-  writes: string[];
-};
+export type ServiceSaveDecision = SaveDecision;
 
 /** Brief §5's rule, unit by unit (docs/admin/services-form-concurrency.md §4). */
-export function decideServiceSave(
-  base: Prints,
-  mine: Prints,
-  live: Prints,
-  submitted: Set<string>,
-): ServiceSaveDecision {
-  const changed = UNIT_KEYS.filter((key) => submitted.has(key) && mine[key] !== base[key]);
-  const conflicts = changed.filter((key) => live[key] !== base[key] && live[key] !== mine[key]);
-  const writes = conflicts.length ? [] : changed.filter((key) => live[key] !== mine[key]);
-  return { changed, conflicts, writes };
-}
+export const decideServiceSave = BASE.decide;
 
-export const unitLabel = (key: string): string => SERVICE_FORM_UNITS.find((unit) => unit.key === key)?.label ?? key;
+export const unitLabel = BASE.unitLabel;
 
 /** The columns a set of units writes, taken from the submission. */
-export function valuesOfUnits(values: ServiceFormValues, keys: string[]): Partial<ServiceFormValues> {
-  const out: Partial<ServiceFormValues> = {};
-  for (const unit of SERVICE_FORM_UNITS) {
-    if (!keys.includes(unit.key)) continue;
-    for (const name of unit.fields) (out as Record<string, unknown>)[name] = values[name];
-  }
-  return out;
-}
+export const valuesOfUnits = BASE.valuesOfUnits;
