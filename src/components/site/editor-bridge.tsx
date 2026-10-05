@@ -784,7 +784,18 @@ export function EditorBridge({
       // element is how a keyboard user gets stuck in a page they cannot leave.
     };
 
-    const onEditBlur = () => stopEditing(true);
+    /**
+     * The edit ends when the element being typed into loses the focus — and
+     * only then (Batch 24). Listening on the whole document, any `focusout`
+     * used to end it: a card's title sits inside the card's link, the
+     * double-click focuses that link, and beginning the edit moves the focus
+     * from the link into the title — so the link's own `focusout` ended every
+     * edit of a card's words the moment it began (service cards since
+     * Batch 21, package cards since Batch 24).
+     */
+    const onEditBlur = (event: FocusEvent) => {
+      if (editing && event.target === editing.element) stopEditing(true);
+    };
 
     /**
      * Undo and Redo, pressed while this document has the keyboard (Batch 16).
