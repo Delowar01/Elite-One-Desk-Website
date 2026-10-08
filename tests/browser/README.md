@@ -1,6 +1,6 @@
 # Browser QA — the tracked probes
 
-Thirty-seven probes run in a real Chromium. Thirty-six drive the real application:
+Thirty-eight probes run in a real Chromium. Thirty-seven drive the real application:
 the public pages, ordinary Preview and the Visual Editor, in English and Arabic,
 at Desktop, Tablet and Mobile widths. One, `stress-diagnostics`, proves the
 stress suite's failure recorder against a stub server. Each prints one `PASS`
@@ -10,7 +10,7 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty-seven probes, one file each |
+| `probes/*.probe.mts` | the thirty-eight probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -46,7 +46,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the thirty-seven probes, once each
+npm run test:browser              # the thirty-eight probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -94,8 +94,9 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,527 `PASS`
-across the thirty-seven as of Batch 24 (1,425 across thirty-six at Batch 23,
+Every probe clean, with the counts in `probes/expected.json` — 1,544 `PASS`
+across the thirty-eight as of Batch 25 (1,527 across thirty-seven at Batch 24,
+1,425 across thirty-six at Batch 23,
 1,377 across thirty-four at Batch 22,
 1,266 across thirty-three at Batch 21A, 1,255 across thirty-two at Batch 21,
 1,145 across thirty-one at Batch 19C,
@@ -262,3 +263,22 @@ hands the focus to the section's own row. `globals-settings` gained 2 checks
 (26): the footer's descriptive line typed in the Globals drawer is the public
 footer's, in its own edition only — the Arabic footer keeps its standard
 sentence.
+
+Batch 25 added one probe. `seo-media` (17 checks, port 3739) is the search and
+sharing settings and the pictures they use, end to end: an owner signs in
+through the form and lands on the SEO screen with every address listed and
+grouped; the Tour packages overview gets its English and Arabic settings there
+and `/packages` and `/ar/packages` say so; a destination gets its settings,
+then its address is changed on the Destinations form, and the settings follow
+the destination — one record, at the new address, the old one answering 404.
+Two pictures are uploaded through the Media screen and one becomes the
+destination's share image (its 1600 rendition, in both editions); the Media
+screen refuses to delete it and says where it is used; it is replaced by the
+other and then removed, each picture let go as it is, and both are deleted. A
+package with no settings keeps its title, canonical, TouristTrip and
+breadcrumb in both languages; the Services overview gets its settings while the
+heading a visitor reads stays its own; search results stay `noindex` and out of
+the sitemap; a Visual Editor draft of a package's title reaches no public tag,
+JSON-LD or page, and the editor's own preview keeps the published title in its
+metadata; and a preview answers `noindex` and is never stored, with no query in
+its canonical. The last check is that neither window met a page error.

@@ -42,8 +42,8 @@ describe("19A · the tracked browser suite", () => {
     }
     assert.equal(
       probes.length,
-      37,
-      "the thirty probes Batch 19A tracked, 19C's temporary-password scenario, 21's category pages, 21A's stress diagnostics, 22's service pages, 23's Inspector focus and Services form, and 24's package routes",
+      38,
+      "the thirty probes Batch 19A tracked, 19C's temporary-password scenario, 21's category pages, 21A's stress diagnostics, 22's service pages, 23's Inspector focus and Services form, 24's package routes, and 25's SEO and share images",
     );
   });
 
