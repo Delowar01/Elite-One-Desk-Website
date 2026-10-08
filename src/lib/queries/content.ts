@@ -14,6 +14,7 @@ import { resolveSections } from "@/lib/cms/reuse/resolve";
 import { readDraftStructure } from "@/lib/cms/structure";
 import { db } from "@/lib/db";
 import { pageSections, pages, seoMetadata } from "@/lib/db/schema";
+import { indexSeoRows, seoRowFor, type SeoRowIndex, type SeoStorage } from "@/lib/seo-model";
 
 export type RenderedSection = {
   id: number;
@@ -170,21 +171,21 @@ export const getPublishedPages = unstable_cache(
 export type SeoRow = typeof seoMetadata.$inferSelect;
 
 /**
- * SEO overrides for every entity, fetched once. Each page then looks its own
- * row up without a query, and a page with no row falls back to the defaults in
- * Site Settings. Rows rather than a Map for the same reason as the media
- * library: the cache serialises what it stores.
+ * SEO records for every target, fetched once. Each page then finds its own
+ * record without a query, and a page with none falls back to its own content
+ * and then to the defaults in Site Settings. Rows rather than a Map for the
+ * same reason as the media library: the cache serialises what it stores.
+ * Records have no drafts: what is stored is what is live.
  */
 const getSeoRows = unstable_cache(async () => db.select().from(seoMetadata), ["seo-rows"], {
   tags: [TAGS.seo],
   revalidate: 3600,
 });
 
-export const getSeoMap = cache(async (): Promise<Map<string, SeoRow>> => {
-  const rows = await getSeoRows();
-  return new Map(rows.map((r) => [`${r.entityType}:${r.entityKey}`, r]));
-});
+/** The rows, sorted the way the rule reads them (`lib/seo-model.ts`), once per request. */
+const getSeoIndex = cache(async (): Promise<SeoRowIndex<SeoRow>> => indexSeoRows(await getSeoRows()));
 
-export async function getSeo(entityType: string, entityKey: string): Promise<SeoRow | null> {
-  return (await getSeoMap()).get(`${entityType}:${entityKey}`) ?? null;
+/** The record a target uses (Batch 25): its bound row, else the unbound row at its address. */
+export async function getSeoRecord(storage: SeoStorage): Promise<SeoRow | null> {
+  return seoRowFor(await getSeoIndex(), storage);
 }

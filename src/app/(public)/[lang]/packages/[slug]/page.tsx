@@ -21,6 +21,7 @@ import { getMediaMap } from "@/lib/queries/site";
 import { documentEditorKey, type RouteOwner } from "@/lib/routes/owners";
 import { resolvePackagesSlugRender } from "@/lib/routes/package-view";
 import { breadcrumbJsonLd, buildMetadata } from "@/lib/seo";
+import { recordStorage } from "@/lib/seo-model";
 import { getSettings, whatsappLink } from "@/lib/settings";
 
 type Params = {
@@ -39,10 +40,9 @@ export async function generateMetadata({ params }: Pick<Params, "params">) {
     return buildMetadata({
       locale: lang,
       path: `/packages/${slug}`,
-      entityType: "destination",
-      entityKey: slug,
-      title: pick(lang, destination.titleEn, destination.titleAr),
-      description: toPlainText(pick(lang, destination.summaryEn, destination.summaryAr), 300),
+      seo: recordStorage("destination", slug, destination.id),
+      title: { en: destination.titleEn, ar: destination.titleAr },
+      description: { en: toPlainText(destination.summaryEn, 300), ar: toPlainText(destination.summaryAr, 300) },
       imageId: destination.imageId,
     });
   }
@@ -52,10 +52,9 @@ export async function generateMetadata({ params }: Pick<Params, "params">) {
   return buildMetadata({
     locale: lang,
     path: `/packages/${slug}`,
-    entityType: "package",
-    entityKey: slug,
-    title: pick(lang, row.titleEn, row.titleAr),
-    description: toPlainText(pick(lang, row.summaryEn, row.summaryAr), 300),
+    seo: recordStorage("package", slug, row.id),
+    title: { en: row.titleEn, ar: row.titleAr },
+    description: { en: toPlainText(row.summaryEn, 300), ar: toPlainText(row.summaryAr, 300) },
     imageId: row.imageId,
     type: "article",
   });

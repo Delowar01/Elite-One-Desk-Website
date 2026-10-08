@@ -23,6 +23,7 @@ import { documentEditorKey, type RouteOwner } from "@/lib/routes/owners";
 import { questionsOf } from "@/lib/routes/service-model";
 import { resolveServiceRender } from "@/lib/routes/service-view";
 import { breadcrumbJsonLd, buildMetadata, faqJsonLd } from "@/lib/seo";
+import { recordStorage } from "@/lib/seo-model";
 import { getSettings, whatsappLink } from "@/lib/settings";
 import { serviceMove } from "@/lib/taxonomy-moves";
 
@@ -55,10 +56,9 @@ export async function generateMetadata({ params }: Pick<Params, "params">) {
   return buildMetadata({
     locale: lang,
     path: `/services/${category}/${service}`,
-    entityType: "service",
-    entityKey: `${category}/${service}`,
-    title: pick(lang, found.service.titleEn, found.service.titleAr),
-    description: toPlainText(pick(lang, found.service.introEn, found.service.introAr), 300),
+    seo: recordStorage("service", `${category}/${service}`, found.service.id),
+    title: { en: found.service.titleEn, ar: found.service.titleAr },
+    description: { en: toPlainText(found.service.introEn, 300), ar: toPlainText(found.service.introAr, 300) },
     imageId: found.service.imageId,
     type: "article",
   });

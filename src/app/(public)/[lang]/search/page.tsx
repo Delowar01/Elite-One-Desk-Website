@@ -18,7 +18,7 @@ export async function generateMetadata({ params }: Props) {
   return buildMetadata({
     locale: lang,
     path: "/search",
-    title: lang === "ar" ? "البحث" : "Search",
+    title: { en: "Search", ar: "البحث" },
     // A results page has nothing durable to index.
     noindex: true,
   });

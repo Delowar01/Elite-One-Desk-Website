@@ -6,7 +6,7 @@ import { SectionRenderer, buildBlockContext } from "@/components/site/section-re
 import { PreviewBanner } from "@/components/site/preview-banner";
 import { isLocale } from "@/lib/i18n/config";
 import { resolvePageForRender } from "@/lib/preview";
-import { buildMetadata, organizationJsonLd } from "@/lib/seo";
+import { homeMetadata, organizationJsonLd } from "@/lib/seo";
 
 type Params = {
   params: Promise<{ lang: string }>;
@@ -16,7 +16,7 @@ type Params = {
 export async function generateMetadata({ params }: Pick<Params, "params">) {
   const { lang } = await params;
   if (!isLocale(lang)) return {};
-  return buildMetadata({ locale: lang, path: "/", entityType: "page", entityKey: "home" });
+  return homeMetadata(lang);
 }
 
 export default async function HomePage({ params, searchParams }: Params) {

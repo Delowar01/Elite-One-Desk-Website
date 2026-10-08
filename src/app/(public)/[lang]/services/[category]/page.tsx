@@ -24,6 +24,7 @@ import { resolveCategoryRender } from "@/lib/routes/category-view";
 import { documentEditorKey } from "@/lib/routes/owners";
 import { hasPackageHub } from "@/lib/routes/package-hub";
 import { breadcrumbJsonLd, buildMetadata, faqJsonLd } from "@/lib/seo";
+import { recordStorage } from "@/lib/seo-model";
 import { getSettings, whatsappLink } from "@/lib/settings";
 import { categoryMove } from "@/lib/taxonomy-moves";
 
@@ -42,12 +43,13 @@ export async function generateMetadata({ params }: Pick<Params, "params">) {
   return buildMetadata({
     locale: lang,
     path: `/services/${slug}`,
-    entityType: "category",
-    entityKey: slug,
-    title: pick(lang, category.titleEn, category.titleAr),
-    description:
-      pick(lang, category.summaryEn, category.summaryAr) ||
-      pick(lang, category.taglineEn, category.taglineAr),
+    seo: recordStorage("category", slug, category.id),
+    title: { en: category.titleEn, ar: category.titleAr },
+    // Its summary, else its tagline — in each language on its own.
+    description: {
+      en: category.summaryEn.trim() || category.taglineEn,
+      ar: category.summaryAr.trim() || category.taglineAr,
+    },
     imageId: category.imageId,
   });
 }

@@ -6,7 +6,8 @@ import { PreviewBanner } from "@/components/site/preview-banner";
 import { isLocale } from "@/lib/i18n/config";
 import { getPage } from "@/lib/queries/content";
 import { resolvePageForRender } from "@/lib/preview";
-import { buildMetadata } from "@/lib/seo";
+import { buildMetadata, homeMetadata } from "@/lib/seo";
+import { recordStorage } from "@/lib/seo-model";
 
 type Params = {
   params: Promise<{ lang: string; slug: string[] }>;
@@ -25,13 +26,19 @@ export async function generateMetadata({ params }: Pick<Params, "params">) {
   const { lang, slug } = await params;
   if (!isLocale(lang) || slug.length !== 1) return {};
   const page = await getPage(slug[0]!);
-  if (!page) return {};
+  // An unpublished page answers 404 to a visitor, and its title and record must
+  // not ride along in that answer (Batch 25, B.14). Preview is private and gets
+  // the generic metadata too.
+  if (!page || !page.isPublished) return {};
+  // `/home` serves the homepage too, so it says exactly what `/` says — the
+  // homepage's metadata, `/` as its address — rather than being a second
+  // indexable address for the same page (B.14).
+  if (page.slug === "home") return homeMetadata(lang);
   return buildMetadata({
     locale: lang,
-    path: `/${slug[0]}`,
-    entityType: "page",
-    entityKey: slug[0]!,
-    title: lang === "ar" && page.titleAr ? page.titleAr : page.titleEn,
+    path: `/${page.slug}`,
+    seo: recordStorage("page", page.slug, page.id),
+    title: { en: page.titleEn, ar: page.titleAr },
   });
 }
 

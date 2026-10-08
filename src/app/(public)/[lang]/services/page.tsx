@@ -17,6 +17,8 @@ import { getMediaMap } from "@/lib/queries/site";
 import { documentEditorKey, SINGLETON_ID } from "@/lib/routes/owners";
 import { resolveServiceIndexRender } from "@/lib/routes/package-view";
 import { buildMetadata } from "@/lib/seo";
+import { SERVICES_OVERVIEW_META } from "@/lib/seo-defaults";
+import { overviewStorage } from "@/lib/seo-model";
 import { isLegacyTaxonomy } from "@/lib/taxonomy-state";
 
 type Params = {
@@ -40,45 +42,39 @@ const COPY = {
       en: "Six categories covering travel, business, residency, licensing and government-related support.",
       ar: "ست فئات رئيسية تغطي السفر والأعمال والإقامة والتراخيص والدعم المرتبط بالجهات الحكومية.",
     },
-    description: {
-      en: "Every Elite One Desk service: travel and tourism, business setup, company formation, general services, licence renewal and government relations.",
-      ar: "جميع خدمات إيليت ون ديسك: السفر والسياحة، تأسيس الأعمال، تسجيل الشركات، الخدمات العامة، تجديد الرخص والعلاقات الحكومية.",
-    },
   },
   restructured: {
     intro: {
       en: "Five service groups covering travel, business setup and company formation, residency and employee services, licensing and government support.",
       ar: "خمس مجموعات خدمات تغطي السفر، وتأسيس الأعمال والشركات، وخدمات الإقامة والموظفين، والتراخيص، والخدمات الحكومية.",
     },
-    description: {
-      en: "Every Elite One Desk service: travel and tourism, business setup and company formation, Iqama and employee services, license renewal and compliance, and government and general services.",
-      ar: "جميع خدمات إيليت ون ديسك: السفر والسياحة، تأسيس الأعمال والشركات، خدمات الإقامة والموظفين، تجديد التراخيص والامتثال، والخدمات الحكومية والعامة.",
-    },
   },
 } as const;
 
 /** `getCatalog` is cached and already loaded by the page, so this is free. */
-async function copyForCatalogue() {
+async function catalogueState(): Promise<"legacy" | "restructured"> {
   const { categories, subcategories } = await getCatalog();
   return isLegacyTaxonomy(
     categories.map((category) => category.slug),
     subcategories.map((subcategory) => subcategory.slug),
   )
-    ? COPY.legacy
-    : COPY.restructured;
+    ? "legacy"
+    : "restructured";
 }
 
+/**
+ * The overview's own title and description (`lib/seo-defaults.ts`, shared with
+ * the SEO screen), under the Services overview's SEO record.
+ */
 export async function generateMetadata({ params }: Pick<Params, "params">) {
   const { lang } = await params;
   if (!isLocale(lang)) return {};
-  const copy = await copyForCatalogue();
   return buildMetadata({
     locale: lang,
     path: "/services",
-    entityType: "page",
-    entityKey: "services",
-    title: lang === "ar" ? "الخدمات" : "Services",
-    description: pick(lang, copy.description.en, copy.description.ar),
+    seo: overviewStorage("serviceIndex"),
+    title: SERVICES_OVERVIEW_META.title,
+    description: SERVICES_OVERVIEW_META.description[await catalogueState()],
   });
 }
 
@@ -99,12 +95,13 @@ export default async function ServicesPage({ params, searchParams }: Params) {
   if (!isLocale(lang)) notFound();
 
   const dict = getDictionary(lang);
-  const [view, catalog, media, copy] = await Promise.all([
+  const [view, catalog, media, state] = await Promise.all([
     resolveServiceIndexRender(await searchParams),
     getCatalog(),
     getMediaMap(),
-    copyForCatalogue(),
+    catalogueState(),
   ]);
+  const copy = COPY[state];
   if (!view) notFound();
 
   const id = SINGLETON_ID;

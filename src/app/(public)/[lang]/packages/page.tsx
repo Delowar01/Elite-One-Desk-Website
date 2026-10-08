@@ -19,6 +19,8 @@ import { groupCatalogue } from "@/lib/routes/catalogue-model";
 import { documentEditorKey, SINGLETON_ID } from "@/lib/routes/owners";
 import { resolveCatalogueRender } from "@/lib/routes/package-view";
 import { buildMetadata } from "@/lib/seo";
+import { PACKAGES_OVERVIEW_META } from "@/lib/seo-defaults";
+import { overviewStorage } from "@/lib/seo-model";
 
 type Params = {
   params: Promise<{ lang: string }>;
@@ -45,13 +47,9 @@ export async function generateMetadata({ params }: Pick<Params, "params">) {
   return buildMetadata({
     locale: lang,
     path: "/packages",
-    entityType: "page",
-    entityKey: "packages",
-    title: lang === "ar" ? "البرامج السياحية" : "Tour packages",
-    description:
-      lang === "ar"
-        ? "باقات سياحية وبرامج مُعدّة مسبقاً لوجهات مختارة — جميعها قابلة للتخصيص."
-        : "Tour packages and prepared itineraries across our destinations — every one of them adjustable.",
+    seo: overviewStorage("packageIndex"),
+    title: PACKAGES_OVERVIEW_META.title,
+    description: PACKAGES_OVERVIEW_META.description,
   });
 }
 
