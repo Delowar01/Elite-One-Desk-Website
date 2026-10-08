@@ -157,3 +157,31 @@ describe("23 · the advisories with no safe fix stay out of the running applicat
     assert.ok(!existsSync(path.join(standalone, "esbuild")), "esbuild is in the server runtime");
   });
 });
+
+describe("25 · the advisory published since Batch 24 stays out of the running application", () => {
+  test("source-map-js (GHSA-68fv-2mgg-jv7q) is reached only through Next's build-time postcss: nothing imports it, and in the server only that postcss requires it", () => {
+    // A crafted indexed source map stalls the event loop while it is parsed.
+    // Nothing here parses a source map anybody else wrote: the application does
+    // not import the package, and the production server ships it only because
+    // Next's own postcss — which only the build's CSS pipeline runs (checked
+    // above) — requires it. docs/release/dependency-advisories-batch-25.md.
+    const imports = sources("src").filter(([, text]) => /from ["']source-map-js["']|require\(["']source-map-js["']\)/.test(text));
+    assert.deepEqual(imports.map(([file]) => file), []);
+    const standalone = path.join(REPO_ROOT, ".next", "standalone", "node_modules");
+    assert.ok(existsSync(standalone), "no production build — run `npm run build` first");
+    const requirers: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const full = path.join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          if (path.relative(standalone, full) !== "source-map-js") walk(full);
+        } else if (/\.(c?js|mjs)$/.test(entry) && /require\(["']source-map-js["']\)|from ["']source-map-js["']/.test(readFileSync(full, "utf8"))) {
+          requirers.push(path.relative(standalone, full));
+        }
+      }
+    };
+    walk(standalone);
+    assert.ok(requirers.length > 0, "nothing requires source-map-js — has the advisory gone? Then this test and the note go too");
+    for (const file of requirers) assert.match(file, /^next\/node_modules\/postcss\/lib\//, file);
+  });
+});

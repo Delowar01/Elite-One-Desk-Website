@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
 import { localeHref, stripLocale, type Locale } from "@/lib/i18n/config";
@@ -315,26 +315,23 @@ export function canonicalOverride(raw: string, locale: Locale, siteUrl: string):
 
 /**
  * The records each type of row belongs to, and the present address of each —
- * one fixed query per type, never built from input.
+ * one fixed query per type, written as SQL in code and never built from input
+ * (no raw SQL or identifier API: tests/dependency-advisories.test.ts).
  */
-const RECORDS: Record<SeoEntityType, string> = {
-  page: "select id, slug as address from pages",
-  category: "select id, slug as address from service_categories",
-  service:
-    "select v.id, c.slug || '/' || v.slug as address from services v join service_categories c on c.id = v.category_id",
-  package: "select id, slug as address from travel_packages",
-  destination: "select id, slug as address from package_destinations",
+const RECORDS: Record<SeoEntityType, SQL> = {
+  page: sql`select id, slug as address from pages`,
+  category: sql`select id, slug as address from service_categories`,
+  service: sql`select v.id, c.slug || '/' || v.slug as address from services v join service_categories c on c.id = v.category_id`,
+  package: sql`select id, slug as address from travel_packages`,
+  destination: sql`select id, slug as address from package_destinations`,
 };
 
 /** Each record with the key its row should carry (`storedKeyOf`, in SQL). */
 const keyed = (type: SeoEntityType) =>
-  sql.raw(
-    `(select id, case when length(address) <= ${SEO_KEY_MAX} then address else '#' || id end as k from (${RECORDS[type]}) x)`,
-  );
+  sql`(select id, case when length(address) <= ${SEO_KEY_MAX} then address else '#' || id end as k from (${RECORDS[type]}) x)`;
 
 /** The overview keys are pages' rows that are never bound. */
-const notOverview = (type: SeoEntityType) =>
-  type === "page" ? sql.raw(`and entity_key not in ('services', 'packages')`) : sql.raw("");
+const notOverview = (type: SeoEntityType) => (type === "page" ? sql`and entity_key not in ('services', 'packages')` : sql``);
 
 export type SeoReconcileCounts = { bound: number; rekeyed: number; detached: number; released: number };
 
@@ -378,7 +375,7 @@ export async function reconcileSeoRows<S extends Record<string, unknown>>(
 
     for (const type of RECORD_ENTITY_TYPES) {
       const records = keyed(type);
-      const all = sql.raw(`(${RECORDS[type]})`);
+      const all = sql`(${RECORDS[type]})`;
 
       counts.released += await run(sql`
         update seo_metadata s set entity_id = null
