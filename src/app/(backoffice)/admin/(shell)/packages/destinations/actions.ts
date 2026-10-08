@@ -12,6 +12,7 @@ import { db } from "@/lib/db";
 import type { Executor } from "@/lib/db/revision";
 import { packageDestinations, travelPackages } from "@/lib/db/schema";
 import { DESTINATION_FORM, destinationRowValues, readDestinationForm } from "@/lib/packages/form-fields";
+import { dropSeoRows, moveSeoRow } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -155,6 +156,12 @@ export async function updateDestination(_prev: ActionState, form: FormData): Pro
           .set({ ...changes, updatedAt: new Date() })
           .where(eq(packageDestinations.id, id));
       }
+      // A new address: the destination's SEO record goes with it, in this
+      // transaction, still bound to the same destination (Batch 25, B.7). The
+      // old address answers 404, as it always has — no redirect is invented.
+      if (writes.includes("slug") && merged.slug !== row.slug) {
+        await moveSeoRow(tx, "destination", id, row.slug, merged.slug);
+      }
       return { kind: "done", writes, title: merged.titleEn };
     });
 
@@ -180,6 +187,7 @@ export async function updateDestination(_prev: ActionState, form: FormData): Pro
       metadata: { fields: outcome.writes },
     });
     refresh();
+    if (outcome.writes.includes("slug")) revalidate(TAGS.seo);
     revalidatePath(`/admin/packages/destinations/${id}`);
     return ok("Destination saved.");
   });
@@ -225,8 +233,16 @@ export async function deleteDestination(_prev: ActionState, form: FormData): Pro
 
     // The foreign key is ON DELETE SET NULL: the packages inside survive and
     // become ungrouped, which is recoverable. Deleting them with the folder
-    // they happened to be filed under would not be.
-    await db.delete(packageDestinations).where(eq(packageDestinations.id, id));
+    // they happened to be filed under would not be. Its SEO record goes with it
+    // (Batch 25, B.7) — the destination's row first, then its SEO row.
+    await db.transaction(async (tx) => {
+      const [found] = await tx
+        .delete(packageDestinations)
+        .where(eq(packageDestinations.id, id))
+        .returning({ slug: packageDestinations.slug });
+      if (found) await dropSeoRows(tx, "destination", [{ id, address: found.slug }]);
+    });
+    revalidate(TAGS.seo);
 
     await logActivity(session, {
       action: "destination.deleted",

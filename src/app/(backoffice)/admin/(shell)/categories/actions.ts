@@ -19,8 +19,9 @@ import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { sanitizeHref, sanitizeRichText } from "@/lib/cms/sanitize";
 import { db } from "@/lib/db";
-import { serviceCategories, serviceSubcategories } from "@/lib/db/schema";
+import { serviceCategories, serviceSubcategories, services } from "@/lib/db/schema";
 import { isIconName } from "@/lib/icons";
+import { dropSeoRows } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -135,8 +136,30 @@ export async function deleteCategory(_prev: ActionState, form: FormData): Promis
       .where(eq(serviceCategories.id, id));
     if (!n) return fail("That category no longer exists.");
 
-    // Cascades to its services — which is the surprise worth spelling out.
-    await db.delete(serviceCategories).where(eq(serviceCategories.id, id));
+    // Cascades to its services — which is the surprise worth spelling out. Their
+    // SEO records go with them, and the category's own (Batch 25, B.7). The
+    // category is held first, then its services (by the cascade), then the SEO
+    // rows: the order a category publication and every SEO write take them in.
+    await db.transaction(async (tx) => {
+      const [category] = await tx
+        .select({ slug: serviceCategories.slug })
+        .from(serviceCategories)
+        .where(eq(serviceCategories.id, id))
+        .for("update");
+      if (!category) return;
+      const removed = await tx
+        .select({ id: services.id, slug: services.slug })
+        .from(services)
+        .where(eq(services.categoryId, id));
+      await tx.delete(serviceCategories).where(eq(serviceCategories.id, id));
+      await dropSeoRows(tx, "category", [{ id, address: category.slug }]);
+      await dropSeoRows(
+        tx,
+        "service",
+        removed.map((service) => ({ id: service.id, address: `${category.slug}/${service.slug}` })),
+      );
+    });
+    revalidate(TAGS.seo);
     await logActivity(session, {
       action: "category.deleted",
       entityType: "category",

@@ -39,6 +39,7 @@ import { giveFresh } from "./helpers/fixtures";
 import { get } from "./helpers/http";
 import { connect, dropDatabase, type Sql } from "./helpers/pg";
 import { BUILD_HINT, isBuilt, startServer, type Server } from "./helpers/server";
+import { seoFormBase } from "./helpers/seo-form";
 import { openServiceForm } from "./helpers/service-form";
 import { signIn, type TestSession } from "./helpers/session";
 
@@ -356,16 +357,26 @@ describe("19B · every change leaves one accurate activity entry, and a non-chan
   });
 
   test("clearing an SEO override that is not there says so and leaves no entry; clearing one that is leaves one", async () => {
+    // Since Batch 25 a removal names its page by reference and posts the base
+    // the screen drew it with (docs/admin/seo-and-share-images.md B.9).
+    const target = `page:${(await pageBySlug("about")).id}`;
     const before = await entries("seo.cleared");
-    const nothing = answered(await screen(SEO, "/admin/seo", "clearSeo", { entityType: "page", entityKey: "about" }));
+    const nothing = answered(
+      await screen(SEO, "/admin/seo", "clearSeo", { target, _base: await seoFormBase(server.origin, owner.cookie, target) }),
+    );
     assert.equal(nothing.ok, true);
     assert.match(nothing.message ?? "", /no override/);
     assert.equal(await entries("seo.cleared"), before);
 
+    // A row as the previous release writes it — by address, unbound — is found
+    // by the same rule the page uses, and removed by reference.
     await sql`insert into seo_metadata (entity_type, entity_key, title_en) values ('page', 'about', 'Audit title')`;
-    const cleared = answered(await screen(SEO, "/admin/seo", "clearSeo", { entityType: "page", entityKey: "about" }));
+    const cleared = answered(
+      await screen(SEO, "/admin/seo", "clearSeo", { target, _base: await seoFormBase(server.origin, owner.cookie, target) }),
+    );
     assert.equal(cleared.ok, true);
     assert.equal(await entries("seo.cleared"), before + 1);
+    assert.equal(await entries("seo.cleared", target), 1, "the entry names the page by reference, never by address");
     assert.equal((await sql`select 1 from seo_metadata where entity_type = 'page' and entity_key = 'about'`).length, 0);
   });
 

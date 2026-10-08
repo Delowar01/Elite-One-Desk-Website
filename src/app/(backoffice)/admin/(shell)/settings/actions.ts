@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
 import {
-  checkbox, fail, field, ok, optionalId, runAction, type ActionState,
+  checkbox, fail, field, ok, runAction, type ActionState,
 } from "@/lib/admin/actions";
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate, revalidateEverything } from "@/lib/cache";
@@ -45,7 +45,6 @@ const GROUP_LABEL: Record<string, string> = {
   contact: "contact details",
   whatsapp: "WhatsApp settings",
   disclaimers: "disclaimers",
-  seo: "SEO defaults",
   features: "feature switches",
   analytics: "analytics",
 };
@@ -54,7 +53,7 @@ async function persist(
   group: SettingsKey,
   values: Record<string, unknown>,
   form: FormData,
-  permission: "settings.manage" | "analytics.manage" | "seo.manage",
+  permission: "settings.manage" | "analytics.manage",
 ): Promise<ActionState> {
   const session = await guardAction(permission, form);
   await saveSettingsGroup(group, values, session.user.id);
@@ -174,26 +173,6 @@ export async function saveFeatures(_prev: ActionState, form: FormData): Promise<
       },
       form,
       "settings.manage",
-    ),
-  );
-}
-
-export async function saveSeoDefaults(_prev: ActionState, form: FormData): Promise<ActionState> {
-  return runAction("settings-seo", async () =>
-    persist(
-      "seo",
-      {
-        defaultTitleEn: field(form, "defaultTitleEn", 190),
-        defaultTitleAr: field(form, "defaultTitleAr", 190),
-        titleTemplateEn: field(form, "titleTemplateEn", 120),
-        titleTemplateAr: field(form, "titleTemplateAr", 120),
-        defaultDescriptionEn: field(form, "defaultDescriptionEn", 320),
-        defaultDescriptionAr: field(form, "defaultDescriptionAr", 320),
-        ogImageId: optionalId(form, "ogImageId"),
-        twitterHandle: field(form, "twitterHandle", 40),
-      },
-      form,
-      "seo.manage",
     ),
   );
 }

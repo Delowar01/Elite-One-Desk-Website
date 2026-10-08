@@ -5,13 +5,14 @@ import { AUTHORITY, capabilitiesOf } from "@/lib/auth/authority";
 import { requirePermissions } from "@/lib/auth/guard";
 import { blocksForPage, type BlockDef } from "@/lib/cms/blocks";
 import { db } from "@/lib/db";
-import { media, pages } from "@/lib/db/schema";
+import { media, pages, seoMetadata } from "@/lib/db/schema";
 import { localeOrDefault, publicPathForPage } from "@/lib/page-path";
 import { listCategoryDocuments } from "@/lib/routes/category";
 import { documentEditorKey, parseRouteKey, routeKeyOf, SINGLETON_ID, type RouteDocument } from "@/lib/routes/owners";
 import { CATALOGUE_PATH, listDestinationDocuments, listPackageDocuments } from "@/lib/routes/packages";
 import { listServiceDocuments } from "@/lib/routes/service";
 import { SERVICE_INDEX_PATH } from "@/lib/routes/service-index-model";
+import { indexSeoRows, overviewStorage, recordStorage, seoRowFor, type SeoStorage } from "@/lib/seo-model";
 import { globalsCapabilities } from "@/lib/visual-editor/globals";
 import { deviceOrDefault } from "@/lib/visual-editor/viewport";
 
@@ -99,19 +100,37 @@ export default async function VisualEditorPage({
   }));
 
   /**
+   * Each document's SEO target (Batch 25): its reference — the page's id, or
+   * the route key the editor already holds — and where its record lives, so
+   * the header can link to the SEO screen at this page and say whether it has
+   * settings of its own. Read from the same rows by the same rule the public
+   * page uses (`seoRowFor`).
+   */
+  const seoTargets: Array<{ entry: EditablePage; ref: string; storage: SeoStorage }> = rows.map((row, index) => ({
+    entry: editable[index]!,
+    ref: `page:${row.id}`,
+    storage: recordStorage("page", row.slug, row.id),
+  }));
+
+  /**
    * The two overviews, `/services` and `/packages` (Batch 24): one each, so
    * their documents are fixed — but drawn at their real addresses like every
    * other document, never from the query string.
    */
-  const overview = (document: RouteDocument, title: string, path: string) =>
-    editable.push({
+  const overview = (document: RouteDocument, title: string, path: string) => {
+    const entry: EditablePage = {
       id: documentEditorKey(document),
       slug: routeKeyOf(document),
       title,
       path,
       isPublished: true,
       kind: document.kind,
-    });
+    };
+    editable.push(entry);
+    if (document.kind === "serviceIndex" || document.kind === "packageIndex") {
+      seoTargets.push({ entry, ref: routeKeyOf(document), storage: overviewStorage(document.kind) });
+    }
+  };
   overview({ kind: "serviceIndex", id: SINGLETON_ID }, "Services overview", SERVICE_INDEX_PATH);
   overview({ kind: "packageIndex", id: SINGLETON_ID }, "Tour packages", CATALOGUE_PATH);
 
@@ -124,14 +143,16 @@ export default async function VisualEditorPage({
   const categories = await listCategoryDocuments();
   for (const row of categories) {
     const document = { kind: "category" as const, id: row.id };
-    editable.push({
+    const entry: EditablePage = {
       id: documentEditorKey(document),
       slug: routeKeyOf(document),
       title: row.titleEn,
       path: `/services/${row.slug}`,
       isPublished: row.isPublished,
       kind: "category",
-    });
+    };
+    editable.push(entry);
+    seoTargets.push({ entry, ref: routeKeyOf(document), storage: recordStorage("category", row.slug, row.id) });
   }
 
   /**
@@ -145,7 +166,7 @@ export default async function VisualEditorPage({
   const services = await listServiceDocuments();
   for (const row of services) {
     const document = { kind: "service" as const, id: row.id };
-    editable.push({
+    const entry: EditablePage = {
       id: documentEditorKey(document),
       slug: routeKeyOf(document),
       title: row.titleEn,
@@ -154,6 +175,12 @@ export default async function VisualEditorPage({
       isPublished: row.isPublished && row.categoryPublished,
       kind: "service",
       group: row.categoryTitle,
+    };
+    editable.push(entry);
+    seoTargets.push({
+      entry,
+      ref: routeKeyOf(document),
+      storage: recordStorage("service", `${row.categorySlug}/${row.slug}`, row.id),
     });
   }
 
@@ -166,18 +193,20 @@ export default async function VisualEditorPage({
    */
   for (const row of await listDestinationDocuments()) {
     const document = { kind: "destination" as const, id: row.id };
-    editable.push({
+    const entry: EditablePage = {
       id: documentEditorKey(document),
       slug: routeKeyOf(document),
       title: row.titleEn,
       path: `/packages/${row.slug}`,
       isPublished: row.isPublished,
       kind: "destination",
-    });
+    };
+    editable.push(entry);
+    seoTargets.push({ entry, ref: routeKeyOf(document), storage: recordStorage("destination", row.slug, row.id) });
   }
   for (const row of await listPackageDocuments()) {
     const document = { kind: "package" as const, id: row.id };
-    editable.push({
+    const entry: EditablePage = {
       id: documentEditorKey(document),
       slug: routeKeyOf(document),
       title: row.titleEn,
@@ -185,7 +214,18 @@ export default async function VisualEditorPage({
       isPublished: row.isPublished,
       kind: "package",
       group: row.destinationTitle ?? "No destination",
-    });
+    };
+    editable.push(entry);
+    seoTargets.push({ entry, ref: routeKeyOf(document), storage: recordStorage("package", row.slug, row.id) });
+  }
+
+  // Only a role that may edit SEO is shown the way there (Batch 25): no link
+  // to a screen that would refuse it, and no SEO read for anybody else.
+  if (session.permissions.has("seo.manage")) {
+    const seoIndex = indexSeoRows(await db.select().from(seoMetadata));
+    for (const { entry, ref, storage } of seoTargets) {
+      entry.seo = { ref, custom: Boolean(seoRowFor(seoIndex, storage)) };
+    }
   }
 
   // The address can say anything. The canvas URL is always built from a row we

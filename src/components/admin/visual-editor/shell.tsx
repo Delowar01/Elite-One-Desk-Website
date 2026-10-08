@@ -147,6 +147,12 @@ export type EditablePage = {
    * service's category, a package's destination.
    */
   group?: string;
+  /**
+   * Its search and sharing settings (Batch 25), for a role that may edit them:
+   * the SEO target's reference, and whether the target has a record of its own.
+   * The editor never edits SEO — it links to the one screen that does.
+   */
+  seo?: { ref: string; custom: boolean };
 };
 
 const STATUS: Record<CanvasState["status"], { label: string; tone: string }> = {
@@ -3680,6 +3686,30 @@ export function VisualEditorShell({
             <Icon name="arrowUpRight" size={12} />
             <span className="hidden lg:inline">Preview</span>
           </a>
+          {/* Search and sharing are the SEO screen's, not the editor's (Batch 25):
+              one place edits them, and this opens it at this page. The dot is the
+              page having settings of its own; the same fact is in the name. */}
+          {page.seo ? (
+            <a
+              href={`/admin/seo?target=${encodeURIComponent(page.seo.ref)}`}
+              target="_blank"
+              rel="noopener"
+              className="admin-btn admin-btn-sm"
+              data-ve-seo={page.seo.ref}
+              title={
+                page.seo.custom
+                  ? "This page has its own search and sharing settings. Open them on the SEO screen in a new tab."
+                  : "This page follows its own content for search and sharing. Open its settings on the SEO screen in a new tab."
+              }
+              aria-label={page.seo.custom ? "SEO — this page has its own settings" : "SEO — following the page's own content"}
+            >
+              <Icon name="search" size={12} />
+              <span className="hidden lg:inline">SEO</span>
+              {page.seo.custom ? (
+                <span aria-hidden className="inline-block size-1.5 rounded-full" style={{ background: "var(--color-peach)" }} />
+              ) : null}
+            </a>
+          ) : null}
         </div>
       </header>
 

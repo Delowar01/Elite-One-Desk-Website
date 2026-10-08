@@ -9,7 +9,7 @@ import { fail, field, ok, runAction, type ActionState } from "@/lib/admin/action
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { db } from "@/lib/db";
-import { serviceSubcategories, services } from "@/lib/db/schema";
+import { serviceCategories, serviceSubcategories, services } from "@/lib/db/schema";
 import type { Executor } from "@/lib/db/revision";
 import {
   decideServiceSave,
@@ -22,6 +22,7 @@ import {
   unitLabel,
   valuesOfUnits,
 } from "@/lib/services/form-fields";
+import { dropSeoRows, moveSeoRow } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -29,6 +30,16 @@ const refresh = () => {
   revalidate(TAGS.catalog);
   revalidatePath("/admin/services");
 };
+
+/** A category's address, read without a lock: no admin writer changes it. */
+async function categorySlugOf(on: Executor, categoryId: number): Promise<string | null> {
+  const [row] = await on
+    .select({ slug: serviceCategories.slug })
+    .from(serviceCategories)
+    .where(eq(serviceCategories.id, categoryId))
+    .limit(1);
+  return row?.slug ?? null;
+}
 
 /**
  * A service filed under a group must sit in that group's category. The form
@@ -166,6 +177,12 @@ export async function updateService(_prev: ActionState, form: FormData): Promise
           .set({ ...changes, updatedAt: new Date() })
           .where(eq(services.id, id));
       }
+      // A move to another category changes the service's address; its SEO
+      // record goes with it, in this transaction (Batch 25, B.7).
+      if (writes.includes("placement") && merged.categoryId !== row.categoryId) {
+        const [from, to] = await Promise.all([categorySlugOf(tx, row.categoryId), categorySlugOf(tx, merged.categoryId)]);
+        if (from && to) await moveSeoRow(tx, "service", id, `${from}/${row.slug}`, `${to}/${row.slug}`);
+      }
       return { kind: "done", writes, title: merged.titleEn };
     });
 
@@ -203,6 +220,7 @@ export async function updateService(_prev: ActionState, form: FormData): Promise
       metadata: { fields: outcome.writes },
     });
     refresh();
+    if (outcome.writes.includes("placement")) revalidate(TAGS.seo);
     revalidatePath(`/admin/services/${id}`);
     return ok("Service saved.");
   });
@@ -235,10 +253,18 @@ export async function deleteService(_prev: ActionState, form: FormData): Promise
   const result = await runAction("service-delete", async () => {
     const session = await guardAction("services.manage", form);
     const id = Number(form.get("id"));
-    const [row] = await db.select().from(services).where(eq(services.id, id)).limit(1);
+    if (!Number.isInteger(id) || id <= 0) return fail("That service no longer exists.");
+    // The service, then its SEO record (Batch 25, B.7): the record row first,
+    // the order every SEO write takes them in.
+    const row = await db.transaction(async (tx) => {
+      const [found] = await tx.delete(services).where(eq(services.id, id)).returning();
+      if (!found) return null;
+      const category = await categorySlugOf(tx, found.categoryId);
+      if (category) await dropSeoRows(tx, "service", [{ id, address: `${category}/${found.slug}` }]);
+      return found;
+    });
     if (!row) return fail("That service no longer exists.");
-
-    await db.delete(services).where(eq(services.id, id));
+    revalidate(TAGS.seo);
     await logActivity(session, {
       action: "service.deleted",
       entityType: "service",

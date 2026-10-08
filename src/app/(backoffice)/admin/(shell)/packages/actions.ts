@@ -12,6 +12,7 @@ import { db } from "@/lib/db";
 import type { Executor } from "@/lib/db/revision";
 import { packageDestinations, travelPackages } from "@/lib/db/schema";
 import { PACKAGE_FORM, packageRowValues, readPackageForm } from "@/lib/packages/form-fields";
+import { dropSeoRows } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -213,9 +214,15 @@ export async function deletePackage(_prev: ActionState, form: FormData): Promise
   const result = await runAction("package-delete", async () => {
     const session = await guardAction("packages.manage", form);
     const id = Number(form.get("id"));
-    const [row] = await db.select().from(travelPackages).where(eq(travelPackages.id, id)).limit(1);
+    if (!Number.isInteger(id) || id <= 0) return fail("That package no longer exists.");
+    // The package, then its SEO record (Batch 25, B.7).
+    const row = await db.transaction(async (tx) => {
+      const [found] = await tx.delete(travelPackages).where(eq(travelPackages.id, id)).returning();
+      if (found) await dropSeoRows(tx, "package", [{ id, address: found.slug }]);
+      return found ?? null;
+    });
     if (!row) return fail("That package no longer exists.");
-    await db.delete(travelPackages).where(eq(travelPackages.id, id));
+    revalidate(TAGS.seo);
     await logActivity(session, {
       action: "package.deleted",
       entityType: "package",

@@ -51,6 +51,7 @@ import { db } from "@/lib/db";
 import { lockPageForWrite, updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
 import { recordRestorePointIn, restoreVersionToDraft } from "@/lib/versions";
+import { dropSeoRows } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** Addresses the site owns; a custom page may not shadow one. */
@@ -370,7 +371,13 @@ export async function deletePage(_prev: ActionState, form: FormData): Promise<Ac
     // Home, About, Contact and the legal pages are part of the site's structure.
     if (row.kind === "builtin") return fail("Built-in pages cannot be deleted, only unpublished.");
 
-    await db.delete(pages).where(eq(pages.id, id));
+    // The page, then its SEO record (Batch 25, B.7): a page created later at the
+    // same address starts with none, rather than inheriting this one's.
+    await db.transaction(async (tx) => {
+      const [found] = await tx.delete(pages).where(eq(pages.id, id)).returning({ slug: pages.slug });
+      if (found) await dropSeoRows(tx, "page", [{ id, address: found.slug }]);
+    });
+    revalidate(TAGS.seo);
     await logActivity(session, {
       action: "page.deleted",
       entityType: "page",
