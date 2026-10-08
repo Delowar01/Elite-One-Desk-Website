@@ -896,22 +896,42 @@ export const seoMetadata = pgTable(
   "seo_metadata",
   {
     id: serial("id").primaryKey(),
-    /** page | category | service | package | video */
+    /** page | category | service | package | destination (the two overviews are pages) */
     entityType: varchar("entity_type", { length: 32 }).notNull(),
-    /** Slug or numeric id, as text, so one table covers every entity. */
+    /**
+     * The target's present address — a slug, `<category>/<service>`, or the
+     * overview keys `services` and `packages`. It is what the previous release
+     * looks a row up by, so every write keeps it current; since Batch 25 it is
+     * not the identity (`entityId` is). See `lib/seo-model.ts`.
+     */
     entityKey: varchar("entity_key", { length: 190 }).notNull(),
+    /**
+     * Batch 25: the id of the record the row belongs to (`pages`,
+     * `service_categories`, `services`, `travel_packages` or
+     * `package_destinations`, by `entityType`). Null while unbound — the
+     * overviews always, and a row the previous release wrote until it is bound;
+     * 0 when detached, a row that named no record and is never used.
+     */
+    entityId: integer("entity_id"),
     titleEn: varchar("title_en", { length: 190 }).notNull().default(""),
     titleAr: varchar("title_ar", { length: 190 }).notNull().default(""),
     descriptionEn: varchar("description_en", { length: 320 }).notNull().default(""),
     descriptionAr: varchar("description_ar", { length: 320 }).notNull().default(""),
     canonicalUrl: varchar("canonical_url", { length: 255 }).notNull().default(""),
+    /** The English share title and description; Arabic has its own since Batch 25. */
     ogTitle: varchar("og_title", { length: 190 }).notNull().default(""),
     ogDescription: varchar("og_description", { length: 320 }).notNull().default(""),
+    ogTitleAr: varchar("og_title_ar", { length: 190 }).notNull().default(""),
+    ogDescriptionAr: varchar("og_description_ar", { length: 320 }).notNull().default(""),
     ogImageId: integer("og_image_id").references(() => media.id, { onDelete: "set null" }),
     noindex: boolean("noindex").notNull().default(false),
     ...timestamps,
   },
-  (t) => [uniqueIndex("seo_entity_idx").on(t.entityType, t.entityKey)],
+  (t) => [
+    uniqueIndex("seo_entity_idx").on(t.entityType, t.entityKey),
+    // One bound row per record. Detached rows (0) and unbound ones (null) are outside it.
+    uniqueIndex("seo_entity_id_idx").on(t.entityType, t.entityId).where(sql`${t.entityId} > 0`),
+  ],
 );
 
 export const socialLinks = pgTable("social_links", {

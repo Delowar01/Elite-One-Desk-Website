@@ -50,6 +50,13 @@
       "when": 1790955896689,
       "tag": "0006_swift_mole_man",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791477950531,
+      "tag": "0007_seo_target_identity",
+      "breakpoints": true
     }
   ]
 }

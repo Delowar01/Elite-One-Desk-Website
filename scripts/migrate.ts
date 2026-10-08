@@ -7,6 +7,7 @@ import postgres from "postgres";
 
 import { backfillItemIds } from "../src/lib/cms/backfill";
 import { pageSections } from "../src/lib/db/schema";
+import { reconcileSeoRows } from "../src/lib/seo-model";
 
 /**
  * Applies every pending migration and exits. Run by `npm run db:migrate` and by
@@ -92,6 +93,23 @@ async function backfillRowIds(db: Db): Promise<void> {
   );
 }
 
+/**
+ * Brings every SEO record into line with the record it belongs to (Batch 25 —
+ * `reconcileSeoRows` in `src/lib/seo-model.ts`, docs/admin/seo-and-share-images.md
+ * B.3). Data rather than shape, so it runs here beside the row-id backfill and
+ * for the same reasons: every deploy already runs this script, and a second run
+ * writes nothing. It also settles whatever the previous release wrote since the
+ * last deploy — a rollback's edits and renames included.
+ */
+async function reconcileSeo(db: Db): Promise<void> {
+  const { bound, rekeyed, detached, released } = await reconcileSeoRows(db);
+  console.log(
+    bound || rekeyed || detached || released
+      ? `SEO records: ${bound} bound, ${rekeyed} moved to their record's address, ${detached} detached, ${released} released from a deleted record.`
+      : "SEO records: nothing to reconcile.",
+  );
+}
+
 async function main() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL is not set.");
@@ -101,6 +119,7 @@ async function main() {
     await migrate(db, { migrationsFolder: "./drizzle" });
     console.log("Migrations applied.");
     await backfillRowIds(db);
+    await reconcileSeo(db);
   } finally {
     await client.end();
   }
