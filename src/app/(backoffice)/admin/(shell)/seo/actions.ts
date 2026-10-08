@@ -12,7 +12,7 @@ import { seoMetadata } from "@/lib/db/schema";
 import { siteUrl } from "@/lib/env";
 import { SEO_FORMS, postedImageProblem, readSeoForm, seoRowValues } from "@/lib/seo-form";
 import { canonicalProblem, parseSeoRef, seoRefOf, type SeoRef } from "@/lib/seo-model";
-import { claimSeoKey, loadSeoTarget, lockOwnSeoRows, lockSeoTarget, lockShareImage } from "@/lib/seo-targets";
+import { claimSeoKey, detachSeoRow, loadSeoTarget, lockOwnSeoRows, lockSeoTarget, lockShareImage } from "@/lib/seo-targets";
 
 /**
  * The SEO screen's two writes (Batch 25 — docs/admin/seo-and-share-images.md
@@ -35,6 +35,13 @@ const NO_TARGET = "That page could not be identified.";
 const MISSING = "That page no longer exists, so nothing was saved. Reload the page to see the list as it is now.";
 const PICTURE_GONE = "That picture is no longer in the media library. Choose another one.";
 
+/**
+ * A form drawn by the previous release names its page by type and address and
+ * posts no base: it is out of date before anything else is read — the answer
+ * every Batch 23–25 form gives such a post (DEPLOYMENT.md, tabs left open).
+ */
+const drawnBefore = (form: FormData): boolean => !String(form.get("_base") ?? "");
+
 /** A target named by the form, or `null`. The site defaults are not saved here. */
 function targetOf(form: FormData): SeoRef | null {
   const ref = parseSeoRef(String(form.get("target") ?? ""));
@@ -56,6 +63,7 @@ const isMissingPicture = (error: unknown): boolean => {
 export async function saveSeo(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("seo-save", async () => {
     const session = await guardAction("seo.manage", form);
+    if (drawnBefore(form)) return fail(STALE_FORM);
     const ref = targetOf(form);
     if (!ref) return fail(NO_TARGET);
     const spec = SEO_FORMS[ref.kind as keyof typeof SEO_FORMS];
@@ -92,7 +100,7 @@ export async function saveSeo(_prev: ActionState, form: FormData): Promise<Actio
           const problem = await lockShareImage(tx, submitted.ogImageId);
           if (problem) return { kind: "invalid", state: fail(problem, { ogImageId: problem }) };
         }
-        const { own } = await lockOwnSeoRows(tx, target.storage);
+        const { own, rows } = await lockOwnSeoRows(tx, target.storage);
         const decision = spec.decide(base, mine, spec.printsOf(seoRowValues(own)), posted);
         if (decision.conflicts.length) return { kind: "conflict", units: decision.conflicts };
         const done = { kind: "done" as const, writes: decision.writes, label: target.label, address: target.path };
@@ -103,6 +111,9 @@ export async function saveSeo(_prev: ActionState, form: FormData): Promise<Actio
         // the previous release wrote by address is bound the first time it is saved.
         const identity = { entityKey: target.storage.entityKey, entityId: target.storage.entityId };
         if (own) {
+          // The record's other row — its own row left at an old address, shadowed
+          // by the newer one being saved (`preferredSeoRow`) — is set aside, kept.
+          for (const row of rows) if (row.id !== own.id) await detachSeoRow(tx, target.storage.entityType, row.id);
           if (own.entityKey !== identity.entityKey) {
             await claimSeoKey(tx, target.storage.entityType, identity.entityKey, own.id);
           }
@@ -157,6 +168,7 @@ export async function saveSeo(_prev: ActionState, form: FormData): Promise<Actio
 export async function clearSeo(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("seo-clear", async () => {
     const session = await guardAction("seo.manage", form);
+    if (drawnBefore(form)) return fail(STALE_FORM);
     const ref = targetOf(form);
     if (!ref) return fail(NO_TARGET);
     const spec = SEO_FORMS[ref.kind as keyof typeof SEO_FORMS];
@@ -173,7 +185,7 @@ export async function clearSeo(_prev: ActionState, form: FormData): Promise<Acti
       await lockSeoTarget(tx, ref);
       const target = await loadSeoTarget(tx, ref, { lock: true });
       if (!target?.storage) return { kind: "missing" };
-      const { own } = await lockOwnSeoRows(tx, target.storage);
+      const { own, rows } = await lockOwnSeoRows(tx, target.storage);
       // Removed already — by somebody else, or by this form a moment ago: what
       // was asked for holds, and nothing is written.
       if (!own) return { kind: "absent" };
@@ -184,6 +196,8 @@ export async function clearSeo(_prev: ActionState, form: FormData): Promise<Acti
       const moved = spec.units.map((unit) => unit.key).filter((key) => live[key] !== base[key]);
       if (moved.length) return { kind: "conflict", units: moved };
       await tx.delete(seoMetadata).where(eq(seoMetadata.id, own.id));
+      // A row it shadowed would otherwise come back as the page's record.
+      for (const row of rows) if (row.id !== own.id) await detachSeoRow(tx, target.storage.entityType, row.id);
       return { kind: "done", label: target.label, address: target.path };
     });
 

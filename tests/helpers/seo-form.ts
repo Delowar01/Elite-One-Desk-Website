@@ -24,19 +24,32 @@ export async function seoFormBase(origin: string, cookie: string, target: string
   return form[1]!;
 }
 
-/** The record a target's form is drawn with — the row the public page uses, or blanks. */
+/**
+ * The record a target's form is drawn with — the row the public page uses, or
+ * blanks. That is the rule every reader follows (docs B.2): the overviews'
+ * rows by their fixed keys; for a record, its own (bound) row — unless that
+ * row sits at another address beside a newer row by address at the present
+ * one, which the previous release wrote and which is the one it shows.
+ */
 export async function seoFormFields(sql: Sql, target: string): Promise<SeoFields> {
   const [kind, rawId] = target.split(":") as [string, string];
   const id = Number(rawId);
-  const rows = await sql<Record<string, unknown>[]>`
-    select s.* from seo_metadata s
-     where ${
-       kind === "serviceIndex" || kind === "packageIndex"
-         ? sql`s.entity_type = 'page' and s.entity_id is null and s.entity_key = ${kind === "serviceIndex" ? "services" : "packages"}`
-         : sql`s.entity_type = ${kind} and s.entity_id = ${id}`
-     }
-     limit 1`;
-  const row = rows[0];
+  let row: Record<string, unknown> | undefined;
+  if (kind === "serviceIndex" || kind === "packageIndex") {
+    [row] = await sql<Record<string, unknown>[]>`
+      select * from seo_metadata
+       where entity_type = 'page' and entity_id is null and entity_key = ${kind === "serviceIndex" ? "services" : "packages"}`;
+  } else {
+    const address = await addressOf(sql, kind, id);
+    // The key the record's row carries: its address, or `#<id>` when the address is too long.
+    const key = address === null ? null : address.length <= 190 ? address : `#${id}`;
+    const rows = await sql<Record<string, unknown>[]>`
+      select * from seo_metadata
+       where entity_type = ${kind} and (entity_id = ${id} or (entity_id is null and entity_key = ${key ?? ""}))`;
+    const bound = rows.find((candidate) => candidate.entity_id === id);
+    const unbound = rows.find((candidate) => candidate.entity_id === null && candidate.entity_key === key);
+    row = bound && unbound && bound.entity_key !== key ? unbound : bound ?? unbound;
+  }
   const text = (name: string) => (row ? String(row[name] ?? "") : "");
   return {
     titleEn: text("title_en"),
@@ -48,47 +61,15 @@ export async function seoFormFields(sql: Sql, target: string): Promise<SeoFields
     ogDescription: text("og_description"),
     ogDescriptionAr: text("og_description_ar"),
     canonicalUrl: text("canonical_url"),
-    ogImageId: row && row.og_image_id !== null ? Number(row.og_image_id) : "",
+    ogImageId: row && row.og_image_id !== null && row.og_image_id !== undefined ? Number(row.og_image_id) : "",
     ...(row?.noindex ? { noindex: "on" } : {}),
   };
 }
 
-/**
- * The form the moment the screen is opened at a target: every field, the
- * reference and the base. Read for a target whose record the previous release
- * wrote by address only (not yet bound), the fields come from that row too.
- */
+/** The form the moment the screen is opened at a target: every field, the reference and the base. */
 export async function openSeoForm(sql: Sql, origin: string, cookie: string, target: string): Promise<SeoFields> {
   const base = await seoFormBase(origin, cookie, target);
-  let fields = await seoFormFields(sql, target);
-  if (!Object.values(fields).some((value) => value !== "")) {
-    // Not bound yet: the unbound row at the target's address, if there is one.
-    fields = { ...fields, ...(await unboundFields(sql, target)) };
-  }
-  return { target, _base: base, ...fields };
-}
-
-async function unboundFields(sql: Sql, target: string): Promise<SeoFields> {
-  const [kind, rawId] = target.split(":") as [string, string];
-  const id = Number(rawId);
-  const address = await addressOf(sql, kind, id);
-  if (address === null) return {};
-  const [row] = await sql<Record<string, unknown>[]>`
-    select * from seo_metadata where entity_type = ${kind} and entity_id is null and entity_key = ${address} limit 1`;
-  if (!row) return {};
-  return {
-    titleEn: String(row.title_en ?? ""),
-    titleAr: String(row.title_ar ?? ""),
-    descriptionEn: String(row.description_en ?? ""),
-    descriptionAr: String(row.description_ar ?? ""),
-    ogTitle: String(row.og_title ?? ""),
-    ogTitleAr: String(row.og_title_ar ?? ""),
-    ogDescription: String(row.og_description ?? ""),
-    ogDescriptionAr: String(row.og_description_ar ?? ""),
-    canonicalUrl: String(row.canonical_url ?? ""),
-    ogImageId: row.og_image_id === null ? "" : Number(row.og_image_id),
-    ...(row.noindex ? { noindex: "on" } : {}),
-  };
+  return { target, _base: base, ...(await seoFormFields(sql, target)) };
 }
 
 /** A record's present address — the key its SEO row carries. */

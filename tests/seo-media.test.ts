@@ -229,6 +229,21 @@ describe("25 · F5: a record no page uses protects nothing (B.5)", () => {
     assert.ok(left.every((row) => row.og_image_id === null));
   });
 
+  test("a record's own row shadowed by a newer row at its present address protects nothing: the page shows the newer row, and so does the guard", async () => {
+    // The previous release moved the category and then saved its SEO by address,
+    // without a picture: the newer row is the one the page uses (B.2).
+    const shadowed = await picture("shadowed");
+    await sql`
+      insert into seo_metadata (entity_type, entity_key, entity_id, og_image_id)
+      values ('category', ${`license-renewal-before-${RUN}`}, ${ids["category/license-renewal"]!}, ${shadowed.id})`;
+    await sql`
+      insert into seo_metadata (entity_type, entity_key, title_en) values ('category', 'license-renewal', 'Saved by address, without a picture')`;
+    assert.equal(await usesOnCard(shadowed), 0);
+    const answer = await deleteMedia(shadowed.id);
+    assert.equal(answer.ok, true, answer.message);
+    assert.ok(!(await inLibrary(shadowed)));
+  });
+
   test("a record deleted with its page releases its picture", async () => {
     const released = await picture("released");
     const id = ids["package/red-sea-sharm-el-sheikh"]!;
@@ -274,10 +289,16 @@ describe("25 · F5: the check is the server's (§20, §21)", () => {
     return { held, release: async () => (release(), await done) };
   }
 
-  /** Until some other session is waiting for a lock: the request just sent has reached it. */
+  /**
+   * Until another session of this file's own database waits for a lock: the
+   * request just sent has reached it. The files run in parallel against one
+   * server, each on its own database, so a wait anywhere else proves nothing.
+   */
   async function untilWaiting() {
     for (let tries = 0; tries < 400; tries += 1) {
-      const [row] = await sql<{ n: number }[]>`select count(*)::int as n from pg_locks where not granted and pid <> pg_backend_pid()`;
+      const [row] = await sql<{ n: number }[]>`
+        select count(*)::int as n from pg_stat_activity
+         where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()`;
       if (row!.n > 0) return;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }

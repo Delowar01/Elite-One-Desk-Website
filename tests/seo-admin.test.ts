@@ -153,6 +153,22 @@ async function refreshCaches() {
   assert.match(result.html, /Every cache was dropped/);
 }
 
+/**
+ * Until another session of this file's own database waits for a lock: the
+ * request just sent has reached it. The files run in parallel against one
+ * server, each on its own database, so a wait anywhere else proves nothing.
+ */
+async function untilWaiting() {
+  for (let tries = 0; tries < 400; tries += 1) {
+    const [row] = await sql<{ n: number }[]>`
+      select count(*)::int as n from pg_stat_activity
+       where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()`;
+    if (row!.n > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("the request never reached the lock");
+}
+
 const screen = async (target?: string, session: TestSession = owner) =>
   get(server.origin, target ? `/admin/seo?target=${encodeURIComponent(target)}` : "/admin/seo", { cookie: session.cookie });
 
@@ -485,47 +501,145 @@ describe("25 · a record follows its page (§6, §13)", () => {
     assert.ok(!hasBadge(rowOf((await screen()).html, `service:${id}`), "Custom"), "the dead row is shown as the service's record");
   });
 
-  test("a row whose record lives elsewhere — keyed by an address its record no longer has — is moved aside to #id when another record claims the address, and keeps working for its own", async () => {
-    const create = async (slug: string, title: string) => {
-      await act(DESTINATION_ACTIONS, "/admin/packages/destinations/new", "createDestination", {
-        slug,
-        titleEn: title,
-        titleAr: "",
-        summaryEn: "",
-        sortOrder: 9,
-        isPublished: "on",
-      });
-      const [row] = await sql<{ id: number }[]>`select id from package_destinations where slug = ${slug}`;
-      assert.ok(row, `the Destinations screen created ${slug}`);
-      return row.id;
-    };
-    const jordan = await create("jordan", "Jordan");
+  /** A destination, through the Destinations screen. */
+  async function createDestination(slug: string, title: string) {
+    await act(DESTINATION_ACTIONS, "/admin/packages/destinations/new", "createDestination", {
+      slug,
+      titleEn: title,
+      titleAr: "",
+      summaryEn: "",
+      sortOrder: 9,
+      isPublished: "on",
+    });
+    const [row] = await sql<{ id: number }[]>`select id from package_destinations where slug = ${slug}`;
+    assert.ok(row, `the Destinations screen created ${slug}`);
+    return row.id;
+  }
+
+  test("a record created at an address another record's row still holds parks that row at #id, where it keeps working for its own — and a key made by hand to look like that is set aside first", async () => {
+    const jordan = await createDestination("jordan", "Jordan");
     // Jordan's record, keyed by an address it no longer has: the previous
-    // release renamed Jordan during a rollback and moved nothing.
+    // release renamed Jordan and moved nothing.
     const [{ id: jordanRow }] = await sql<{ id: number }[]>`
       insert into seo_metadata (entity_type, entity_key, entity_id, title_en)
       values ('destination', 'petra', ${jordan}, 'Jordan, from Amman to Aqaba') returning id`;
-    const petra = await create("petra", "Petra");
-    await refreshCaches();
+    // …and a row made by hand through that release's form (A.9), holding the
+    // very key Jordan's row is about to be parked at.
+    const [{ id: planted }] = await sql<{ id: number }[]>`
+      insert into seo_metadata (entity_type, entity_key, title_en)
+      values ('destination', ${`#${jordan}`}, 'Made by hand') returning id`;
+    const petra = await createDestination("petra", "Petra");
 
-    assert.equal(await titleOf("/packages/jordan"), "Jordan, from Amman to Aqaba · Elite One Desk", "a bound row is found by its record");
-    assert.equal(await titleOf("/packages/petra"), "Petra · Elite One Desk", "a row bound to another record is never used here");
-
-    saved(await save(await open(`destination:${petra}`), { titleEn: "Petra by night" }));
     const rows = await sql`
-      select id, entity_key, entity_id, title_en from seo_metadata where entity_type = 'destination' and entity_id in ${sql([jordan, petra])} order by id`;
-    assert.deepEqual(plain(rows).map(({ id: _row, ...rest }) => rest), [
-      { entity_key: `#${jordan}`, entity_id: jordan, title_en: "Jordan, from Amman to Aqaba" },
-      { entity_key: "petra", entity_id: petra, title_en: "Petra by night" },
+      select id, entity_key, entity_id from seo_metadata where id in ${sql([jordanRow, planted])} order by id`;
+    assert.deepEqual(plain(rows), [
+      { id: jordanRow, entity_key: `#${jordan}`, entity_id: jordan },
+      { id: planted, entity_key: `~${planted}`, entity_id: 0 },
     ]);
-    assert.equal(plain(rows)[0]!.id, jordanRow, "moved aside, not deleted");
-    assert.equal(await titleOf("/packages/jordan"), "Jordan, from Amman to Aqaba · Elite One Desk");
-    assert.equal(await titleOf("/packages/petra"), "Petra by night · Elite One Desk");
+    await refreshCaches();
+    assert.equal(await titleOf("/packages/jordan"), "Jordan, from Amman to Aqaba · Elite One Desk", "a bound row is found by its record");
+    assert.equal(await titleOf("/packages/petra"), "Petra · Elite One Desk", "the new record inherited another's row");
+    assert.ok(!hasBadge(rowOf((await screen()).html, `destination:${petra}`), "Custom"));
 
     // Its next save puts it back at its record's present address.
     saved(await save(await open(`destination:${jordan}`), { descriptionEn: "Wadi Rum, Petra and the Dead Sea." }));
     const [back] = await sql<{ entity_key: string }[]>`select entity_key from seo_metadata where id = ${jordanRow}`;
     assert.equal(back!.entity_key, "jordan");
+  });
+
+  test("a first save of a record whose address another record's row still holds parks that row first — the save is not refused", async () => {
+    const amman = await createDestination("amman", "Amman");
+    const wadiRum = await createDestination("wadi-rum", "Wadi Rum");
+    // In the deploy window the previous release renamed Amman away from
+    // wadi-rum and created Wadi Rum there: Amman's row is left at wadi-rum,
+    // where no create of this release ever saw it.
+    const [{ id: ammanRow }] = await sql<{ id: number }[]>`
+      insert into seo_metadata (entity_type, entity_key, entity_id, title_en)
+      values ('destination', 'wadi-rum', ${amman}, 'Amman, the capital') returning id`;
+    await refreshCaches();
+    assert.equal(await titleOf("/packages/wadi-rum"), "Wadi Rum · Elite One Desk", "a row bound to another record is never used here");
+
+    saved(await save(await open(`destination:${wadiRum}`), { titleEn: "Wadi Rum under the stars" }));
+    const rows = await sql`
+      select id, entity_key, entity_id, title_en from seo_metadata
+       where entity_type = 'destination' and entity_id in ${sql([amman, wadiRum])} order by id`;
+    assert.deepEqual(plain(rows).map(({ id: _row, ...rest }) => rest), [
+      { entity_key: `#${amman}`, entity_id: amman, title_en: "Amman, the capital" },
+      { entity_key: "wadi-rum", entity_id: wadiRum, title_en: "Wadi Rum under the stars" },
+    ]);
+    assert.equal(plain(rows)[0]!.id, ammanRow, "moved aside, not deleted");
+    assert.equal(await titleOf("/packages/amman"), "Amman, the capital · Elite One Desk");
+    assert.equal(await titleOf("/packages/wadi-rum"), "Wadi Rum under the stars · Elite One Desk");
+  });
+});
+
+describe("25 · a newer row by address beside a record's own row at an old address (B.2)", () => {
+  /**
+   * The state the previous release leaves when it moves a service during the
+   * deploy window — the service's own row stays at the old address — and then
+   * saves the service's SEO, by address: a newer, unbound row at the present one.
+   */
+  async function movedThenSaved(slug: string, title: string) {
+    const id = ids[`service/${slug}`]!;
+    const [{ id: own }] = await sql<{ id: number }[]>`
+      insert into seo_metadata (entity_type, entity_key, entity_id, title_en)
+      values ('service', ${`business-setup/${slug}`}, ${id}, 'Its own row, left at the old address') returning id`;
+    const [{ id: newer }] = await sql<{ id: number }[]>`
+      insert into seo_metadata (entity_type, entity_key, title_en)
+      values ('service', ${`travel-tourism/${slug}`}, ${title}) returning id`;
+    await refreshCaches();
+    return { id, own, newer, path: `/services/travel-tourism/${slug}` };
+  }
+
+  test("the newer row is the one used — by the page and by the screen, as the previous release used it — and saving it binds it and sets aside the row it shadowed", async () => {
+    const { id, own, newer, path } = await movedThenSaved("honeymoon-packages", "Honeymoons, saved by address");
+    assert.equal(await titleOf(path), "Honeymoons, saved by address · Elite One Desk", "the page uses the newer row");
+    const drawn = /<input[^>]*name="titleEn"[^>]*>/.exec((await screen(`service:${id}`)).html)?.[0] ?? "";
+    assert.match(drawn, /value="Honeymoons, saved by address"/, "the screen draws the form with the newer row");
+    const opened = await open(`service:${id}`);
+
+    saved(await save(opened, { descriptionEn: "Two weeks, planned for two." }));
+    const rows = await sql`select id, entity_key, entity_id, title_en, description_en from seo_metadata where id in ${sql([own, newer])} order by id`;
+    assert.deepEqual(plain(rows), [
+      { id: own, entity_key: `~${own}`, entity_id: 0, title_en: "Its own row, left at the old address", description_en: "" },
+      {
+        id: newer,
+        entity_key: "travel-tourism/honeymoon-packages",
+        entity_id: id,
+        title_en: "Honeymoons, saved by address",
+        description_en: "Two weeks, planned for two.",
+      },
+    ]);
+    assert.equal(await titleOf(path), "Honeymoons, saved by address · Elite One Desk");
+  });
+
+  test("removing the newer row does not bring the shadowed one back: it is set aside too, and the page follows its own content", async () => {
+    const { id, own, newer, path } = await movedThenSaved("family-tour-packages", "Families, saved by address");
+    const [{ title }] = await sql<{ title: string }[]>`select title_en as title from services where id = ${id}`;
+    const removed = await remove(await open(`service:${id}`));
+    assert.equal(removed.ok, true, removed.message);
+    assert.equal((await sql`select 1 from seo_metadata where id = ${newer}`).length, 0, "the newer row was removed");
+    const [left] = await sql<{ entity_key: string; entity_id: number }[]>`select entity_key, entity_id from seo_metadata where id = ${own}`;
+    assert.deepEqual({ ...left }, { entity_key: `~${own}`, entity_id: 0 });
+    assert.equal(await titleOf(path), `${title} · Elite One Desk`);
+    assert.ok(!hasBadge(rowOf((await screen()).html, `service:${id}`), "Custom"), "the shadowed row came back as the record");
+  });
+
+  test("a record's own row parked at #id, shadowed the same way, gives the key up as it is set aside — #id is only ever its own row's", async () => {
+    const id = ids["service/group-tour-packages"]!;
+    const [{ id: own }] = await sql<{ id: number }[]>`
+      insert into seo_metadata (entity_type, entity_key, entity_id, title_en)
+      values ('service', ${`#${id}`}, ${id}, 'Its own row, parked') returning id`;
+    const [{ id: newer }] = await sql<{ id: number }[]>`
+      insert into seo_metadata (entity_type, entity_key, title_en)
+      values ('service', 'travel-tourism/group-tour-packages', 'Groups, saved by address') returning id`;
+    await refreshCaches();
+    saved(await save(await open(`service:${id}`), { descriptionEn: "Groups of ten or more." }));
+    const rows = await sql`select id, entity_key, entity_id from seo_metadata where id in ${sql([own, newer])} order by id`;
+    assert.deepEqual(plain(rows), [
+      { id: own, entity_key: `~${own}`, entity_id: 0 },
+      { id: newer, entity_key: "travel-tourism/group-tour-packages", entity_id: id },
+    ]);
   });
 });
 
@@ -572,6 +686,46 @@ describe("25 · a deleted record takes its record with it (B.7)", () => {
     assert.equal(left.length, 0, "a service's record outlived its service");
   });
 
+  test("a service moved out of a category while the category is deleted keeps its record — only the services that go take theirs", async () => {
+    const [{ id: closing }] = await sql<{ id: number }[]>`
+      insert into service_categories (slug, title_en, is_published) values ('seo-closing', 'Closing category', true) returning id`;
+    const [{ id: leaving }] = await sql<{ id: number }[]>`
+      insert into services (category_id, slug, title_en, is_published) values (${closing}, 'seo-leaving', 'Leaving service', true) returning id`;
+    const [{ id: staying }] = await sql<{ id: number }[]>`
+      insert into services (category_id, slug, title_en, is_published) values (${closing}, 'seo-staying', 'Staying service', true) returning id`;
+    saved(await save(await open(`service:${leaving}`), { titleEn: "Moved out in time" }));
+    saved(await save(await open(`service:${staying}`), { titleEn: "Goes with its category" }));
+
+    // The move, as the Services form makes it — the service held, its category
+    // changed, its row moved with it — still open when the delete arrives.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let taken!: () => void;
+    const held = new Promise<void>((resolve) => (taken = resolve));
+    const moving = sql.begin(async (tx) => {
+      await tx`select 1 from services where id = ${leaving} for update`;
+      await tx`update services set category_id = ${ids["category/business-setup"]!} where id = ${leaving}`;
+      await tx`update seo_metadata set entity_key = 'business-setup/seo-leaving' where entity_type = 'service' and entity_id = ${leaving}`;
+      taken();
+      await gate;
+    });
+    await held;
+    const deleting = act(CATEGORY_ACTIONS, `/admin/categories/${closing}`, "deleteCategory", { id: closing });
+    await untilWaiting();
+    release();
+    await moving;
+    await deleting;
+
+    assert.equal((await sql`select 1 from service_categories where id = ${closing}`).length, 0, "the category was deleted");
+    assert.equal((await sql`select 1 from services where id = ${staying}`).length, 0, "the service left in it went with it");
+    assert.deepEqual(await rowsOf("service", staying), [], "…and so did that service's record");
+    assert.deepEqual(
+      (await rowsOf("service", leaving)).map(({ entity_key, entity_id, title_en }) => ({ entity_key, entity_id, title_en })),
+      [{ entity_key: "business-setup/seo-leaving", entity_id: leaving, title_en: "Moved out in time" }],
+      "the service that moved out lost its record",
+    );
+  });
+
   test("a service, and a page created in the panel", async () => {
     const service = ids["service/travel-insurance"]!;
     saved(await save(await open(`service:${service}`), { titleEn: "Insured travel" }));
@@ -610,6 +764,136 @@ describe("25 · a deleted record takes its record with it (B.7)", () => {
     assert.equal(removal.ok, false);
     assert.match(removal.message ?? "", MISSING);
     assert.equal((await sql`select 1 from seo_metadata where title_en = 'Too late'`).length, 0);
+  });
+});
+
+describe("25 · a record created where a dead row lies starts with nothing (B.7)", () => {
+  test("a page, a category, a service, a destination and a package: the row at the new address is set aside — kept, never applied, now or after a rollback — and the public page is drawn without it at once", async () => {
+    type Created = {
+      type: string;
+      key: string;
+      /** The dead row's: by address (null), or bound to a record deleted since. */
+      entityId: number | null;
+      title: string;
+      /** The new record's public page, where it has one once created. */
+      path: string | null;
+      create: () => Promise<unknown>;
+      id: () => Promise<number | undefined>;
+    };
+    const created: Created[] = [
+      {
+        type: "page",
+        key: "seo-reborn-page",
+        entityId: 999_991,
+        title: "Reborn page",
+        path: null, // created unpublished
+        create: () => act(PAGE_ACTIONS, "/admin/pages", "createPage", { titleEn: "Reborn page", slug: "seo-reborn-page" }),
+        id: async () => (await sql<{ id: number }[]>`select id from pages where slug = 'seo-reborn-page'`)[0]?.id,
+      },
+      {
+        type: "category",
+        key: "seo-reborn-category",
+        entityId: null,
+        title: "Reborn category",
+        path: "/services/seo-reborn-category",
+        create: () =>
+          act(CATEGORY_ACTIONS, "/admin/categories/new", "createCategory", {
+            slug: "seo-reborn-category",
+            titleEn: "Reborn category",
+            sortOrder: 9,
+            isPublished: "on",
+          }),
+        id: async () => (await sql<{ id: number }[]>`select id from service_categories where slug = 'seo-reborn-category'`)[0]?.id,
+      },
+      {
+        type: "service",
+        key: "business-setup/seo-reborn-service",
+        entityId: 999_992,
+        title: "Reborn service",
+        path: null,
+        create: () =>
+          act(SERVICE_ACTIONS, "/admin/services/new", "createService", {
+            slug: "seo-reborn-service",
+            titleEn: "Reborn service",
+            categoryId: ids["category/business-setup"]!,
+            subcategoryId: "",
+            formPreset: "general",
+          }),
+        id: async () => (await sql<{ id: number }[]>`select id from services where slug = 'seo-reborn-service'`)[0]?.id,
+      },
+      {
+        type: "destination",
+        key: "seo-reborn-destination",
+        entityId: null,
+        title: "Reborn destination",
+        path: "/packages/seo-reborn-destination",
+        create: () =>
+          act(DESTINATION_ACTIONS, "/admin/packages/destinations/new", "createDestination", {
+            slug: "seo-reborn-destination",
+            titleEn: "Reborn destination",
+            titleAr: "",
+            summaryEn: "",
+            sortOrder: 9,
+            isPublished: "on",
+          }),
+        id: async () => (await sql<{ id: number }[]>`select id from package_destinations where slug = 'seo-reborn-destination'`)[0]?.id,
+      },
+      {
+        type: "package",
+        key: "seo-reborn-package",
+        entityId: 999_993,
+        title: "Reborn package",
+        path: null,
+        create: () =>
+          act(PACKAGE_ACTIONS, "/admin/packages/new", "createPackage", {
+            slug: "seo-reborn-package",
+            region: "international",
+            destinationId: "",
+            titleEn: "Reborn package",
+            titleAr: "",
+            summaryEn: "Created where a dead row lies.",
+            highlights: "[]",
+            sortOrder: 50,
+            isPublished: "on",
+          }),
+        id: async () => (await sql<{ id: number }[]>`select id from travel_packages where slug = 'seo-reborn-package'`)[0]?.id,
+      },
+    ];
+    const expected: unknown[] = [];
+    const found: unknown[] = [];
+    for (const record of created) {
+      // Left by the previous release: a row it wrote by address for a record it
+      // deleted since, or the row the deploy had bound to a record it then deleted.
+      const [{ id: dead }] = await sql<{ id: number }[]>`
+        insert into seo_metadata (entity_type, entity_key, entity_id, title_en, noindex)
+        values (${record.type}, ${record.key}, ${record.entityId}, 'A deleted record''s title', true) returning id`;
+      if (record.path) {
+        // On a live site the cached rows already hold it: it was there before
+        // anything was created at its address.
+        await refreshCaches();
+        await titleOf("/");
+      }
+      await record.create();
+      const id = await record.id();
+      assert.ok(id, `the ${record.type} was created`);
+      const [row] = await sql<{ entity_key: string; entity_id: number | null }[]>`select entity_key, entity_id from seo_metadata where id = ${dead}`;
+      expected.push({
+        type: record.type,
+        entity_key: `~${dead}`,
+        entity_id: 0,
+        inherited: false,
+        title: record.path ? `${record.title} · Elite One Desk` : null,
+      });
+      found.push({
+        type: record.type,
+        entity_key: row!.entity_key,
+        entity_id: row!.entity_id,
+        inherited: hasBadge(rowOf((await screen()).html, `${record.type}:${id}`), "Custom"),
+        title: record.path ? await titleOf(record.path) : null,
+      });
+    }
+    // All five at once, so a failure names every create that let the row through.
+    assert.deepEqual(found, expected);
   });
 });
 
@@ -692,7 +976,7 @@ describe("25 · who may save, and what a form may name (§21)", () => {
       ["the other overview, same id", { ...services, target: "packageIndex:1" }],
       ["a package with the destination's id", { ...egypt, target: `package:${ids["destination/egypt"]}` }],
       ["a changed character", { ...terms, _base: tamper(terms._base as string) }],
-      ["no base — a form drawn by the previous release", { ...terms, _base: "" }],
+      ["no base", { ...terms, _base: "" }],
     ];
     for (const [label, form] of posts) {
       for (const action of ["saveSeo", "clearSeo"] as const) {
@@ -702,6 +986,30 @@ describe("25 · who may save, and what a form may name (§21)", () => {
       }
     }
     assert.equal((await sql`select 1 from seo_metadata where title_en = 'Replayed'`).length, 0);
+  });
+
+  test("a form drawn by the previous release — a type and an address, no reference, no base — is out of date, for a save and a removal alike, and writes nothing", async () => {
+    // Exactly what the previous release's screen posts (da96625 seo-client.tsx).
+    const stored = async () => plain(await sql`select * from seo_metadata order by id`);
+    const before = await stored();
+    const saving = await seoAction("saveSeo", {
+      entityType: "page",
+      entityKey: "terms",
+      ogImageId: "",
+      titleEn: "Saved from a tab left open",
+      titleAr: "",
+      descriptionEn: "",
+      descriptionAr: "",
+      ogTitle: "",
+      ogDescription: "",
+      canonicalUrl: "",
+    });
+    assert.equal(saving.ok, false);
+    assert.match(saving.message ?? "", STALE_FORM);
+    const removing = await seoAction("clearSeo", { entityType: "page", entityKey: "terms" });
+    assert.equal(removing.ok, false);
+    assert.match(removing.message ?? "", STALE_FORM);
+    assert.deepEqual(await stored(), before);
   });
 });
 
@@ -780,16 +1088,6 @@ describe("25 · two people, one record (§19)", () => {
     const stored = await sql`select title_en from seo_metadata where entity_type = 'package' and (entity_id = ${cairo} or entity_key = 'cairo-and-giza-classic')`;
     assert.deepEqual(plain(stored), [{ title_en: winner }]);
   });
-
-  /** Until another session is waiting for a lock: the request just sent has reached it. */
-  async function untilWaiting() {
-    for (let tries = 0; tries < 400; tries += 1) {
-      const [row] = await sql<{ n: number }[]>`select count(*)::int as n from pg_locks where not granted and pid <> pg_backend_pid()`;
-      if (row!.n > 0) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error("the request never reached the lock");
-  }
 
   test("a save that waits while its service is moved to another category lands where the service went — the move is not read as a deletion", async () => {
     // Found by the Batch 25 stress (M6): the service was locked through a join

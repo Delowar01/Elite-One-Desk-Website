@@ -29,6 +29,7 @@ type Stored = {
   format: string;
   result: { ok: true; id: number; filename: string } | { ok: false; error: string };
   row: { mimeType: string; width: number; height: number; derivatives: number[] } | null;
+  written: { width: number; height: number } | null;
 };
 
 type Run = { sharp: string; vips: string; stored: Stored[] };
@@ -64,6 +65,8 @@ heic.write("mif1heic", 16, "ascii");
 
 const inputs: [string, Buffer][] = [
   ["jpeg", await picture().jpeg().toBuffer()],
+  // Stored on its side with an EXIF orientation of 6, as a phone stores a portrait photo.
+  ["jpeg-rotated", await picture().jpeg().withMetadata({ orientation: 6 }).toBuffer()],
   ["png", await picture().png().toBuffer()],
   ["webp", await picture().webp().toBuffer()],
   ["avif", await picture().avif().toBuffer()],
@@ -87,7 +90,11 @@ for (const [format, bytes] of inputs) {
         .from(media)
         .where(eq(media.id, result.id))
     : [null];
-  stored.push({ format, result, row });
+  // The size of the file actually written, for comparing with the size recorded.
+  const written = result.ok && row?.mimeType === "image/webp"
+    ? await sharp(process.env.UPLOAD_DIR + "/" + result.filename).metadata()
+    : null;
+  stored.push({ format, result, row, written: written ? { width: written.width, height: written.height } : null });
 }
 emit({ sharp: sharp.versions.sharp, vips: sharp.versions.vips, stored });
 process.exit(0);
@@ -125,6 +132,15 @@ process.exit(0);
         assert.ok(isWebp(readFileSync(full)), `${format}: ${name} is not a WebP`);
       }
     }
+  });
+
+  test("a photo whose EXIF orientation turns it is recorded at the size it is shown, and its renditions are cut from that size (Batch 25)", () => {
+    const entry = of("jpeg-rotated");
+    assert.ok(entry.result.ok, JSON.stringify(entry.result));
+    // 1000×600 on its side is a 600×1000 portrait: no 800 rendition of a 600-wide picture.
+    assert.deepEqual(entry.row, { mimeType: "image/webp", width: 600, height: 1000, derivatives: [400] });
+    assert.deepEqual(entry.written, { width: 600, height: 1000 }, "the size recorded is the size of the file served");
+    assert.deepEqual(of("jpeg").written, { width: 1000, height: 600 });
   });
 
   test("a format outside the allowlist — a TIFF, or a HEIF branded heic — is refused by its bytes and nothing is stored", () => {

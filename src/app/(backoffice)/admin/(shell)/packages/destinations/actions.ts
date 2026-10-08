@@ -12,7 +12,7 @@ import { db } from "@/lib/db";
 import type { Executor } from "@/lib/db/revision";
 import { packageDestinations, travelPackages } from "@/lib/db/schema";
 import { DESTINATION_FORM, destinationRowValues, readDestinationForm } from "@/lib/packages/form-fields";
-import { dropSeoRows, moveSeoRow } from "@/lib/seo-targets";
+import { dropSeoRows, freeSeoAddress, moveSeoRow } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -71,11 +71,16 @@ export async function createDestination(_prev: ActionState, form: FormData): Pro
     const clash = await slugTaken(slug);
     if (clash) return fail(clash, { slug: "Already taken." });
 
-    const [row] = await db
-      .insert(packageDestinations)
-      .values({ ...values, slug })
-      .returning({ id: packageDestinations.id });
-    newId = row!.id;
+    // A new address starts with nothing: whatever SEO row a deleted destination
+    // left there is moved aside, in the same transaction (Batch 25, B.7).
+    newId = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(packageDestinations)
+        .values({ ...values, slug })
+        .returning({ id: packageDestinations.id });
+      await freeSeoAddress(tx, "destination", slug, row!.id);
+      return row!.id;
+    });
 
     await logActivity(session, {
       action: "destination.created",
@@ -84,6 +89,8 @@ export async function createDestination(_prev: ActionState, form: FormData): Pro
       summary: `Created the destination “${values.titleEn}”`,
     });
     refresh();
+    // The row the create moved aside may be in the cached SEO rows (B.12).
+    revalidate(TAGS.seo);
     return ok("Destination created.", newId);
   });
   if (!result.ok) return result;

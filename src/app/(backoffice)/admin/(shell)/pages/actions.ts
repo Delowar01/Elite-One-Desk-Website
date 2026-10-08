@@ -51,7 +51,7 @@ import { db } from "@/lib/db";
 import { lockPageForWrite, updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
 import { recordRestorePointIn, restoreVersionToDraft } from "@/lib/versions";
-import { dropSeoRows } from "@/lib/seo-targets";
+import { dropSeoRows, freeSeoAddress } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 /** Addresses the site owns; a custom page may not shadow one. */
@@ -279,23 +279,29 @@ export async function createPage(_prev: ActionState, form: FormData): Promise<Ac
     const [existing] = await db.select({ id: pages.id }).from(pages).where(eq(pages.slug, slug)).limit(1);
     if (existing) return fail("A page already uses that address.", { slug: "Already taken." });
 
-    const [row] = await db
-      .insert(pages)
-      .values({
-        slug,
-        kind: "custom",
-        titleEn,
-        titleAr: field(form, "titleAr", 190),
-        isPublished: false,
-      })
-      .returning({ id: pages.id });
+    const row = await db.transaction(async (tx) => {
+      const [made] = await tx
+        .insert(pages)
+        .values({
+          slug,
+          kind: "custom",
+          titleEn,
+          titleAr: field(form, "titleAr", 190),
+          isPublished: false,
+        })
+        .returning({ id: pages.id });
 
-    // A blank page is not useful; every new page starts with a hero.
-    await db.insert(pageSections).values({
-      pageId: row!.id,
-      blockType: "page-hero",
-      position: 0,
-      published: emptyValues(getBlock("page-hero")!),
+      // A blank page is not useful; every new page starts with a hero.
+      await tx.insert(pageSections).values({
+        pageId: made!.id,
+        blockType: "page-hero",
+        position: 0,
+        published: emptyValues(getBlock("page-hero")!),
+      });
+      // A new address starts with nothing: whatever SEO row a deleted page left
+      // there is moved aside (Batch 25, B.7).
+      await freeSeoAddress(tx, "page", slug, made!.id);
+      return made;
     });
 
     await logActivity(session, {
@@ -305,6 +311,8 @@ export async function createPage(_prev: ActionState, form: FormData): Promise<Ac
       summary: `Created the page “${titleEn}”`,
     });
     refreshPage(slug);
+    // The row the create moved aside may be in the cached SEO rows (B.12).
+    revalidate(TAGS.seo);
     return ok("Page created.", row!.id);
   });
 

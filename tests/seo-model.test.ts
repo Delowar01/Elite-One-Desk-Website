@@ -16,6 +16,7 @@ import {
   indexSeoRows,
   overviewStorage,
   parseSeoRef,
+  preferredSeoRow,
   recordStorage,
   seoRefOf,
   seoRowFor,
@@ -77,10 +78,10 @@ describe("25 · which stored row a target uses (B.2)", () => {
     assert.equal(seoRowFor(index, recordStorage("category", "other", 9)), null);
   });
 
-  test("the bound row wins over an unbound one; a detached row is never used", () => {
+  test("the bound row wins over an unbound one anywhere but the present address; a detached row is never used", () => {
     const index = indexSeoRows([
-      row("service", "travel/visa", 5, "bound"),
-      row("service", "business/visa", null, "unbound twin"),
+      row("service", "business/visa", 5, "bound"),
+      row("service", "travel/visa", null, "unbound, at the old address"),
       row("service", "gone/thing", 0, "detached"),
     ]);
     assert.equal(seoRowFor(index, recordStorage("service", "business/visa", 5))?.title, "bound");
@@ -104,6 +105,18 @@ describe("25 · which stored row a target uses (B.2)", () => {
     const index = indexSeoRows([row("page", "services", null, "services overview")]);
     assert.equal(seoRowFor(index, overviewStorage("serviceIndex"))?.title, "services overview");
     assert.equal(seoRowFor(index, overviewStorage("packageIndex")), null);
+  });
+
+  test("a newer row the previous release wrote at a record's present address beats the record's own row left at an old address — the rule reconciliation keeps", () => {
+    const moved = indexSeoRows([row("service", "travel/visa", 5, "own row, left behind"), row("service", "business/visa", null, "newer, by address")]);
+    assert.equal(seoRowFor(moved, recordStorage("service", "business/visa", 5))?.title, "newer, by address");
+    assert.equal(
+      preferredSeoRow(row("service", "travel/visa", 5, "own"), null, recordStorage("service", "business/visa", 5))?.title,
+      "own",
+      "with nothing newer, the record's own row follows it wherever its key says",
+    );
+    const atHome = row("service", "business/visa", 5, "own, at its address");
+    assert.equal(preferredSeoRow(atHome, null, recordStorage("service", "business/visa", 5)), atHome);
   });
 
   test("an address too long for the key column is keyed by id, and found by id", () => {
@@ -202,6 +215,61 @@ describe("25 · canonical addresses (B.15, brief §16)", () => {
     ]) {
       assert.ok(canonicalProblem(bad, SITE), `accepted ${JSON.stringify(bad)}`);
     }
+  });
+
+  test("what a page would emit is what is checked: an escape that decodes into a ?, a #, a // or another escape, and a second language prefix, are refused", () => {
+    for (const bad of [
+      "/about%3Fpreview=1",
+      "/about%253Fpreview=1",
+      "/about%23top",
+      "/about%2523top",
+      "/%252561dmin",
+      "/%2F%2Fevil.example/x",
+      "/ar/ar/about",
+      "/ar/ar/ar/search",
+      "/en/ar/about",
+      `${SITE}/about%253Fpreview=1`,
+      `${SITE}/ar/ar/search`,
+    ]) {
+      assert.ok(canonicalProblem(bad, SITE), `accepted ${JSON.stringify(bad)}`);
+      assert.equal(canonicalOverride(bad, "en", SITE), null, `would emit ${JSON.stringify(bad)}`);
+    }
+  });
+
+  test("an empty segment anywhere is refused — behind a language prefix and through an escape too — and a stored one is never emitted", () => {
+    // Next answers an address with // in it by redirecting to another, and
+    // `/en//search` is `//search` once its prefix is gone.
+    for (const bad of [
+      "/en//search",
+      "/ar//evil.example/x",
+      "/ar/%2Fsearch",
+      "/ar/%2F%2Fevil.example/x",
+      "/en/%2F%2Fevil.example/x",
+      "/about//team",
+      `${SITE}/en//admin/login`,
+      `${SITE}/ar//x`,
+    ]) {
+      assert.ok(canonicalProblem(bad, SITE), `accepted ${JSON.stringify(bad)}`);
+      for (const locale of ["en", "ar"] as const) {
+        assert.equal(canonicalOverride(bad, locale, SITE), null, `would emit ${JSON.stringify(bad)} (${locale})`);
+      }
+      // Refused as typed, it is kept as typed: a save that does not touch it
+      // does not see it as changed (and so is not refused for it).
+      assert.equal(storedCanonical(bad, SITE), bad);
+    }
+  });
+
+  test("an accepted address is stored in its final form: storing it again changes nothing, and it is still accepted", () => {
+    for (const ok of ["/about", "/ar/about", "/en/services/visas", `${SITE}/ar/packages/egypt`, "/%61bout", "/ar", "/about/", "/ar/"]) {
+      const stored = storedCanonical(ok, SITE);
+      assert.equal(canonicalProblem(stored, SITE), null, ok);
+      assert.equal(storedCanonical(stored, SITE), stored, ok);
+    }
+    assert.equal(storedCanonical("/%61bout", SITE), "/about", "an escape of an ordinary letter is just the letter");
+    // Next redirects `/about/` to `/about`: stored, and drawn, as the page's own address.
+    assert.equal(storedCanonical("/about/", SITE), "/about");
+    assert.equal(storedCanonical("/ar/", SITE), "/");
+    assert.equal(canonicalOverride("/services/visas/", "ar", SITE), `${SITE}/ar/services/visas`);
   });
 
   test("stored language-neutral: a prefix or this site's origin is dropped", () => {

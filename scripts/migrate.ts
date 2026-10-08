@@ -102,10 +102,10 @@ async function backfillRowIds(db: Db): Promise<void> {
  * last deploy — a rollback's edits and renames included.
  */
 async function reconcileSeo(db: Db): Promise<void> {
-  const { bound, rekeyed, detached, released } = await reconcileSeoRows(db);
+  const { bound, rekeyed, setAside } = await reconcileSeoRows(db);
   console.log(
-    bound || rekeyed || detached || released
-      ? `SEO records: ${bound} bound, ${rekeyed} moved to their record's address, ${detached} detached, ${released} released from a deleted record.`
+    bound || rekeyed || setAside
+      ? `SEO records: ${bound} bound, ${rekeyed} moved to their record's address, ${setAside} set aside.`
       : "SEO records: nothing to reconcile.",
   );
 }

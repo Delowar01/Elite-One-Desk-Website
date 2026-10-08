@@ -22,7 +22,7 @@ import {
   unitLabel,
   valuesOfUnits,
 } from "@/lib/services/form-fields";
-import { dropSeoRows, moveSeoRow } from "@/lib/seo-targets";
+import { dropSeoRows, freeSeoAddress, moveSeoRow } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -84,11 +84,17 @@ export async function createService(_prev: ActionState, form: FormData): Promise
       .limit(1);
     if (taken) return fail("A service in that category already uses this address.", { slug: "Already taken." });
 
-    const [row] = await db
-      .insert(services)
-      .values({ ...values, slug })
-      .returning({ id: services.id });
-    newId = row!.id;
+    // A new address starts with nothing: whatever SEO row a deleted service left
+    // there is moved aside, in the same transaction (Batch 25, B.7).
+    newId = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(services)
+        .values({ ...values, slug })
+        .returning({ id: services.id });
+      const category = await categorySlugOf(tx, values.categoryId);
+      if (category) await freeSeoAddress(tx, "service", `${category}/${slug}`, row!.id);
+      return row!.id;
+    });
 
     await logActivity(session, {
       action: "service.created",
@@ -97,6 +103,8 @@ export async function createService(_prev: ActionState, form: FormData): Promise
       summary: `Created the service “${values.titleEn}”`,
     });
     refresh();
+    // The row the create moved aside may be in the cached SEO rows (B.12).
+    revalidate(TAGS.seo);
     return ok("Service created.", newId);
   });
 

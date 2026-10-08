@@ -12,7 +12,7 @@ import { db } from "@/lib/db";
 import type { Executor } from "@/lib/db/revision";
 import { packageDestinations, travelPackages } from "@/lib/db/schema";
 import { PACKAGE_FORM, packageRowValues, readPackageForm } from "@/lib/packages/form-fields";
-import { dropSeoRows } from "@/lib/seo-targets";
+import { dropSeoRows, freeSeoAddress } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -62,11 +62,16 @@ export async function createPackage(_prev: ActionState, form: FormData): Promise
     const clash = await slugTaken(slug);
     if (clash) return fail(clash, { slug: "Already taken." });
 
-    const [row] = await db
-      .insert(travelPackages)
-      .values({ ...values, slug })
-      .returning({ id: travelPackages.id });
-    newId = row!.id;
+    // A new address starts with nothing: whatever SEO row a deleted package left
+    // there is moved aside, in the same transaction (Batch 25, B.7).
+    newId = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(travelPackages)
+        .values({ ...values, slug })
+        .returning({ id: travelPackages.id });
+      await freeSeoAddress(tx, "package", slug, row!.id);
+      return row!.id;
+    });
 
     await logActivity(session, {
       action: "package.created",
@@ -75,6 +80,8 @@ export async function createPackage(_prev: ActionState, form: FormData): Promise
       summary: `Created the package “${values.titleEn}”`,
     });
     refresh();
+    // The row the create moved aside may be in the cached SEO rows (B.12).
+    revalidate(TAGS.seo);
     return ok("Package created.", newId);
   });
   if (!result.ok) return result;

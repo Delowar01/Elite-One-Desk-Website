@@ -121,8 +121,9 @@ export type SeoRowLike = { entityType: string; entityKey: string; entityId: numb
  *   · unbound (`entity_id` null) — only its address names it: the two
  *     overviews always, and a row the previous release wrote that has not
  *     been bound yet;
- *   · detached (`entity_id = 0`) — it named no record when it was last
- *     examined. It is kept, and never used.
+ *   · detached (`entity_id = 0`) — dead: it named no record when it was
+ *     last examined, its record was deleted, or a newer row replaced it. It is
+ *     kept, never used, and keyed `~<row id>`.
  */
 export type SeoRowIndex<R extends SeoRowLike> = { bound: Map<string, R>; unbound: Map<string, R> };
 
@@ -137,17 +138,29 @@ export function indexSeoRows<R extends SeoRowLike>(rows: readonly R[]): SeoRowIn
 }
 
 /**
- * The record a target uses: its bound row if it has one, otherwise the unbound
- * row at its present address — exactly the row the previous release would
- * have used. Every reader calls this: the public pages, the SEO screen, the
- * sitemap, the media library's guard and the Visual Editor's indicator.
+ * Of a target's two possible rows — its bound row, and the unbound row at its
+ * present address — the one it uses. Its bound row, normally. But a bound row
+ * keyed at another address beside an unbound row at the present one means the
+ * previous release moved the record and then saved its SEO by address: the
+ * newer, unbound row is what that release shows, and what the next deploy keeps
+ * (`reconcileSeoRows`, step 2) — so it is what this release shows too. One rule,
+ * at runtime and at deploy.
+ */
+export function preferredSeoRow<R extends SeoRowLike>(bound: R | null, unbound: R | null, storage: SeoStorage): R | null {
+  if (bound && unbound && bound.entityKey !== storage.entityKey) return unbound;
+  return bound ?? unbound;
+}
+
+/**
+ * The record a target uses (`preferredSeoRow`): its bound row if it has one,
+ * otherwise the unbound row at its present address — exactly the row the
+ * previous release would have used. Every reader calls this: the public pages,
+ * the SEO screen, the media library's guard and the Visual Editor's indicator.
  */
 export function seoRowFor<R extends SeoRowLike>(index: SeoRowIndex<R>, storage: SeoStorage): R | null {
-  if (storage.entityId !== null) {
-    const own = index.bound.get(`${storage.entityType}#${storage.entityId}`);
-    if (own) return own;
-  }
-  return index.unbound.get(`${storage.entityType}:${storage.entityKey}`) ?? null;
+  const bound = storage.entityId !== null ? index.bound.get(`${storage.entityType}#${storage.entityId}`) ?? null : null;
+  const unbound = index.unbound.get(`${storage.entityType}:${storage.entityKey}`) ?? null;
+  return preferredSeoRow(bound, unbound, storage);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -226,7 +239,17 @@ export const CANONICAL_MAX = 255;
  */
 const NOT_A_PAGE = /^\/(?:admin|api|_next|media|search|home)(?:\/|$)/i;
 
-/** The path a canonical names, or why it names none. */
+/**
+ * The path a canonical names, or why it names none. What it returns is what a
+ * page emits, so every test runs on that: the path decoded once and with its
+ * language prefix removed — and it must then be final. Anything a second
+ * decoding or a second prefix would still change is refused, because the save
+ * stores this path and the page decodes and strips it again: `%253F` would
+ * pass as `%3F` and be drawn as `?`, and `/ar/ar/search` as `/ar/search`. So is
+ * an empty segment anywhere: `/en//search` is `//search` once its prefix is
+ * gone, and Next answers any address with `//` in it by redirecting to another.
+ * A trailing slash is dropped for the same reason: `/about/` redirects to `/about`.
+ */
 function pagePathOf(path: string): { path: string } | { problem: string } {
   if (path.startsWith("//")) return { problem: "Start with a single / for a page of this site." };
   let decoded: string;
@@ -236,10 +259,15 @@ function pagePathOf(path: string): { path: string } | { problem: string } {
     return { problem: "That address could not be read." };
   }
   if (/[\s\u0000-\u001f\u007f\\]/.test(decoded)) return { problem: "An address has no spaces, line breaks or backslashes." };
+  if (/[?#]/.test(decoded)) return { problem: "Leave out the ? and # parts: a canonical address is the page itself." };
+  if (decoded.includes("%")) return { problem: "Write the page's address as it reads, without encoded characters." };
+  if (decoded.includes("//")) return { problem: "Use single slashes: an address with // in it is not a page's own address." };
   if (/(^|\/)\.{1,2}(\/|$)/.test(decoded)) return { problem: "Write the page's own address, without . or .. in it." };
   const bare = stripLocale(decoded);
+  if (stripLocale(bare) !== bare) return { problem: "Write the page's address with one language prefix at most." };
   if (NOT_A_PAGE.test(bare)) return { problem: "That address is not a page that can be canonical." };
-  return { path: bare };
+  // Next answers `/about/` by redirecting to `/about`: a page's own address ends without one.
+  return { path: bare.length > 1 ? bare.replace(/\/$/, "") : bare };
 }
 
 /**
@@ -333,94 +361,131 @@ const keyed = (type: SeoEntityType) =>
 /** The overview keys are pages' rows that are never bound. */
 const notOverview = (type: SeoEntityType) => (type === "page" ? sql`and entity_key not in ('services', 'packages')` : sql``);
 
-export type SeoReconcileCounts = { bound: number; rekeyed: number; detached: number; released: number };
+export type SeoReconcileCounts = { bound: number; rekeyed: number; setAside: number };
 
 /**
  * Brings every stored SEO row into line with the records it belongs to
  * (docs/admin/seo-and-share-images.md B.3). Run by `scripts/migrate.ts` after
- * the migrations, on every deploy, in one transaction, and idempotent: a second
- * run finds nothing to do and writes nothing.
+ * the migrations, on every deploy; a second run changes nothing. Nothing is
+ * deleted.
  *
  * The previous release reads and writes rows by address only, and it keeps
  * serving during the deploy window — and again after a rollback. So the rows a
- * deploy finds can be in any of the states that release leaves behind, and each
- * is settled here, type by type, by set-based statements (each reads one
- * snapshot, so nothing is decided on a read that has gone stale):
+ * deploy finds can be in any of the states that release leaves behind. What the
+ * run settles them to is what this release's own rule (`preferredSeoRow`)
+ * already shows for them, so the deploy changes nothing this release shows:
+ * a record's own row is its record's, wherever it sits; a row written by
+ * address at a record's present address is that record's, and newer than a
+ * row of its own left at an old address; any other row is dead — kept, never
+ * used, and keyed `~<row id>`, which no address and no record can reach.
  *
- *   1. a row bound to a record that no longer exists — deleted by the previous
- *      release, which leaves rows behind — is released (unbound), so step 3 can
- *      give it to whichever record now has its address, as that release did;
- *   2. a record whose bound row is at an old address while an unbound row sits
- *      at its present one — the previous release renamed it and then saved its
- *      SEO, by address — keeps the newer, unbound row; the bound one is
- *      detached;
- *   3. an unbound row at a record's present address is bound to that record;
+ * The table is locked `EXCLUSIVE` first: every write waits the moment this
+ * takes — the previous release's saves and this release's alike, including one
+ * that has already locked its rows and has yet to write them, which a weaker
+ * lock would deadlock against — while every read goes on. The transaction is
+ * `REPEATABLE READ`, so every statement below reads the records as they were
+ * when the first one ran: a record the previous release moves meanwhile is
+ * settled where it was, and is the next run's to settle. Then, type by type:
+ *
+ *   0. a row that is not bound but holds a key in one of the reserved forms —
+ *      `#<id>` is a record's own row's, `~<n>` row n's, and only a hand-made
+ *      request to the previous release's form can write one (A.9) — is set
+ *      aside, through a key nobody can have written, so no two of them meet;
+ *   1. a row bound to a record that no longer exists is set aside: its record
+ *      is gone (the previous release deleted it and left the row);
+ *   2. a record's own row at an old address, beside a row written by address
+ *      at its present one — the previous release moved the record, then saved
+ *      its SEO — is set aside: the newer row is the one in use;
+ *   3. a row written by address at a record's present address is bound to it;
  *   4–6. a bound row at an address its record no longer has is moved to the
- *      present one (through `#<id>` first, so two renames can swap addresses),
- *      after any detached row sitting there is moved aside to `~<row id>`;
- *   7. any other unbound row named no record: it is detached — kept, never used.
- *
- * So a deploy changes nothing a visitor sees in which record applies where:
- * every row the previous release applied is bound to the record it applied to,
- * and every row it did not apply is still not applied — except that a record
- * which later takes a dead row's address no longer inherits it. Nothing is
- * deleted.
+ *      present one (through `#<id>` first, so two records whose rows swapped
+ *      addresses swap back), after any detached row there is set aside;
+ *   7. any other row written by address names no record: it is set aside.
+ *      The overviews' two keys are left alone.
  */
 export async function reconcileSeoRows<S extends Record<string, unknown>>(
   db: PostgresJsDatabase<S>,
 ): Promise<SeoReconcileCounts> {
-  return db.transaction(async (tx) => {
-    const counts: SeoReconcileCounts = { bound: 0, rekeyed: 0, detached: 0, released: 0 };
-    const run = async (statement: ReturnType<typeof sql>) => (await tx.execute(statement)).length;
+  // Step 0 moves rows through a key with this in it: one nobody can have posted.
+  const nonce = globalThis.crypto.randomUUID();
+  return db.transaction(
+    async (tx) => {
+      await tx.execute(sql`lock table seo_metadata in exclusive mode`);
+      const counts: SeoReconcileCounts = { bound: 0, rekeyed: 0, setAside: 0 };
+      const ids = async (statement: SQL) => (await tx.execute<{ id: number }>(statement)).map((row) => Number(row.id));
 
-    for (const type of RECORD_ENTITY_TYPES) {
-      const records = keyed(type);
-      const all = sql`(${RECORDS[type]})`;
+      for (const type of RECORD_ENTITY_TYPES) {
+        const records = keyed(type);
+        const all = sql`(${RECORDS[type]})`;
 
-      counts.released += await run(sql`
-        update seo_metadata s set entity_id = null
-         where s.entity_type = ${type} and s.entity_id > 0
-           and not exists (select 1 from ${all} r where r.id = s.entity_id)
-        returning s.id`);
+        const reserved = await ids(sql`
+          update seo_metadata set entity_key = '~' || id || '~' || ${nonce}
+           where entity_type = ${type} and (entity_id is null or entity_id = 0)
+             and (entity_key like '#%' or entity_key like '~%') and entity_key <> '~' || id
+          returning id`);
+        if (reserved.length) {
+          await tx.execute(sql`
+            update seo_metadata set entity_id = 0, entity_key = '~' || id
+             where entity_type = ${type} and entity_key = '~' || id || '~' || ${nonce}`);
+        }
+        counts.setAside += reserved.length;
 
-      counts.detached += await run(sql`
-        update seo_metadata b set entity_id = 0
-          from ${records} r
-         where b.entity_type = ${type} and b.entity_id = r.id and b.entity_key <> r.k
-           and exists (select 1 from seo_metadata u
-                        where u.entity_type = ${type} and u.entity_id is null and u.entity_key = r.k)
-        returning b.id`);
+        counts.setAside += (
+          await ids(sql`
+            update seo_metadata s set entity_id = 0, entity_key = '~' || s.id
+             where s.entity_type = ${type} and s.entity_id > 0
+               and not exists (select 1 from ${all} r where r.id = s.entity_id)
+            returning s.id`)
+        ).length;
 
-      counts.bound += await run(sql`
-        update seo_metadata u set entity_id = r.id
-          from ${records} r
-         where u.entity_type = ${type} and u.entity_id is null and u.entity_key = r.k
-        returning u.id`);
+        counts.setAside += (
+          await ids(sql`
+            update seo_metadata b set entity_id = 0, entity_key = '~' || b.id
+              from ${records} r
+             where b.entity_type = ${type} and b.entity_id = r.id and b.entity_key <> r.k
+               and exists (select 1 from seo_metadata u
+                            where u.entity_type = ${type} and u.entity_id is null and u.entity_key = r.k)
+            returning b.id`)
+        ).length;
 
-      await run(sql`
-        update seo_metadata s set entity_key = '#' || s.entity_id
-          from ${records} r
-         where s.entity_type = ${type} and s.entity_id = r.id
-           and s.entity_key <> r.k and s.entity_key <> '#' || s.entity_id
-        returning s.id`);
+        counts.bound += (
+          await ids(sql`
+            update seo_metadata u set entity_id = r.id
+              from ${records} r
+             where u.entity_type = ${type} and u.entity_id is null and u.entity_key = r.k
+            returning u.id`)
+        ).length;
 
-      await run(sql`
-        update seo_metadata d set entity_key = '~' || d.id
-          from ${records} r
-         where d.entity_type = ${type} and d.entity_id = 0 and d.entity_key = r.k
-        returning d.id`);
+        const parked = await ids(sql`
+          update seo_metadata s set entity_key = '#' || s.entity_id
+            from ${records} r
+           where s.entity_type = ${type} and s.entity_id = r.id
+             and s.entity_key <> r.k and s.entity_key <> '#' || s.entity_id
+          returning s.id`);
 
-      counts.rekeyed += await run(sql`
-        update seo_metadata s set entity_key = r.k
-          from ${records} r
-         where s.entity_type = ${type} and s.entity_id = r.id and s.entity_key <> r.k
-        returning s.id`);
+        counts.setAside += (
+          await ids(sql`
+            update seo_metadata d set entity_key = '~' || d.id
+             where d.entity_type = ${type} and d.entity_id = 0 and d.entity_key <> '~' || d.id
+            returning d.id`)
+        ).length;
 
-      counts.detached += await run(sql`
-        update seo_metadata set entity_id = 0
-         where entity_type = ${type} and entity_id is null ${notOverview(type)}
-        returning id`);
-    }
-    return counts;
-  });
+        const moved = await ids(sql`
+          update seo_metadata s set entity_key = r.k
+            from ${records} r
+           where s.entity_type = ${type} and s.entity_id = r.id and s.entity_key <> r.k
+          returning s.id`);
+        counts.rekeyed += new Set([...parked, ...moved]).size;
+
+        counts.setAside += (
+          await ids(sql`
+            update seo_metadata set entity_id = 0, entity_key = '~' || id
+             where entity_type = ${type} and entity_id is null ${notOverview(type)}
+            returning id`)
+        ).length;
+      }
+      return counts;
+    },
+    { isolationLevel: "repeatable read" },
+  );
 }

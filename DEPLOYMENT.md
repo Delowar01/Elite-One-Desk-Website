@@ -308,22 +308,39 @@ Visual Editor tab they have open once the release is live**. Since Batch 23
 (Services), Batch 24 (Packages, Destinations) and Batch 25 (SEO) an edit form
 posts the base its page was drawn with, and the editor posts the values a
 region was loaded with (`baseValues`). Pages and tabs drawn by the previous
-release send neither:
+release send neither.
+
+As `deploy.sh` builds a release, an old page's save does not reach the new
+release's code at all. Next salts each Server Action's id with a key that is
+random per build directory unless `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` is set,
+and `deploy.sh` builds every release in a fresh directory and sets no key. So
+a page or tab drawn by the previous build posts ids the new build does not
+know: every save, load and publish from it is answered as an unknown action
+before any of this release's code runs, and writes nothing — an admin form
+fails to save, and a Visual Editor tab says "The save could not be sent. Try
+again." One reload fixes it. (The release production runs today, recorded in
+`deploy/previous-release`, has no Visual Editor, so for the next deploy this is
+its admin forms and SEO screen only.)
+
+The guards below are what an old page meets where its post *does* reach an
+action — with a pinned `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`, ids survive a
+build:
 
 - **A Services, Packages or Destinations edit page, or the SEO screen**, drawn
   before the switch is refused when saved — "This form is out of date, so
-  nothing was saved. Reload the page…" — with nothing written. One reload
-  fixes it. The refusal is deliberate: accepting a save without a base would
-  be the whole-row write these releases removed. On the SEO screen the same
-  goes for **Remove override**, which since Batch 25 names its page by
-  reference and is held to the same base.
+  nothing was saved. Reload the page…" — with nothing written. The refusal is
+  deliberate: accepting a save without a base would be the whole-row write
+  these releases removed. On the SEO screen the same goes for **Remove
+  override**: the previous release's screen names its page by type and
+  address and posts no base, and both actions refuse a post with no base
+  before they read anything else.
 - **A Visual Editor tab** opened before Batch 23 keeps saving, and every
   publication still checks each draft against the live record, but until it
   is reloaded the tab cannot tell a field it never touched from one it edited,
   so it can draft a value nobody changed. The server cannot ask an old tab to
   reload itself (the editor protocol did not change), so this is the editors'
-  step. Batch 25 does not change the editor's saves either; a tab opened
-  before it simply lacks the header's new **SEO** link until it is reloaded.
+  step. Batch 25 does not change the editor's saves either; such a tab simply
+  lacks the header's new **SEO** link until it is reloaded.
 
 The reasoning, and what each kind of client does, is in
 `docs/admin/services-form-concurrency.md` §11 (and, for the SEO screen,
@@ -683,11 +700,21 @@ on every write, rename and deploy.
 After the migrations, `npm run db:migrate` also **reconciles** the rows
 (`reconcileSeoRows`, `src/lib/seo-model.ts`): a row is bound to the record
 whose address it carries, moved to its record's present address if the
-previous release renamed that record, and detached (`entity_id = 0`, kept,
-never used) if it names no record. It deletes nothing, runs in one
-transaction, and a second run writes nothing — it runs on every deploy, so a
-rollback's edits are settled by the next one. The log line says what it did:
-`SEO records: N bound, N moved…, N detached…` or `nothing to reconcile`.
+previous release renamed that record, and set aside (`entity_id = 0`, keyed
+`~<row id>`, kept, never used) if it is dead — it names no record, or its
+record was deleted, or a newer row replaced it. Each row ends as this release
+already shows it, so the deploy changes nothing on this release's pages. It
+deletes nothing, runs in one transaction, and a second run writes nothing — it
+runs on every deploy, so a rollback's edits are settled by the next one. It
+first locks `seo_metadata` against writes (`EXCLUSIVE`): every SEO save, on
+whichever release is serving, waits the few milliseconds the run takes, and a
+save already under way makes the run wait for it — so a slow or stuck SEO
+save shows up here as `db:migrate` waiting, not failing. Page reads are never
+blocked. The run reads the records at one snapshot (`REPEATABLE READ`), so a
+record the serving release moves meanwhile is settled by the next run rather
+than half by this one. The log line says what it did:
+`SEO records: N bound, N moved to their record's address, N set aside.`
+or `SEO records: nothing to reconcile.`
 
 After a rollback the older release reads the same rows by address, so every
 override still applies — including the destination and overview records only
@@ -695,12 +722,28 @@ this release can create. What it does not have: the Arabic share title and
 description (it shows the English ones on `/ar`, as before), an Arabic page's
 own Arabic title in place of an English-only override (it shows the English
 override, as before), and the canonical restrictions. SEO edits it makes go to
-the same rows; the next deploy binds any row it created. Two corners are not
-preserved exactly, both needing a rollback plus a specific edit during it: an
-Arabic share text written before the rollback stays as it was while the English
-one is edited (the older release does not know the Arabic column); and if the
-older release renames a record *and* saves its SEO during the rollback, the
-next deploy keeps that newer row and detaches the older one.
+the same rows; the next deploy binds any row it created. Rows this release has
+set aside are keyed `~<row id>`, so the older release finds none of them at
+any address: a record it creates where one used to be starts with nothing, and
+its first SEO save there writes a new row. The corners, each needing a
+rollback plus a specific edit during it (`docs/admin/seo-and-share-images.md`
+B.16):
+
+- an Arabic share text written before the rollback stays as it was while the
+  English one is edited (the older release does not know the Arabic column);
+- if the older release moves a record *and* saves its SEO, the new row it
+  writes is the one shown — by this release too, once it serves — and the
+  next save or deploy sets the older one aside; but where another record's own
+  row still held that address, the save edits that row, which stays with its
+  own record;
+- if the older release renames a record and then creates another at the old
+  address, the new record shows the old one's row during the rollback, and the
+  next deploy gives the row back to its own record;
+- if the older release deletes a record and then creates or moves another
+  onto its address, the newcomer shows the deleted record's row during the
+  rollback (and an SEO save there edits that row); the next deploy sets the
+  row aside, and the newcomer shows its own content until its SEO is saved
+  again.
 
 ### Temporary passwords
 

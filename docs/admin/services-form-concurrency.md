@@ -250,8 +250,15 @@ and stress `package-concurrency`.
 
 ## 11. Pages and tabs opened before an upgrade
 
-Two kinds of client outlive a deployment, and the rules above treat them
-differently on purpose:
+As `deploy.sh` builds a release, a page or tab drawn by the previous build
+reaches none of the new build's Server Actions: Next salts every action id
+with a key that is random per build directory unless
+`NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` is set, and `deploy.sh` builds in a fresh
+directory and sets none. Its saves, loads and publications are answered as
+unknown actions and write nothing (the editor says "The save could not be
+sent. Try again."); one reload fixes it. Where a key is pinned and ids survive
+a build, an old post does reach the new code, and two kinds of client outlive
+the deployment, which the rules above treat differently on purpose:
 
 * **An edit page drawn before the upgrade** posts no `_base` (Packages,
   Destinations) — or, for Services before Batch 23, none either. It is refused

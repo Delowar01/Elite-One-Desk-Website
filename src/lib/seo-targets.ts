@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
 
 import { toPlainText } from "@/lib/cms/sanitize";
 import { db } from "@/lib/db";
@@ -20,6 +20,7 @@ import { PACKAGES_OVERVIEW_META, SERVICES_OVERVIEW_META } from "@/lib/seo-defaul
 import {
   indexSeoRows,
   overviewStorage,
+  preferredSeoRow,
   recordStorage,
   seoRefOf,
   seoRowFor,
@@ -550,7 +551,9 @@ export type SeoRow = typeof seoMetadata.$inferSelect;
 /**
  * A target's own rows, locked: its bound row and the unbound row at its present
  * address (normally at most one of them exists). `own` is the one the rule
- * uses — the bound row, else the unbound one.
+ * uses (`preferredSeoRow` — the same rule every reader follows): the bound row,
+ * else the unbound one, unless the bound row sits at another address beside a
+ * newer unbound row at this one.
  */
 export async function lockOwnSeoRows(
   tx: Executor,
@@ -571,8 +574,54 @@ export async function lockOwnSeoRows(
           ),
         );
   const rows = await tx.select().from(seoMetadata).where(where).orderBy(asc(seoMetadata.id)).for("update");
-  const own = rows.find((row) => storage.entityId !== null && row.entityId === storage.entityId) ?? rows[0] ?? null;
-  return { own, rows };
+  const bound = storage.entityId === null ? null : rows.find((row) => row.entityId === storage.entityId) ?? null;
+  const unbound = rows.find((row) => row.entityId === null && row.entityKey === storage.entityKey) ?? null;
+  return { own: preferredSeoRow(bound, unbound, storage), rows };
+}
+
+/**
+ * A key in one of the reserved forms is about to be written — `#<id>` for a
+ * record's own row, `~<n>` for row n set aside — so whatever else holds it is
+ * moved to its own `~<row id>` first. Only a hand-made request to the previous
+ * release's form can have put a row there (A.9); without this, it would turn
+ * the write into a duplicate key.
+ */
+async function clearReservedKey(tx: Executor, type: SeoEntityType, key: string, forRowId: number): Promise<void> {
+  await tx
+    .update(seoMetadata)
+    .set({ entityId: 0, entityKey: sql`'~' || ${seoMetadata.id}` })
+    .where(and(eq(seoMetadata.entityType, type), eq(seoMetadata.entityKey, key), ne(seoMetadata.id, forRowId)));
+}
+
+/**
+ * Takes a row out of use — kept, never used again (B.2): detached, and keyed
+ * `~<row id>`, a key no address and no record can reach. So no record that
+ * takes its old address inherits it, under this release or under the previous
+ * one after a rollback, which reads rows by address.
+ */
+export async function detachSeoRow(tx: Executor, type: SeoEntityType, rowId: number): Promise<void> {
+  await clearReservedKey(tx, type, `~${rowId}`, rowId);
+  await tx
+    .update(seoMetadata)
+    .set({ entityId: 0, entityKey: sql`'~' || ${seoMetadata.id}` })
+    .where(eq(seoMetadata.id, rowId));
+}
+
+/**
+ * A record has just been created at an address (D1): whatever row sits there
+ * is moved aside (`claimSeoKey`) — a row the previous release wrote for a
+ * record gone since is set aside to `~<row id>`, and another live record's row
+ * keyed by an address that record no longer has is parked at `#<its id>` — so
+ * the new record starts with nothing of either, under this release and under
+ * the previous one after a rollback (which reads by address). In the create
+ * transaction, after the record's own insert; the caller drops the `seo` tag
+ * once it has committed.
+ */
+export async function freeSeoAddress(tx: Executor, type: SeoEntityType, address: string, id: number): Promise<void> {
+  const key = storedKeyOf(address, id);
+  // `#<new id>` is the record's own; nothing else can hold it.
+  if (key.startsWith("#")) return;
+  await claimSeoKey(tx, type, key, null);
 }
 
 /** Whether a record of a type still exists — the test between a stale key and a dead row. */
@@ -617,10 +666,11 @@ export async function claimSeoKey(
     .for("update");
   if (!holder || holder.id === ownRowId) return;
   if (holder.entityId !== null && holder.entityId > 0 && (await recordExists(tx, type, holder.entityId))) {
+    await clearReservedKey(tx, type, `#${holder.entityId}`, holder.id);
     await tx.update(seoMetadata).set({ entityKey: `#${holder.entityId}` }).where(eq(seoMetadata.id, holder.id));
     return;
   }
-  await tx.update(seoMetadata).set({ entityKey: `~${holder.id}`, entityId: 0 }).where(eq(seoMetadata.id, holder.id));
+  await detachSeoRow(tx, type, holder.id);
 }
 
 /**
@@ -628,7 +678,8 @@ export async function claimSeoKey(
  * its SEO row goes with it, in the transaction that changed the address and
  * after the record's row is locked (B.7). The row moved is the one the rule
  * uses — bound, else unbound at the old address — and it is bound as it moves.
- * An unbound twin beside a bound row is shadowed and detached. Anything else at
+ * Its other row — its own row left at an older address, shadowed by a newer
+ * row at its present one — is set aside (`detachSeoRow`). Anything else at
  * the new address is cleared first (`claimSeoKey`), so a dead row there can
  * never be inherited. Returns whether a row moved.
  */
@@ -643,9 +694,7 @@ export async function moveSeoRow(
   const toKey = storedKeyOf(toAddress, id);
   const { own, rows } = await lockOwnSeoRows(tx, from);
   for (const row of rows) {
-    if (own && row.id !== own.id) {
-      await tx.update(seoMetadata).set({ entityId: 0 }).where(eq(seoMetadata.id, row.id));
-    }
+    if (own && row.id !== own.id) await detachSeoRow(tx, type, row.id);
   }
   if (own?.entityKey === toKey && own.entityId === id) return false;
   await claimSeoKey(tx, type, toKey, own?.id ?? null);
@@ -703,6 +752,9 @@ const isMediaId = (value: unknown): value is number => typeof value === "number"
  * inside the transaction that holds the picture.
  */
 export async function seoMediaUsage(on: Executor = db): Promise<SeoMediaUse[]> {
+  // Every row, not only those naming a picture: which row a target uses is
+  // decided among all of them (a row without a picture can be the one it uses),
+  // exactly as the page decides it — only then is its picture looked at.
   const [rows, settingsRows] = await Promise.all([
     on
       .select({
@@ -711,13 +763,12 @@ export async function seoMediaUsage(on: Executor = db): Promise<SeoMediaUse[]> {
         entityId: seoMetadata.entityId,
         ogImageId: seoMetadata.ogImageId,
       })
-      .from(seoMetadata)
-      .where(isNotNull(seoMetadata.ogImageId)),
+      .from(seoMetadata),
     on.select({ value: siteSettings.value }).from(siteSettings).where(eq(siteSettings.key, "seo")).limit(1),
   ]);
 
   const uses: SeoMediaUse[] = [];
-  if (rows.length) {
+  if (rows.some((row) => row.ogImageId !== null)) {
     const index = indexSeoRows(rows);
     for (const target of await listSeoTargets(on)) {
       if (!target.storage) continue;

@@ -21,7 +21,7 @@ import { sanitizeHref, sanitizeRichText } from "@/lib/cms/sanitize";
 import { db } from "@/lib/db";
 import { serviceCategories, serviceSubcategories, services } from "@/lib/db/schema";
 import { isIconName } from "@/lib/icons";
-import { dropSeoRows } from "@/lib/seo-targets";
+import { dropSeoRows, freeSeoAddress } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -74,11 +74,16 @@ export async function createCategory(_prev: ActionState, form: FormData): Promis
       .limit(1);
     if (taken) return fail("A category already uses that address.", { slug: "Already taken." });
 
-    const [row] = await db
-      .insert(serviceCategories)
-      .values({ ...values, slug })
-      .returning({ id: serviceCategories.id });
-    newId = row!.id;
+    // A new address starts with nothing: whatever SEO row a deleted record left
+    // there is moved aside, in the same transaction (Batch 25, B.7).
+    newId = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .insert(serviceCategories)
+        .values({ ...values, slug })
+        .returning({ id: serviceCategories.id });
+      await freeSeoAddress(tx, "category", slug, row!.id);
+      return row!.id;
+    });
 
     await logActivity(session, {
       action: "category.created",
@@ -87,6 +92,8 @@ export async function createCategory(_prev: ActionState, form: FormData): Promis
       summary: `Created the category “${values.titleEn}”`,
     });
     refresh();
+    // The row the create moved aside may be in the cached SEO rows (B.12).
+    revalidate(TAGS.seo);
     return ok("Category created.", newId);
   });
 
@@ -138,8 +145,12 @@ export async function deleteCategory(_prev: ActionState, form: FormData): Promis
 
     // Cascades to its services — which is the surprise worth spelling out. Their
     // SEO records go with them, and the category's own (Batch 25, B.7). The
-    // category is held first, then its services (by the cascade), then the SEO
-    // rows: the order a category publication and every SEO write take them in.
+    // category is held first, then its services, then the SEO rows: the order a
+    // category publication and every SEO write take them in. The services are
+    // locked as they are listed — a service being moved out of the category
+    // meanwhile is waited for and then left out (it is not deleted by the
+    // cascade either), so only records that really go take their SEO rows with
+    // them; one moved in later waits on the category and finds it gone.
     await db.transaction(async (tx) => {
       const [category] = await tx
         .select({ slug: serviceCategories.slug })
@@ -150,7 +161,8 @@ export async function deleteCategory(_prev: ActionState, form: FormData): Promis
       const removed = await tx
         .select({ id: services.id, slug: services.slug })
         .from(services)
-        .where(eq(services.categoryId, id));
+        .where(eq(services.categoryId, id))
+        .for("update");
       await tx.delete(serviceCategories).where(eq(serviceCategories.id, id));
       await dropSeoRows(tx, "category", [{ id, address: category.slug }]);
       await dropSeoRows(

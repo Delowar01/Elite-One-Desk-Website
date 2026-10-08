@@ -15,7 +15,7 @@ import { after, before, describe, test } from "node:test";
 import { callAction } from "./helpers/action";
 import { giveFresh } from "./helpers/fixtures";
 import { fetchHead, jsonLdOf, type Head } from "./helpers/head";
-import { get } from "./helpers/http";
+import { formContaining, get, submitForm } from "./helpers/http";
 import { connect, dropDatabase, type Sql } from "./helpers/pg";
 import { BUILD_HINT, isBuilt, startServer, type Server } from "./helpers/server";
 import { openSeoForm, withSeoChanges } from "./helpers/seo-form";
@@ -400,6 +400,32 @@ describe("25 · sitemap and robots.txt (§15, §17)", () => {
     for (const rule of ["/admin", "/api/", "/media/*@*"]) assert.ok(robots.includes(`Disallow: ${rule}\n`), rule);
     assert.equal(robots.match(/^User-Agent:/gm)?.length, 1, "one group for every crawler");
     assert.ok(robots.includes(`Sitemap: ${site}/sitemap.xml`));
+  });
+});
+
+describe("25 · the other edition is named only while it exists (B.18, F6n)", () => {
+  /** Settings → Features, as stored, then Settings → Maintenance → Refresh caches, as an admin presses it. */
+  async function setArabic(on: boolean) {
+    await sql`update site_settings set value = jsonb_set(value, '{arabicEnabled}', to_jsonb(${on}::boolean)) where key = 'features'`;
+    const route = "/admin/settings?tab=maintenance";
+    const page = await get(server.origin, route, { cookie: owner.cookie });
+    const result = await submitForm(server.origin, route, formContaining(page.html, "Refresh caches"), owner.cookie);
+    assert.match(result.html, /Every cache was dropped/);
+  }
+
+  test("with Arabic switched off an English page names no Arabic alternate and no Arabic share locale; switched back on, both return", async () => {
+    await setArabic(false);
+    try {
+      const off = await en("/about");
+      assert.deepEqual(off.alternates, { en: at("/about"), "x-default": at("/about") });
+      assert.equal(off.og["og:locale:alternate"], undefined);
+      assert.deepEqual(off.og["og:locale"], ["en_US"]);
+    } finally {
+      await setArabic(true);
+    }
+    const on = await en("/about");
+    assert.deepEqual(on.alternates, { en: at("/about"), ar: at("/about", "ar"), "x-default": at("/about") });
+    assert.deepEqual(on.og["og:locale:alternate"], ["ar_SA"]);
   });
 });
 

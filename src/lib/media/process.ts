@@ -112,8 +112,13 @@ export async function processUpload(
 
     const image = sharp(buffer, { failOn: "error", animated: false });
     const meta = await image.metadata();
-    const width = meta.width ?? 0;
-    const height = meta.height ?? 0;
+    // The size a visitor sees: EXIF orientation applied, as every file below is
+    // written (`.rotate()`). A portrait phone photo is stored on its side with an
+    // orientation tag, and its raw size is the transpose of what is served — the
+    // size a page reserves, a share image declares (Batch 25) and the renditions
+    // are cut from.
+    const width = meta.autoOrient?.width ?? meta.width ?? 0;
+    const height = meta.autoOrient?.height ?? meta.height ?? 0;
     if (!width || !height) return { ok: false, error: "That image could not be read." };
     if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
       return { ok: false, error: `Images must be ${MAX_DIMENSION}px or smaller on each side.` };
