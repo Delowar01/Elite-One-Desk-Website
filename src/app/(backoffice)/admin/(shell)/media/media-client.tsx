@@ -82,6 +82,10 @@ export function UploadPanel({ csrf }: { csrf: string }) {
 
 export function LibraryGrid({ csrf, items }: { csrf: string; items: LibraryItem[] }) {
   const [editing, setEditing] = useState<number | null>(null);
+  // A refused delete says why — where the picture is still shown (Batch 25,
+  // F5). It was returned and never drawn, so a click on Delete for a picture in
+  // use did nothing visible. Kept per card, under the picture it is about.
+  const [refusals, setRefusals] = useState<Record<number, string>>({});
 
   if (!items.length) {
     return (
@@ -137,7 +141,13 @@ export function LibraryGrid({ csrf, items }: { csrf: string; items: LibraryItem[
                 <Icon name="arrowUpRight" size={12} />
                 Open
               </a>
-              <InlineAction action={deleteMedia} hidden={{ _csrf: csrf, id: item.id }}>
+              <InlineAction
+                action={deleteMedia}
+                hidden={{ _csrf: csrf, id: item.id }}
+                onResult={(state) =>
+                  setRefusals((current) => ({ ...current, [item.id]: state.ok ? "" : state.message ?? "The image was not deleted." }))
+                }
+              >
                 <ConfirmSubmit
                   className="admin-btn-sm"
                   message={`Delete ${item.filename}? The file and its resized copies are removed.`}
@@ -147,6 +157,11 @@ export function LibraryGrid({ csrf, items }: { csrf: string; items: LibraryItem[
                 </ConfirmSubmit>
               </InlineAction>
             </div>
+            {refusals[item.id] ? (
+              <p role="alert" className="mt-2 text-[0.74rem]" style={{ color: "#ff9a95" }}>
+                {refusals[item.id]}
+              </p>
+            ) : null}
 
             {editing === item.id ? (
               <div className="mt-3 border-t border-[var(--admin-line)] pt-3">

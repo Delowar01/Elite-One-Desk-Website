@@ -3,7 +3,9 @@ import "server-only";
 import { eq, or, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
+import type { Executor } from "@/lib/db/revision";
 import { routeDraftMedia } from "@/lib/routes/media-usage";
+import { seoMediaUsage } from "@/lib/seo-targets";
 import {
   packageDestinations,
   pageSections,
@@ -28,8 +30,12 @@ export type MediaUse = { label: string; where: string; href: string };
  * Section values are jsonb, so they are searched by value rather than by a list
  * of known field names — a block type that gains an image field later is
  * covered without anyone coming back to this file.
+ *
+ * Read on the executor it is given (Batch 25), so the delete can recount inside
+ * the transaction that holds the picture — every query on that one connection,
+ * none through a cache.
  */
-export async function mediaUsage(id: number): Promise<MediaUse[]> {
+export async function mediaUsage(id: number, on: Executor = db): Promise<MediaUse[]> {
   const uses: MediaUse[] = [];
 
   const [
@@ -42,8 +48,9 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
     testimonialRows,
     componentRows,
     routeDrafts,
+    seoUses,
   ] = await Promise.all([
-      db
+      on
         .select({
           id: pageSections.id,
           blockType: pageSections.blockType,
@@ -60,12 +67,12 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
                        where e.value = to_jsonb(${id}::int))
           `,
         ),
-      db
+      on
         .select({ id: serviceCategories.id, title: serviceCategories.titleEn })
         .from(serviceCategories)
         .where(eq(serviceCategories.imageId, id)),
-      db.select({ id: services.id, title: services.titleEn }).from(services).where(eq(services.imageId, id)),
-      db
+      on.select({ id: services.id, title: services.titleEn }).from(services).where(eq(services.imageId, id)),
+      on
         .select({ id: travelPackages.id, title: travelPackages.titleEn })
         .from(travelPackages)
         .where(eq(travelPackages.imageId, id)),
@@ -75,15 +82,15 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
        * "unused" and the page lose it without a word (`image_id` is
        * `ON DELETE SET NULL`).
        */
-      db
+      on
         .select({ id: packageDestinations.id, title: packageDestinations.titleEn })
         .from(packageDestinations)
         .where(eq(packageDestinations.imageId, id)),
-      db
+      on
         .select({ id: videos.id, title: videos.titleEn })
         .from(videos)
         .where(or(eq(videos.thumbnailId, id))),
-      db
+      on
         .select({ id: testimonials.id, name: testimonials.name })
         .from(testimonials)
         .where(eq(testimonials.imageId, id)),
@@ -92,7 +99,7 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
        * that links to it, so a picture in its published content — or in a
        * draft about to be published — is placed as surely as one in a section.
        */
-      db
+      on
         .select({ id: reusableComponents.id, name: reusableComponents.name })
         .from(reusableComponents)
         .where(
@@ -110,7 +117,14 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
        * leave the draft unpublishable, so it is placed as surely as a
        * section's draft — while its record exists to publish it.
        */
-      routeDraftMedia(),
+      routeDraftMedia(on),
+      /**
+       * A share image (Batch 25, F5): the picture of an SEO record some page
+       * uses — published or not, since publishing it makes the record live at
+       * once — and the site's default share image. The same rule the pages
+       * read (`seoRowFor`), so a record no page uses protects nothing.
+       */
+      seoMediaUsage(on),
     ]);
 
   for (const row of sections) {
@@ -144,6 +158,10 @@ export async function mediaUsage(id: number): Promise<MediaUse[]> {
   for (const draft of routeDrafts) {
     if (draft.mediaId !== id) continue;
     uses.push({ label: draft.label, where: "Visual Editor drafts", href: draft.href });
+  }
+  for (const use of seoUses) {
+    if (use.mediaId !== id) continue;
+    uses.push({ label: use.label, where: "SEO", href: use.href });
   }
 
   return uses;

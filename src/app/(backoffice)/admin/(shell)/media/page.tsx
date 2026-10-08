@@ -17,6 +17,7 @@ import {
 } from "@/lib/db/schema";
 import { MEDIA_FOLDERS, isMediaFolder } from "@/lib/media/folders";
 import { routeDraftMedia } from "@/lib/routes/media-usage";
+import { seoMediaUsage } from "@/lib/seo-targets";
 import { LibraryGrid, UploadPanel, type LibraryItem } from "./media-client";
 
 export const metadata = { title: "Media library" };
@@ -79,6 +80,8 @@ export default async function MediaPage({
   // Pictures the Visual Editor's route drafts have chosen (Batch 22) are placed
   // too — the same count the delete guard makes, so the card and the refusal agree.
   for (const draft of await routeDraftMedia()) usage.set(draft.mediaId, (usage.get(draft.mediaId) ?? 0) + 1);
+  // So are share images (Batch 25, F5) — the same list the delete guard counts.
+  for (const use of await seoMediaUsage()) usage.set(use.mediaId, (usage.get(use.mediaId) ?? 0) + 1);
 
   const items: LibraryItem[] = rows.map((row) => ({
     id: row.id,

@@ -11,7 +11,7 @@ import { db } from "@/lib/db";
 import { media } from "@/lib/db/schema";
 import { deleteMediaFiles, processUpload } from "@/lib/media/process";
 import { isMediaFolder } from "@/lib/media/folders";
-import { mediaUsage } from "@/lib/media/usage";
+import { mediaUsage, type MediaUse } from "@/lib/media/usage";
 
 export async function uploadMedia(_prev: ActionState, form: FormData): Promise<ActionState> {
   return runAction("media-upload", async () => {
@@ -93,12 +93,30 @@ export async function deleteMedia(_prev: ActionState, form: FormData): Promise<A
   return runAction("media-delete", async () => {
     const session = await guardAction("media.manage", form);
     const id = Number(form.get("id"));
+    if (!Number.isInteger(id) || id <= 0) return fail("That image no longer exists.");
 
-    const [row] = await db.select().from(media).where(eq(media.id, id)).limit(1);
-    if (!row) return fail("That image no longer exists.");
+    /**
+     * The check and the delete are one transaction holding the picture
+     * (Batch 25, F5): every place that names it is counted on this connection
+     * after the row is locked, so a writer that locks the picture before naming
+     * it — an SEO record, the site's default share image, a page's or record's
+     * own picture through its foreign key — either finished first and is
+     * counted, or waits and then finds the picture gone. Nothing is left
+     * pointing at a deleted picture by a save that raced the delete.
+     */
+    type Outcome = { kind: "missing" } | { kind: "used"; uses: MediaUse[] } | { kind: "deleted"; row: typeof media.$inferSelect };
+    const outcome = await db.transaction(async (tx): Promise<Outcome> => {
+      const [row] = await tx.select().from(media).where(eq(media.id, id)).limit(1).for("update");
+      if (!row) return { kind: "missing" };
+      const uses = await mediaUsage(id, tx);
+      if (uses.length) return { kind: "used", uses };
+      await tx.delete(media).where(eq(media.id, id));
+      return { kind: "deleted", row };
+    });
 
-    const uses = await mediaUsage(id);
-    if (uses.length) {
+    if (outcome.kind === "missing") return fail("That image no longer exists.");
+    if (outcome.kind === "used") {
+      const { uses } = outcome;
       return fail(
         `Still in use on ${uses.length} screen${uses.length === 1 ? "" : "s"}: ${uses
           .slice(0, 3)
@@ -107,7 +125,9 @@ export async function deleteMedia(_prev: ActionState, form: FormData): Promise<A
       );
     }
 
-    await db.delete(media).where(eq(media.id, id));
+    // The files go once the row is gone for good — never inside a transaction
+    // that could still roll back and keep a row whose file had been unlinked.
+    const { row } = outcome;
     await deleteMediaFiles(row.filename, row.derivatives ?? []);
 
     await logActivity(session, {
@@ -116,7 +136,9 @@ export async function deleteMedia(_prev: ActionState, form: FormData): Promise<A
       entityId: id,
       summary: `Deleted ${row.filename}`,
     });
-    revalidate(TAGS.media);
+    // An SEO record that named the picture without being used by any page has
+    // just lost it (`ON DELETE SET NULL`): its cached copy goes too.
+    revalidate(TAGS.media, TAGS.seo);
     revalidatePath("/admin/media");
     return ok("Image deleted.");
   });

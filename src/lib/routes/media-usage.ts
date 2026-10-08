@@ -3,6 +3,7 @@ import "server-only";
 import { inArray, isNotNull } from "drizzle-orm";
 
 import { db } from "@/lib/db";
+import type { Executor } from "@/lib/db/revision";
 import { packageDestinations, routeNodes, serviceCategories, services, travelPackages } from "@/lib/db/schema";
 
 import { isPackageRegion } from "./package-model";
@@ -62,8 +63,8 @@ type Resolved = {
     | "destination page";
 };
 
-export async function routeDraftMedia(): Promise<RouteDraftMedia[]> {
-  const rows = await db
+export async function routeDraftMedia(on: Executor = db): Promise<RouteDraftMedia[]> {
+  const rows = await on
     .select({ ownerKey: routeNodes.ownerKey, draftContent: routeNodes.draftContent })
     .from(routeNodes)
     .where(isNotNull(routeNodes.draftContent));
@@ -93,25 +94,25 @@ export async function routeDraftMedia(): Promise<RouteDraftMedia[]> {
   const packageIds = idsOf("package");
   const destinationIds = idsOf("destination");
   const categories = categoryIds.length
-    ? await db
+    ? await on
         .select({ id: serviceCategories.id, title: serviceCategories.titleEn })
         .from(serviceCategories)
         .where(inArray(serviceCategories.id, categoryIds))
     : [];
   const serviceRows = serviceIds.length
-    ? await db
+    ? await on
         .select({ id: services.id, title: services.titleEn, categoryId: services.categoryId })
         .from(services)
         .where(inArray(services.id, serviceIds))
     : [];
   const packageRows = packageIds.length
-    ? await db
+    ? await on
         .select({ id: travelPackages.id, title: travelPackages.titleEn })
         .from(travelPackages)
         .where(inArray(travelPackages.id, packageIds))
     : [];
   const destinationRows = destinationIds.length
-    ? await db
+    ? await on
         .select({ id: packageDestinations.id, title: packageDestinations.titleEn })
         .from(packageDestinations)
         .where(inArray(packageDestinations.id, destinationIds))
