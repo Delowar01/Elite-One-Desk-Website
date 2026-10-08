@@ -305,25 +305,29 @@ release should never rely on it.
 
 Tell every editor, before the switch, to **reload any admin page and any
 Visual Editor tab they have open once the release is live**. Since Batch 23
-(Services) and Batch 24 (Packages, Destinations) an edit form posts the base
-its page was drawn with, and the editor posts the values a region was loaded
-with (`baseValues`). Pages and tabs drawn by the previous release send
-neither:
+(Services), Batch 24 (Packages, Destinations) and Batch 25 (SEO) an edit form
+posts the base its page was drawn with, and the editor posts the values a
+region was loaded with (`baseValues`). Pages and tabs drawn by the previous
+release send neither:
 
-- **A Services, Packages or Destinations edit page** drawn before the switch is
-  refused when saved — "This form is out of date, so nothing was saved.
-  Reload the page…" — with nothing written. One reload fixes it. The refusal is
-  deliberate: accepting a save without a base would be the whole-row write
-  these releases removed.
+- **A Services, Packages or Destinations edit page, or the SEO screen**, drawn
+  before the switch is refused when saved — "This form is out of date, so
+  nothing was saved. Reload the page…" — with nothing written. One reload
+  fixes it. The refusal is deliberate: accepting a save without a base would
+  be the whole-row write these releases removed. On the SEO screen the same
+  goes for **Remove override**, which since Batch 25 names its page by
+  reference and is held to the same base.
 - **A Visual Editor tab** opened before Batch 23 keeps saving, and every
   publication still checks each draft against the live record, but until it
   is reloaded the tab cannot tell a field it never touched from one it edited,
   so it can draft a value nobody changed. The server cannot ask an old tab to
   reload itself (the editor protocol did not change), so this is the editors'
-  step.
+  step. Batch 25 does not change the editor's saves either; a tab opened
+  before it simply lacks the header's new **SEO** link until it is reloaded.
 
 The reasoning, and what each kind of client does, is in
-`docs/admin/services-form-concurrency.md` §11.
+`docs/admin/services-form-concurrency.md` §11 (and, for the SEO screen,
+`docs/admin/seo-and-share-images.md` B.16).
 
 ### 9.1 The service restructure (one-off)
 
@@ -666,6 +670,37 @@ disappears. Saving such a section in the older release drops the key, as its
 validator drops every key it does not declare: the section then becomes a
 detached copy of what it showed. Nothing else depends on the new tables, and a
 later forward deploy finds them as they were left.
+
+### SEO records and rollback (migration `0007`, Batch 25)
+
+`0007` only adds: `seo_metadata.entity_id` (nullable), `og_title_ar` and
+`og_description_ar` (`DEFAULT ''`), and a partial unique index on
+`(entity_type, entity_id) WHERE entity_id > 0`. No column changes meaning for
+the release before it: it still finds every SEO record by `entity_type` and
+`entity_key`, and this release keeps `entity_key` the record's present address
+on every write, rename and deploy.
+
+After the migrations, `npm run db:migrate` also **reconciles** the rows
+(`reconcileSeoRows`, `src/lib/seo-model.ts`): a row is bound to the record
+whose address it carries, moved to its record's present address if the
+previous release renamed that record, and detached (`entity_id = 0`, kept,
+never used) if it names no record. It deletes nothing, runs in one
+transaction, and a second run writes nothing — it runs on every deploy, so a
+rollback's edits are settled by the next one. The log line says what it did:
+`SEO records: N bound, N moved…, N detached…` or `nothing to reconcile`.
+
+After a rollback the older release reads the same rows by address, so every
+override still applies — including the destination and overview records only
+this release can create. What it does not have: the Arabic share title and
+description (it shows the English ones on `/ar`, as before), an Arabic page's
+own Arabic title in place of an English-only override (it shows the English
+override, as before), and the canonical restrictions. SEO edits it makes go to
+the same rows; the next deploy binds any row it created. Two corners are not
+preserved exactly, both needing a rollback plus a specific edit during it: an
+Arabic share text written before the rollback stays as it was while the English
+one is edited (the older release does not know the Arabic column); and if the
+older release renames a record *and* saves its SEO during the rollback, the
+next deploy keeps that newer row and detaches the older one.
 
 ### Temporary passwords
 
