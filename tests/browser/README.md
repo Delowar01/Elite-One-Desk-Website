@@ -160,7 +160,10 @@ screen shows and keeps a group's Arabic summary, which the editor can set.
   its hit check (which compares the nearest link) cannot tell.
 - **Selecting:** wait for the Inspector's answer (`waitForInspector`,
   `selectFromLayers`), not for the Motion tab, which is already on screen
-  whenever anything was selected before.
+  whenever anything was selected before. A Layers selection glides the canvas
+  to its node, and the Inspector answers before the glide ends:
+  `clickCanvasNode` waits it out before deciding anything, and anything else
+  that measures the canvas straight afterwards must wait too (`holdsStill`).
 - **Waiting:** poll a condition with a bound (`until`, `holdsStill`,
   `animationsDone`, `watchNetwork(page).quiet()`), or — for a claim that
   something does *not* happen — name an observation window with `quietFor`,
@@ -364,7 +367,8 @@ for, Layers always selected, no Server Action failed, nothing answered 5xx
 and the server never restarted. The numbers and the release decision they
 lead to are in `docs/release/release-hardening-batch-26.md` §5.
 
-Batch 26 changed three probes and added none. `seo-media` S8 fetches the
+Batch 26 changed three probes and the canvas click helper, and added no
+probe. `seo-media` S8 fetches the
 share image at the address a page now names for it, as a crawler would.
 `route-services` and `route-packages` wait for each screen action's answer — a create's or a
 delete's redirect, "Service saved." after a move, the canvas drawn again after
@@ -375,4 +379,11 @@ uncovered an admin form whose redirect React could leave uncommitted — see
 and `route-packages` now double-clicks a card's title with
 `clickCanvasNode(…, { double: true })`: Playwright's own `dblclick()` measured
 while the canvas was still moving and landed on the card's summary (release
-doc §6).
+doc §6). `clickCanvasNode` itself used to decide whether its node needed
+scrolling before it waited for the canvas to hold still: clicked during the
+first frames of a Layers glide, route-services' hero title was still on the
+canvas when it looked and carried off it by the time it clicked, and the
+helper gave up on it (CI 37952610450). It now waits first and checks again
+after every scroll, `Unreachable` says where the node was, and the
+`layers-glide-click` stress script holds a Layers glide at its start to
+click through it every round.

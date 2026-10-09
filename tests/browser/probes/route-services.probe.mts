@@ -241,7 +241,8 @@ try {
     // CI 37850382078 stopped here with nothing but the timeout to go on: what
     // the click selected and what the Inspector held instead go to the job log.
     const holds = (await inspector.innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 300);
-    console.log(`diag the timeline never appeared: the click selected "${heroPick.shows}" (${heroPick.ok ? "as asked" : "not as asked"}); the Inspector holds: ${holds}`);
+    const why = heroPick.unreachable ?? (heroPick.landing ? `it landed on ${heroPick.landing.resolved} at ${heroPick.landing.x},${heroPick.landing.y}` : "");
+    console.log(`diag the timeline never appeared: the click selected "${heroPick.shows}" (${heroPick.ok ? "as asked" : "not as asked"}${why ? `: ${why}` : ""}); the Inspector holds: ${holds}`);
     throw error;
   });
   await timeline.fill("Usually five working days");

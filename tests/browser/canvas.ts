@@ -20,9 +20,10 @@
  *    it. Its hit check retargets both the target and the hit to the nearest
  *    link or button, so a click that lands on a Quick Links card's text layer
  *    instead of its title is accepted, and the editor (correctly) selects the
- *    picture behind that layer. `clickCanvasNode` scrolls instantly, waits
- *    until the canvas and the editor both hold still, clicks once, and reports
- *    where the pointer actually landed.
+ *    picture behind that layer. `clickCanvasNode` waits until the canvas and
+ *    the editor both hold still, scrolls instantly if the node is not wholly
+ *    on the canvas (and waits again), clicks once, and reports where the
+ *    pointer actually landed.
  *
  * 3. **The Inspector follows a click asynchronously.** The canvas posts the
  *    selection and the editor renders it a few milliseconds later. A probe
@@ -327,8 +328,9 @@ export type Landing = { tag: string; inTarget: boolean; resolved: string | null;
 
 /** No point on the node resolves to it: something covers it, or its own children cover it wholly. */
 export class Unreachable extends Error {
-  constructor() {
-    super("no point on this node resolves to it — something covers it, or it is wholly covered by its children");
+  /** `where`: the node's box and the canvas it was measured on, so the failure shows which it was. */
+  constructor(where = "") {
+    super(`no point on this node resolves to it — something covers it, or it is wholly covered by its children${where ? ` (${where})` : ""}`);
     this.name = "Unreachable";
   }
 }
@@ -355,15 +357,27 @@ export async function clickCanvasNode(
   const timeoutMs = options.timeoutMs ?? 10_000;
   await target.waitFor({ state: "visible", timeout: timeoutMs });
   await shim(target);
-  // Instantly, and only if it is not already wholly on the canvas: a glide
-  // would be the very thing this helper exists to avoid.
-  await target.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    if (rect.top < 0 || rect.left < 0 || rect.bottom > window.innerHeight || rect.right > window.innerWidth) {
+  // Still first, and only then on the canvas. A glide already under way — a
+  // Layers selection brings its node into view smoothly — is waited out
+  // before anything is decided: decided first, the hero title was still on
+  // the canvas, the glide went on to carry it off, and not one point of it
+  // was left on screen to click (CI 37952610450, Batch 26). Then instantly,
+  // and only if it is not wholly on the canvas: a glide would be the very
+  // thing this helper exists to avoid. And again until it stays there; a
+  // scroll that moves nothing — a node taller than the canvas, already
+  // centred — is as far as scrolling can take it.
+  for (let scrolls = 0; ; scrolls += 1) {
+    await canvasStill(page, target, timeoutMs);
+    const moved = await target.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      if (rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth) return false;
+      const from = `${window.scrollX}:${window.scrollY}`;
       element.scrollIntoView({ block: "center", inline: "nearest", behavior: "instant" });
-    }
-  });
-  await canvasStill(page, target, timeoutMs);
+      return `${window.scrollX}:${window.scrollY}` !== from;
+    });
+    if (!moved) break;
+    if (scrolls === 3) throw new Error("the node would not stay on the canvas: each time it was scrolled into view, something scrolled it away again");
+  }
 
   const inFrame = await target.evaluate(
     (element, where) => {
@@ -405,14 +419,17 @@ export async function clickCanvasNode(
             if (!best || room > best.room) best = { x, y, room };
           }
         }
-        return best ? { x: best.x, y: best.y, box } : { x: Number.NaN, y: Number.NaN, box };
+        if (best) return { x: best.x, y: best.y, box };
+        const own = `its box ${Math.round(rect.left)},${Math.round(rect.top)} ${Math.round(rect.width)}×${Math.round(rect.height)}`;
+        const canvas = `a ${window.innerWidth}×${window.innerHeight} canvas scrolled to ${Math.round(window.scrollX)},${Math.round(window.scrollY)}`;
+        return { x: Number.NaN, y: Number.NaN, box, where: `${own} on ${canvas}` };
       }
       const f = where === "center" ? { x: 0.5, y: 0.5 } : (where as { x: number; y: number });
       return { x: rect.left + rect.width * f.x, y: rect.top + rect.height * f.y, box };
     },
     at,
   );
-  if (Number.isNaN(inFrame.x)) throw new Unreachable();
+  if (Number.isNaN(inFrame.x)) throw new Unreachable("where" in inFrame ? inFrame.where : "");
 
   // The frame point onto the editor's screen, through the element's own
   // on-screen box: that carries the canvas's scale and every scroll offset.
@@ -471,13 +488,14 @@ export async function clickCanvasNode(
  * taken only after the Inspector has shown the previous one.
  *
  * Returns what the Inspector finally shows and where the click landed, so a
- * caller can say *why* when it is not the node asked for.
+ * caller can say *why* when it is not the node asked for — and, when there was
+ * nowhere to click at all, `unreachable`: where the node was when it was looked for.
  */
 export async function selectCanvasNode(
   page: Page,
   address: string,
   timeoutMs = 10_000,
-): Promise<{ ok: boolean; shows: string; landing: Landing | null }> {
+): Promise<{ ok: boolean; shows: string; landing: Landing | null; unreachable?: string }> {
   const frame = await canvasFrame(page);
   const target = frame.locator(`[data-eod-address="${address}"]`).first();
   await target.waitFor({ state: "attached", timeout: timeoutMs });
@@ -501,7 +519,7 @@ export async function selectCanvasNode(
       });
       return inside[0]?.getAttribute("data-eod-address") ?? null;
     });
-    if (!child) return { ok: false, shows: await inspectorAddress(page), landing: null };
+    if (!child) return { ok: false, shows: await inspectorAddress(page), landing: null, unreachable: error.message };
     clicked = child;
     landing = await clickCanvasNode(page, frame.locator(`[data-eod-address="${child}"]`).first(), "own", { timeoutMs });
   }

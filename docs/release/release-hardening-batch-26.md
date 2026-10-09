@@ -745,10 +745,13 @@ catalogue, the visits) is not tracked; the matrix's own visits mode is.
 
 ## 6. The route-services timeline incident (brief §11)
 
-**Status: `UNREPRODUCED — DIAGNOSTICS RETAINED`.** The Batch 25 failure did
-not come back: the timeline field appeared, took its value, saved and
-published in all 25 runs of the final matrix and in the 47 route-services runs
-before it this batch — 72 in all, none of them failing on it.
+**Status: reproduced in CI and root-caused — a race in the probes' canvas
+click helper, not the application. Fixed in the helper, held by a tracked
+stress script.** Locally it never came back: the timeline field appeared,
+took its value, saved and published in all 25 runs of the matrix below and in
+the 47 route-services runs before it — 72 in all. It came back in CI run
+37952610450, on `69dc78a`, and release readiness stopped there until it was
+explained (§6.1).
 
 **What Batch 25 recorded.** One route-services CI failure, on a candidate
 since superseded: the probe timed out at its first wait for the service's
@@ -881,8 +884,8 @@ Neither is this branch's, and both are now closed:
   scrolls at once and waits for the canvas to hold still. The probes that
   still double-click natively (`route-categories`, `route-services`,
   `undo-compare`, `inspector-focus`, `layers-editing`) do so on targets at
-  the top of the page, where nothing glides; none of them failed in this
-  batch.
+  the top of the page, where nothing glides; none of them failed at a
+  double-click in this batch.
 
 With both: `route-packages` 10 of 10 runs clean (840 checks), and the harness
 on the fixed build 15 of 15 creates and 15 of 15 deletes, none slower than
@@ -893,7 +896,8 @@ between the sets, failed its "no page errors" check with a **React #418**
 that React recovered from, on the editor's canvas of
 `/services/travel-tourism/air-ticket-booking` (component stack
 `div ← p ← div ← div` — under `Reveal`, the replay §5 classifies). It is that
-defect, counted with it, not the timeline incident. The first concurrent set's
+defect, counted with it, not the timeline incident. It came back once in the
+matrix run with the fix (§6.1). The first concurrent set's
 second editor reported failed requests at the end of its runs 3–5 that its own
 log could not place in time; the instrumented second editor used since (every
 answer timed, each failure's cause recorded, stopping when the probe's server
@@ -902,6 +906,117 @@ measured above.
 
 The diagnostics stay as they are, and the second editor's request ledger is
 kept as a pattern for the next investigation.
+
+### 6.1 CI 37952610450: the incident, reproduced
+
+The CI run on `69dc78a` failed one probe of 38: route-services, 7 checks
+passed, 0 failed, 22 s, exit 1. The other 37 were clean (1,440 checks) and the
+Stress run on the same commit (37952614359) was clean. What brief §11 asks to
+be captured:
+
+| | |
+|---|---|
+| Browser error | `locator.waitFor: Timeout 15000ms exceeded`, waiting for the Inspector's `[data-field="timeline"] input` (`route-services.probe.mts:240`) — the probe's own wait, not a page error |
+| Route | the Visual Editor on the first service's own page (`service:1`, its real `/services/…` route in the canvas), English, Desktop |
+| Action | the request form selected from Layers, then the hero title clicked on the canvas (`selectCanvasNode`) |
+| Component stack | none — no React error was raised or recovered |
+| RSC digest | none |
+| Server logs | in the run's `browser-qa-logs` artifact (11628091317) only, with the probe's own log; this environment cannot download artifacts (the organisation's egress policy refuses the storage host), and nothing here depends on them: the job log carries the runner's summary, the stack frame and the probe's diagnostic line, and no page error, `#418` or digest anywhere |
+| Timeline field | never rendered: the Inspector still held the request form ("Request form … Heading …"), and the diagnostic line read *the click selected "serviceRequest:1" (not as asked)*. The step never typed, so no draft was written |
+
+Seven checks in seven seconds put the run at the click; the 15 s wait made
+up the rest. So `selectCanvasNode` had returned at once, which it does only
+when no point on the node is on screen and the node has no selectable child
+to reach it through.
+
+**Root cause — the click helper decided before the canvas held still.**
+Selecting a region from Layers makes the canvas bring it into view with
+`scrollIntoView({ block: "center", behavior: "smooth" })`. On this page the
+canvas glides from y 0 to 463 in about 440 ms. `selectFromLayers` returns as
+soon as the Inspector shows the region, while the glide is still under way.
+`clickCanvasNode` then decided once, first, whether its node needed scrolling,
+and only then waited for the canvas to hold still. Traced frame by frame
+(scratch harness, not tracked: every scroll call with its options, the
+canvas's position at every frame, every measurement of the title):
+
+- the glide starts, and the canvas moves 2, 8, 18, 33, 51, 75, 133, 167 px;
+- 181 ms in, the helper measures the hero title at top 11 px, bottom 94 px,
+  with the canvas at y 167. That is wholly on the canvas, so it does not
+  scroll;
+- `canvasStill` waits out the rest of the glide, to y 463 (scrollend at 443
+  ms). The title is now at −285…−202. Not one point of it is on screen, the
+  helper throws `Unreachable`, and `selectCanvasNode` returns with what the
+  Inspector still shows: the request form, which has no timeline field.
+
+The title (178–261 px down the page) leaves the canvas about 190 ms into the
+glide. In the probe's own sequence the decision fell 260–300 ms in locally,
+past that point, because the probe's steps in between (the Content tab, two
+field reads) and the helper's round trips take that long here. The helper's
+instant scroll then caught it, which is why 72 local runs passed. On the CI
+runner, which took route-services to this step in seven seconds, the decision
+fell earlier.
+
+Forced on this machine (same harness), the helper as it was:
+
+- glide start held back 150, 200, 250 or 300 ms, so that the decision lands
+  early in it: title selected in **0 of 12** rounds (1 of 3 at 100 ms, 3 of 3
+  with no delay);
+- glide held until the click began: **0 of 6**;
+- unforced, the canvas clicked straight after the Layers row without waiting
+  for the Inspector: 3 of 4.
+
+Every failed round failed exactly as CI did.
+
+Nothing in the application was wrong. The glide is the editor bringing a
+Layers selection into view, as designed, and the Inspector showed exactly what
+was selected. Batch 25's failure (CI 37850382078) timed out at the same wait
+and fits the same race, but that run left no diagnostic to confirm it.
+
+**The fix (`tests/browser/canvas.ts`).** `clickCanvasNode` now waits for the
+canvas to hold still *first*. Only then does it scroll the node instantly, if
+it is not wholly on the canvas, and it waits and checks again until the node
+stays. A scroll that moves nothing ends the loop (a node taller than the
+canvas, already centred). After four scrolls that each moved it, the helper
+stops and says the node would not stay on the canvas. `Unreachable` now
+carries the node's box and the canvas's size and scroll, and
+`selectCanvasNode` returns it as `unreachable`. route-services' diagnostic
+line prints it, so a future failure of this kind says where the node was.
+Every probe and stress script that clicks the canvas goes through this helper
+(14 probes and 3 stress scripts before this batch's), and all of them run in
+the gate. `canvasStill` itself is unchanged. With the fix, the forced
+rounds above selected the title 18 of 18 times across every delay from 0 to
+300 ms, and 6 of 6 times with the glide held.
+
+**Held by** `tests/stress/layers-glide-click` (4 checks). Its rounds are:
+
+- the Layers glide held at its start and released as the click begins — the
+  CI case, on any machine;
+- the same two steps with nothing held;
+- the title clicked on a canvas at rest, both from far off it and on it.
+
+With the helper as it was, G1 failed in 3 of 3 rounds, each *"serviceRequest:1
+selected, the canvas having glided to 463"*. With the fix, 4 of 4 checks pass.
+
+**The matrix again, with the fix** (`npm run test:browser -- --only
+route-services`, the three classes above under the same conditions):
+
+| Class | Runs | Clean | Checks passed / failed | Recovered React errors | Time per run |
+|---|---|---|---|---|---|
+| normal | 10 | **10** | 1,110 / 0 | 0 | 118–124 s |
+| moderate CPU | 10 | **10** | 1,110 / 0 | 0 | 133–138 s |
+| concurrent | 5 | **4** | 554 / 1 | 1 | 137–144 s |
+
+The timeline step passed in all 25 runs. The one failed check is concurrent
+run 1's "no page errors". React recovered from a **#418** on the editor's
+canvas of `/services/travel-tourism/air-ticket-booking`, in the redraw after
+Undo, with component stack `div ← p ← div ← div` under `Reveal`. That is the
+same route and stack as the occurrence recorded above. It is §5's defect and
+is counted with it; the click helper takes no part in rendering.
+
+In the concurrent class, the second editor made 6,617 requests across the five
+runs. Its only failures came as the probe's server stopped, none more than a
+second before. The services and routes stress scripts beside it were clean
+every time, 15 of 15.
 
 ## 7. Stress 37064560289 (brief §12)
 
