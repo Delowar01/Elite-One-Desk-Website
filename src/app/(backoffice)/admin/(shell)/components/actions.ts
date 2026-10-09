@@ -40,6 +40,7 @@ import { componentUsage, EMPTY_USAGE, publishedSentence, usageByComponent } from
 import type { ReuseActionResult, ReuseCatalogEntry, ReuseComponentView } from "@/lib/cms/reuse/view";
 import { db } from "@/lib/db";
 import { pageSections } from "@/lib/db/schema";
+import { leftOutSentence } from "@/lib/versions";
 
 /**
  * Every write to a reusable component, and the two reads the screens need
@@ -392,7 +393,9 @@ export async function restoreReusableVersion(form: FormData): Promise<ReuseActio
     refreshScreens(id);
     return {
       ok: true,
-      message: `Version ${result.version} is the draft now. Linked pages still show the published version until you publish.`,
+      message:
+        `Version ${result.version} is the draft now. Linked pages still show the published version until you publish.` +
+        leftOutSentence(result.leftOut),
       component: await viewOf(id),
     };
   });

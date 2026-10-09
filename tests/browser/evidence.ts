@@ -34,6 +34,29 @@ const pathOf = (url: string) => {
 /** Marks the console lines `RECOVERED` writes, so only this file reads them. */
 const RECOVERED_PREFIX = "eod-evidence recovered: ";
 
+/** One error React recovered from, as `RECOVERED` reports it: where, what, and React's component stack. */
+export type Recovered = { path: string; message: string; stack: string };
+
+/** Reads a `RECOVERED` console line back into its parts, or null for any other line. */
+export function recoveredOf(text: string): Recovered | null {
+  if (!text.startsWith(RECOVERED_PREFIX)) return null;
+  const [path = "", message = "", ...stack] = text.slice(RECOVERED_PREFIX.length).split(" — ");
+  return { path, message, stack: stack.join(" — ") };
+}
+
+/**
+ * Calls `on` for every error React recovers from on `page` — in the editor and
+ * in its canvas alike — with the component stack (Batch 26: the hydration
+ * matrix counts them, tests/browser/matrix/).
+ */
+export async function onRecovered(page: Page, on: (recovered: Recovered) => void): Promise<void> {
+  await page.addInitScript({ content: RECOVERED });
+  page.on("console", (message) => {
+    const recovered = recoveredOf(message.text());
+    if (recovered) on(recovered);
+  });
+}
+
 /**
  * Where a recovered error happened, in React's own words.
  *

@@ -154,7 +154,12 @@ export function watchProcess(child: ChildProcess) {
 export async function startServer(
   database: string,
   port: number,
-  options: { reuse?: boolean } = {},
+  /**
+   * `env` overrides the test environment for this server alone — Batch 26's
+   * media race tests give their server an upload directory of its own, so the
+   * shipped artwork they delete is deleted nowhere another test file reads.
+   */
+  options: { reuse?: boolean; env?: Record<string, string> } = {},
 ): Promise<Server> {
   if (!isBuilt()) throw new Error(BUILD_HINT);
   // `reuse` keeps the staged tree — and with it the on-disk cache — across a
@@ -165,6 +170,7 @@ export async function startServer(
   const child: ChildProcess = spawn("node", [path.join(root, "server.js")], {
     cwd: root,
     env: scriptEnv(dbUrl(database), {
+      ...options.env,
       NODE_ENV: "production",
       PORT: String(port),
       HOSTNAME: "127.0.0.1",

@@ -62,10 +62,9 @@ describe("a repeatable row can hold an icon and an image", () => {
     assert.equal(roundTrip({ label: { en: "x" }, icon: " sparkle " }).stored.icon, "sparkle");
   });
 
-  test("a media id survives, a numeric string is normalised, junk becomes null", () => {
+  test("a media id survives; junk becomes null — and so does a string, even of digits: a picture id is a number (Batch 26)", () => {
     assert.equal(roundTrip({ label: { en: "a" }, image: 7 }).stored.image, 7);
-    assert.equal(roundTrip({ label: { en: "a" }, image: "12" }).stored.image, 12);
-    for (const junk of [{ nope: true }, "abc", -3, 0, null, undefined, []]) {
+    for (const junk of [{ nope: true }, "abc", "12", -3, 0, null, undefined, []]) {
       assert.equal(
         roundTrip({ label: { en: "a" }, image: junk }).stored.image,
         null,
@@ -78,6 +77,23 @@ describe("a repeatable row can hold an icon and an image", () => {
     const { read } = roundTrip({ label: { en: "a" }, image: 7 });
     assert.equal(itemMediaId(read!, "image"), 7);
     assert.equal(itemMediaId(roundTrip({ label: { en: "a" } }).read!, "image"), null);
+  });
+
+  test("one reading of a picture id (Batch 26): a decimal, an exponent, an id past the range or a string with more than digits is no picture — never some other one", () => {
+    for (const bad of [12.5, 1e21, 7e-7, 2_147_483_648, "12", "12abc", "12.5", " 12", "1e3"]) {
+      assert.equal(roundTrip({ label: { en: "a" }, image: bad }).stored.image, null, `${JSON.stringify(bad)} was stored`);
+    }
+    assert.equal(roundTrip({ label: { en: "a" }, image: 2_147_483_647 }).stored.image, 2_147_483_647);
+    // A row written by hand, read as a page reads it: 12.5 used to become the
+    // text "12.5" and then picture 12 — which nothing held or counted.
+    for (const bad of [12.5, 1e21, 7e-7, "12abc"]) {
+      const [row] = items({ links: [{ label: { en: "a" }, image: bad }] }, "links", "en", LINK_FIELDS);
+      assert.equal(itemMediaId(row!, "image"), null, `${JSON.stringify(bad)} drew a picture`);
+    }
+    // Text stored where a picture belongs is text: nothing reads a stored
+    // "12" as picture 12 — not the page, not the hold, not the delete's count.
+    const [text] = items({ links: [{ label: { en: "a" }, image: "12" }] }, "links", "en", LINK_FIELDS);
+    assert.equal(itemMediaId(text!, "image"), null, "a stored string was drawn as a picture");
   });
 
   test("a dangerous href is still sanitised", () => {

@@ -1,10 +1,11 @@
 {
-  "admin-form-settle": 4,
+  "admin-form-settle": 6,
   "advanced-motion": 7,
   "create-navigation": 5,
   "editor-cleanup": 8,
   "editor-performance": 9,
   "entrance-parallax": 10,
+  "media-references": 6,
   "motion-15b": 13,
   "package-concurrency": 16,
   "permissions": 17,

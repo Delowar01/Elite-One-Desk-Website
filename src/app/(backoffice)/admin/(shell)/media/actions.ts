@@ -1,6 +1,6 @@
 "use server";
 
-import { eq } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 
 import { logActivity } from "@/lib/activity";
@@ -8,7 +8,7 @@ import { fail, field, ok, runAction, type ActionState } from "@/lib/admin/action
 import { guardAction } from "@/lib/auth/guard";
 import { TAGS, revalidate } from "@/lib/cache";
 import { db } from "@/lib/db";
-import { media } from "@/lib/db/schema";
+import { media, seoMetadata } from "@/lib/db/schema";
 import { deleteMediaFiles, processUpload } from "@/lib/media/process";
 import { isMediaFolder } from "@/lib/media/folders";
 import { mediaUsage, type MediaUse } from "@/lib/media/usage";
@@ -105,14 +105,40 @@ export async function deleteMedia(_prev: ActionState, form: FormData): Promise<A
      * pointing at a deleted picture by a save that raced the delete.
      */
     type Outcome = { kind: "missing" } | { kind: "used"; uses: MediaUse[] } | { kind: "deleted"; row: typeof media.$inferSelect };
-    const outcome = await db.transaction(async (tx): Promise<Outcome> => {
-      const [row] = await tx.select().from(media).where(eq(media.id, id)).limit(1).for("update");
-      if (!row) return { kind: "missing" };
-      const uses = await mediaUsage(id, tx);
-      if (uses.length) return { kind: "used", uses };
-      await tx.delete(media).where(eq(media.id, id));
-      return { kind: "deleted", row };
-    });
+    let outcome: Outcome;
+    try {
+      outcome = await db.transaction(async (tx): Promise<Outcome> => {
+        const [row] = await tx.select().from(media).where(eq(media.id, id)).limit(1).for("update");
+        if (!row) return { kind: "missing" };
+        /**
+         * The SEO rows that name the picture (Batch 26). `ON DELETE SET NULL`
+         * writes every one of them the recount does not count, in whatever
+         * order its scan meets them — and an SEO writer holding two of them in
+         * another order (an address moving, a category taking its services'
+         * rows with it) would close a cycle with it. So the delete takes them
+         * here, all at once and without waiting: a row being changed at this
+         * moment refuses the delete instead. From here on it waits for no row
+         * — no row can come to name a picture held `FOR UPDATE` — and before
+         * here it held nothing, so it can never be part of a deadlock with an
+         * application writer (only a deploy's schema migration can meet it in
+         * the other order; `lib/media/hold.ts`). Taken before the recount, so
+         * the rows it decides on stay as read.
+         */
+        await tx
+          .select({ id: seoMetadata.id })
+          .from(seoMetadata)
+          .where(eq(seoMetadata.ogImageId, id))
+          .orderBy(asc(seoMetadata.id))
+          .for("no key update", { noWait: true });
+        const uses = await mediaUsage(id, tx);
+        if (uses.length) return { kind: "used", uses };
+        await tx.delete(media).where(eq(media.id, id));
+        return { kind: "deleted", row };
+      });
+    } catch (error) {
+      if (!lockNotAvailable(error)) throw error;
+      return fail("A search and sharing record that names this image is being saved right now. Nothing was deleted — try again in a moment.");
+    }
 
     if (outcome.kind === "missing") return fail("That image no longer exists.");
     if (outcome.kind === "used") {
@@ -142,4 +168,12 @@ export async function deleteMedia(_prev: ActionState, form: FormData): Promise<A
     revalidatePath("/admin/media");
     return ok("Image deleted.");
   });
+}
+
+/** Postgres's `lock_not_available` (55P03), however deep the driver wrapped it. */
+function lockNotAvailable(error: unknown): boolean {
+  for (let at: unknown = error, depth = 0; at && typeof at === "object" && depth < 5; at = (at as { cause?: unknown }).cause, depth += 1) {
+    if ((at as { code?: unknown }).code === "55P03") return true;
+  }
+  return false;
 }

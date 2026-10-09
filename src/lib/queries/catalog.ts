@@ -235,14 +235,15 @@ export const publishedSlugs = async () => {
   const { categories, services: all } = await getCatalog();
   const byId = new Map(categories.map((c) => [c.id, c.slug]));
   return {
-    categories: categories.map((c) => ({ slug: c.slug, updatedAt: c.updatedAt })),
+    categories: categories.map((c) => ({ id: c.id, slug: c.slug, updatedAt: c.updatedAt })),
     services: all
       .map((s) => ({
+        id: s.id,
         category: byId.get(s.categoryId),
         slug: s.slug,
         updatedAt: s.updatedAt,
       }))
-      .filter((s): s is { category: string; slug: string; updatedAt: Date } => Boolean(s.category)),
+      .filter((s): s is { id: number; category: string; slug: string; updatedAt: Date } => Boolean(s.category)),
   };
 };
 

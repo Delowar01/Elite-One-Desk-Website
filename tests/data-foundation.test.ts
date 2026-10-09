@@ -961,7 +961,9 @@ describe("the entrance preset is connected, and the draft leak that blocked it i
     // the same transaction; saving a draft does not, because a draft changes
     // nothing a visitor can see and so is not a point anybody restores to.
     assert.match(write, /publishSectionIn\(\{/);
-    assert.match(write, /updateSectionGuarded\(id, expected, \{ \.\.\.written/);
+    // Since Batch 26 the draft write runs in a transaction that also holds the
+    // pictures it names (`lib/media/hold.ts`) — still the one guarded update.
+    assert.match(write, /updateSectionGuardedIn\(tx, id, expected, \{ \.\.\.written/);
     // The guarded update names no motion column of its own — it spreads
     // whatever the decision above produced, which for a request that did not
     // mention motion is nothing.

@@ -12,6 +12,7 @@ import { emptyMotionDocument, isReadableMotionDocument } from "@/lib/cms/motion-
 import { advancedStylesDiffer, validateStyleDocument } from "@/lib/cms/styles";
 import { db } from "@/lib/db";
 import { existingMedia } from "@/lib/routes/category";
+import { holdPictures, picturesGone } from "@/lib/media/hold";
 import {
   nextPatchIn,
   ownerData,
@@ -34,6 +35,7 @@ import {
   changedKeys,
   domainPermissionOf,
   mediaIdsIn,
+  mediaIdsOfPatches,
   sameStored,
   SPECS,
   staleStartingPoints,
@@ -219,13 +221,25 @@ export async function saveRouteRegionDraft(form: FormData): Promise<VisualConten
     }
     const values = submitted as Record<string, unknown>;
 
-    const mediaIds = await existingMedia(db, mediaIdsIn(owner, values));
-    const read = readSubmittedIn(context, owner, values, mediaIds);
-    if (!read.ok) return { ok: false, reason: "invalid", message: read.problem.message };
-
     const key = ownerKeyOf(owner);
     const live = context.live.get(key) ?? {};
     const previous: StoredPatch = context.patches.get(key) ?? {};
+    /**
+     * The library ids the values name that exist — plus the pictures this
+     * region's draft already names, which are carried rather than chosen
+     * (Batch 26, `lib/media/hold.ts`): one that has left the library since
+     * stays as it was and is never the reason an unrelated edit is refused.
+     * Publishing it is refused, by name, as it always was.
+     */
+    const carried = mediaIdsOfPatches([[owner, previous]]);
+    const existing = async (named: Record<string, unknown>) => {
+      const found = await existingMedia(db, mediaIdsIn(owner, named));
+      for (const id of carried) found.add(id);
+      return found;
+    };
+    const read = readSubmittedIn(context, owner, values, await existing(values));
+    if (!read.ok) return { ok: false, reason: "invalid", message: read.problem.message };
+
     // What the editor's buffer was reconciled with (Batch 23): a field it did not
     // change is taken from the server, never from a buffer opened before the
     // record changed elsewhere. A base that does not read is ignored.
@@ -235,12 +249,12 @@ export async function saveRouteRegionDraft(form: FormData): Promise<VisualConten
     let startedFrom: Record<string, unknown> | undefined;
     const base = parseValues(form.get("baseValues"));
     if (base) {
-      const baseRead = readSubmittedIn(context, owner, base, await existingMedia(db, mediaIdsIn(owner, base)));
+      const baseRead = readSubmittedIn(context, owner, base, await existing(base));
       if (baseRead.ok) {
         stored = withUntouchedFromServer(owner, read.stored, baseRead.stored, previous, live);
         // What a fresh load would show the editor now, read the same way.
         const now = ownerData(context, owner).values;
-        const nowRead = readSubmittedIn(context, owner, now, await existingMedia(db, mediaIdsIn(owner, now)));
+        const nowRead = readSubmittedIn(context, owner, now, await existing(now));
         if (nowRead.ok) startedFrom = staleStartingPoints(owner, baseRead.stored, nowRead.stored);
       }
     }
@@ -258,13 +272,29 @@ export async function saveRouteRegionDraft(form: FormData): Promise<VisualConten
       changed.some((spec) => !spec.structural) || !changed.length,
     );
 
-    const written = await writeNodeGuarded(db, {
-      ownerKey: key,
-      routeKey: context.routeKey,
-      expected,
-      actorId: session.user.id,
-      values: { draftContent: Object.keys(patch).length ? patch : null },
-    });
+    /**
+     * The region's row, then the pictures its draft names, held `FOR KEY
+     * SHARE` until the write commits (Batch 26, `lib/media/hold.ts`). The
+     * check above read the library unlocked; this is the one that holds: a
+     * picture the draft already named is kept as it was, and one it brings in
+     * that has left the library since takes the save back with it.
+     */
+    const written = await db
+      .transaction(async (tx) => {
+        const result = await writeNodeGuarded(tx, {
+          ownerKey: key,
+          routeKey: context.routeKey,
+          expected,
+          actorId: session.user.id,
+          values: { draftContent: Object.keys(patch).length ? patch : null },
+        });
+        if (result.ok) await holdPictures(tx, mediaIdsOfPatches([[owner, patch]]), mediaIdsOfPatches([[owner, previous]]));
+        return result;
+      })
+      .catch(picturesGone);
+    if ("gone" in written) {
+      return { ok: false, reason: "invalid", message: "That picture is no longer in the media library. Nothing was saved. Choose another picture, then save again." };
+    }
     if (!written.ok) {
       const latest = await freshData(sectionId, pageId);
       return latest
@@ -320,16 +350,28 @@ export async function resolveRouteConflict(form: FormData): Promise<VisualConten
     assertContentAuthority(session, owner, spec.structural === true, spec.structural !== true);
 
     const live = context.live.get(key) ?? {};
+    const previous = context.patches.get(key) ?? {};
     if (choice === "mine") patch[field] = { value: patch[field]!.value, base: live[field] };
     else delete patch[field];
 
-    const written = await writeNodeGuarded(db, {
-      ownerKey: key,
-      routeKey: context.routeKey,
-      expected,
-      actorId: session.user.id,
-      values: { draftContent: Object.keys(patch).length ? patch : null },
-    });
+    // The draft keeps only pictures it already named: held all the same until
+    // the write commits, like every draft write (Batch 26, `lib/media/hold.ts`).
+    const written = await db
+      .transaction(async (tx) => {
+        const result = await writeNodeGuarded(tx, {
+          ownerKey: key,
+          routeKey: context.routeKey,
+          expected,
+          actorId: session.user.id,
+          values: { draftContent: Object.keys(patch).length ? patch : null },
+        });
+        if (result.ok) await holdPictures(tx, mediaIdsOfPatches([[owner, patch]]), mediaIdsOfPatches([[owner, previous]]));
+        return result;
+      })
+      .catch(picturesGone);
+    if ("gone" in written) {
+      return { ok: false, reason: "invalid", message: "That picture is no longer in the media library. Nothing was changed." };
+    }
     if (!written.ok) {
       const latest = await freshData(sectionId, pageId);
       return latest

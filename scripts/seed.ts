@@ -5,6 +5,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../src/lib/db";
 import {
   faqs,
+  media,
   navigationItems,
   pageSections,
   pages,
@@ -537,10 +538,34 @@ async function seedPackages() {
 }
 
 /**
- * Imports the shipped artwork and attaches it wherever a picture slot is still
- * empty. Only nulls are filled, so an owner who has replaced an image — or
- * deliberately cleared one — keeps their choice across re-runs.
+ * Whether picture `id` is still in the library, holding it `FOR KEY SHARE`
+ * until `tx` commits (Batch 26). The protocol every writer of a picture id
+ * keeps (`src/lib/media/hold.ts`, which a script cannot import: it is
+ * server-only): the artwork was looked up a moment ago, outside any lock, and a
+ * picture the media library deletes in between is left unattached — never
+ * written into a section as an id that names nothing, and never into a
+ * record's own column, where the foreign key would fail and stop the deploy.
+ * The delete either waits for this write and then counts it, or has already
+ * happened.
  */
+async function holdArtwork(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], id: number): Promise<boolean> {
+  const held = await tx.select({ id: media.id }).from(media).where(eq(media.id, id)).for("key share");
+  return held.length === 1;
+}
+
+/**
+ * Imports the shipped artwork and attaches it wherever a picture slot is still
+ * empty. Only nulls are filled, so an owner who has replaced an image keeps
+ * their choice across re-runs. A picture an owner cleared is stored as null
+ * too, so it is filled again: a known limitation of this function
+ * (docs/release/release-hardening-batch-26.md §1.7), unchanged here.
+ */
+/** A section whose `image` slot holds nothing: absent, or null. */
+function emptyPicture(published: unknown): boolean {
+  const values = (published ?? {}) as Record<string, unknown>;
+  return values.image === null || values.image === undefined;
+}
+
 async function seedImagery() {
   const uploadDir = process.env.UPLOAD_DIR;
   if (!uploadDir) {
@@ -560,10 +585,13 @@ async function seedImagery() {
   for (const [slug, image] of Object.entries(byCategory)) {
     const id = ids.get(image);
     if (!id) continue;
-    await db
-      .update(serviceCategories)
-      .set({ imageId: id })
-      .where(and(eq(serviceCategories.slug, slug), isNull(serviceCategories.imageId)));
+    await db.transaction(async (tx) => {
+      if (!(await holdArtwork(tx, id))) return;
+      await tx
+        .update(serviceCategories)
+        .set({ imageId: id })
+        .where(and(eq(serviceCategories.slug, slug), isNull(serviceCategories.imageId)));
+    });
   }
 
   // Section artwork, addressed by block type rather than by row id so it keeps
@@ -579,12 +607,22 @@ async function seedImagery() {
     const image = byBlock[section.blockType];
     const id = image ? ids.get(image) : undefined;
     if (!id) continue;
-    const values = (section.published ?? {}) as Record<string, unknown>;
-    if (values.image !== null && values.image !== undefined) continue;
-    await db
-      .update(pageSections)
-      .set({ published: { ...values, image: id } })
-      .where(eq(pageSections.id, section.id));
+    if (!emptyPicture(section.published)) continue;
+    // The row, read again under its lock — an editor may have chosen a picture
+    // since the list above was read — then the artwork, then the write.
+    await db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ published: pageSections.published })
+        .from(pageSections)
+        .where(eq(pageSections.id, section.id))
+        .for("no key update");
+      if (!row || !emptyPicture(row.published)) return;
+      if (!(await holdArtwork(tx, id))) return;
+      await tx
+        .update(pageSections)
+        .set({ published: { ...(row.published as Record<string, unknown>), image: id } })
+        .where(eq(pageSections.id, section.id));
+    });
   }
 
   const packageArt: Record<string, string> = {
@@ -597,10 +635,13 @@ async function seedImagery() {
   for (const [slug, image] of Object.entries(packageArt)) {
     const id = ids.get(image);
     if (!id) continue;
-    await db
-      .update(travelPackages)
-      .set({ imageId: id })
-      .where(and(eq(travelPackages.slug, slug), isNull(travelPackages.imageId)));
+    await db.transaction(async (tx) => {
+      if (!(await holdArtwork(tx, id))) return;
+      await tx
+        .update(travelPackages)
+        .set({ imageId: id })
+        .where(and(eq(travelPackages.slug, slug), isNull(travelPackages.imageId)));
+    });
   }
 
   console.log(`· imagery (${ids.size} images in the library)`);

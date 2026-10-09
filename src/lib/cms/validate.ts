@@ -1,6 +1,7 @@
 import { isIconName } from "@/lib/icons";
 
 import { ITEM_ID_KEY, ensureItemIds } from "./item-id";
+import { pictureId } from "./media-id";
 
 import { sanitizeHref, sanitizeRichText } from "./sanitize";
 import type { BlockDef, FieldDef, ItemFieldDef } from "./blocks";
@@ -33,11 +34,12 @@ function localised(value: unknown, max: number, rich = false): Localised {
   return { en: clean(source.en), ar: clean(source.ar) };
 }
 
-/** A library id, or null. The one reading of a media value, top level or row. */
-function mediaValue(raw: unknown): number | null {
-  const id = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
-  return Number.isFinite(id) && id > 0 ? id : null;
-}
+/**
+ * A library id, or null — top level or row. Stored only as a whole number the
+ * hold, the count and the renderer all read the same way (`media-id.ts`): a
+ * `12.5`, a `1e21` or a string is no picture, never some other one.
+ */
+const mediaValue = (raw: unknown): number | null => pictureId(raw);
 
 function itemRow(row: unknown, fields: ItemFieldDef[]): Record<string, unknown> {
   const source = (typeof row === "object" && row !== null ? row : {}) as Record<string, unknown>;

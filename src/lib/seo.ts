@@ -9,7 +9,7 @@ import { getMediaMap, getSocialLinks } from "@/lib/queries/site";
 import { getPage, getSeoRecord } from "@/lib/queries/content";
 import { getSettings } from "@/lib/settings";
 import { isGenericLink } from "@/lib/social";
-import { mediaSrc } from "@/lib/media/url";
+import { SHARE_WIDTH, mediaSrc, shareSrc } from "@/lib/media/url";
 import { toPlainText } from "@/lib/cms/sanitize";
 import { canonicalOverride, recordStorage, shareTextFor, textFor, type Bilingual, type SeoStorage } from "@/lib/seo-model";
 
@@ -41,9 +41,6 @@ const absolute = (path: string) => `${siteUrl}${path}`;
 /** The static picture every page falls back to, declared at its real size. */
 const DEFAULT_SHARE_IMAGE = { url: "/brand/og-default.jpg", width: 1200, height: 630 };
 
-/** The 1600-pixel rendition when the library made one; the original otherwise. */
-const SHARE_WIDTH = 1600;
-
 type ShareImage = { url: string; width?: number; height?: number; alt: string };
 
 /**
@@ -69,7 +66,9 @@ async function shareImage(
       const width = derived ? SHARE_WIDTH : found.width;
       const height = derived && found.width ? Math.round((found.height * SHARE_WIDTH) / found.width) : found.height;
       return {
-        url: absolute(mediaSrc(found, derived ? SHARE_WIDTH : undefined)),
+        // The 1600 rendition when the library made one — at the address
+        // crawlers may fetch (`shareSrc`, Batch 26) — the original otherwise.
+        url: absolute(derived ? shareSrc(found) : mediaSrc(found)),
         ...(width > 0 && height > 0 ? { width, height } : {}),
         alt: pick(locale, found.altEn, found.altAr) || siteName,
       };
@@ -182,8 +181,13 @@ export async function buildMetadata(args: BuildArgs): Promise<Metadata> {
  * (the homepage names none of its own), and `/` as its address.
  */
 export async function homeMetadata(locale: Locale): Promise<Metadata> {
+  return buildMetadata({ locale, path: "/", seo: await homeSeo() });
+}
+
+/** Where the homepage's record lives: read by its metadata and by the sitemap, so the two cannot disagree. */
+export async function homeSeo(): Promise<SeoStorage | undefined> {
   const home = await getPage("home");
-  return buildMetadata({ locale, path: "/", seo: home ? recordStorage("page", home.slug, home.id) : undefined });
+  return home ? recordStorage("page", home.slug, home.id) : undefined;
 }
 
 /**

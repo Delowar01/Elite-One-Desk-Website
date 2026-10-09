@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 
 import { resolveUpload } from "@/lib/media/store";
+import { shareFile } from "@/lib/media/url";
 
 const TYPES: Record<string, string> = {
   webp: "image/webp",
@@ -29,10 +30,15 @@ export async function GET(
   { params }: { params: Promise<{ path: string[] }> },
 ) {
   const { path: segments } = await params;
-  // The store is flat: one segment, and nothing that looks like a traversal.
-  if (segments.length !== 1) return new Response("Not found", { status: 404 });
+  // The store is flat: one segment, and nothing that looks like a traversal —
+  // or `share/<stem>.webp`, a share image's 1600 rendition at the address
+  // crawlers may fetch (`shareSrc`, Batch 26). That form names a rendition and
+  // nothing else: never an original, never an SVG, which has none.
+  const name =
+    segments.length === 1 ? segments[0]! : segments.length === 2 && segments[0] === "share" ? shareFile(segments[1]!) : null;
+  if (!name) return new Response("Not found", { status: 404 });
 
-  const full = await resolveUpload(segments[0]!);
+  const full = await resolveUpload(name);
   if (!full) return new Response("Not found", { status: 404 });
 
   let info;
@@ -43,7 +49,7 @@ export async function GET(
     return new Response("Not found", { status: 404 });
   }
 
-  const extension = segments[0]!.split(".").pop()?.toLowerCase() ?? "";
+  const extension = name.split(".").pop()?.toLowerCase() ?? "";
   const contentType = TYPES[extension];
   if (!contentType) return new Response("Not found", { status: 404 });
 

@@ -15,7 +15,10 @@ import {
   DRAFT_STRUCTURE_VERSION,
 } from "@/lib/cms/structure";
 import { planRestoreFrom, type RestorePlan } from "@/lib/cms/restore";
+import { linkedSlotOfField, readReuse } from "@/lib/cms/reuse/reference";
 import { pinPublishedValues } from "@/lib/cms/reuse/resolve";
+import { withoutMedia, sectionMediaIds, type LeftOut } from "@/lib/cms/media-refs";
+import { holdMedia, type Transaction } from "@/lib/media/hold";
 import { emptyValues } from "@/lib/cms/values";
 import { db } from "@/lib/db";
 import { KEEP_PAGE_VERSIONS } from "@/lib/visual-editor/publish";
@@ -400,7 +403,13 @@ export type RestoreActor = { userId?: number | null };
  * saves by one person are indistinguishable by actor and are not by counter.
  */
 export type RestoreApplied =
-  | { ok: true; recreated: number[]; updated: number[] }
+  | {
+      ok: true;
+      recreated: number[];
+      updated: number[];
+      /** Pictures the version names that have left the library since: left out, by place (decision B). */
+      leftOut: LeftOut[];
+    }
   | { ok: false; reason: "unowned_sections"; sectionIds: number[] };
 
 /** Thrown inside the transaction so the abort rolls back by construction. */
@@ -412,12 +421,13 @@ class UnownedSections extends Error {
 }
 
 export async function applyRestorePlanIn(
-  tx: Executor,
+  tx: Transaction,
   plan: RestorePlan,
   actor: RestoreActor = {},
 ): Promise<RestoreApplied> {
   const recreated: number[] = [];
   const updated: number[] = [];
+  const leftOut: LeftOut[] = [];
   const updatedBy = actor.userId ?? null;
 
   {
@@ -443,11 +453,64 @@ export async function applyRestorePlanIn(
         if (strangers.length) throw new UnownedSections(strangers);
       }
 
+      /**
+       * The pictures the version names, held `FOR KEY SHARE` until this
+       * commits (Batch 26, `lib/media/hold.ts`) — after the rows, which the
+       * caller has locked. History is not counted by the media delete
+       * (decision B), so a picture a version names may have left the library
+       * since; the restore leaves it out — the field emptied — names it, and
+       * puts the rest back. A picture still there is held, so the delete
+       * either waits for this and then counts the restored draft, or has
+       * already happened and the picture is left out.
+       */
+      const typeOf = new Map(
+        plan.drafts.length
+          ? (
+              await tx
+                .select({ id: pageSections.id, blockType: pageSections.blockType })
+                .from(pageSections)
+                .where(inArray(pageSections.id, plan.drafts.map((draft) => draft.sectionId)))
+            ).map((row) => [row.id, row.blockType])
+          : [],
+      );
+      const held = await holdMedia(tx, [
+        ...plan.drafts.flatMap((draft) => sectionMediaIds(typeOf.get(draft.sectionId) ?? "", draft.draft)),
+        ...plan.recreate.flatMap((entry) => sectionMediaIds(entry.blockType, entry.draft)),
+      ]);
+      const gone = new Set(held.missing);
+      /**
+       * Which section an emptied picture was in, in the words an editor
+       * reads it: the block's name and its place on the restored page — two
+       * Image and text sections that both lose their picture are two places,
+       * not one repeated line. A field a linked component supplies is emptied
+       * too, but not named: while the component can be drawn the page shows
+       * its picture there, and a picture is never something a linked section
+       * can override, so there is nothing for the editor to choose.
+       */
+      const placeOf = (matches: (slot: RestorePlan["order"][number]) => boolean): string => {
+        const at = plan.order.findIndex(matches);
+        return at < 0 ? "" : ` (section ${at + 1})`;
+      };
+      const restorable = (blockType: string, values: Record<string, unknown>, where: string): Record<string, unknown> => {
+        const block = getBlock(blockType);
+        const kept = withoutMedia(block, values, gone);
+        const linked = readReuse(values, blockType);
+        for (const place of kept.removed) {
+          if (linkedSlotOfField(blockType, linked, place.field.split(".")[0]!)) continue;
+          leftOut.push({ place: `${block?.name ?? blockType}${where}: ${place.label}`, picture: place.id });
+        }
+        return kept.values as Record<string, unknown>;
+      };
+
       for (const draft of plan.drafts) {
         const rows = await tx
           .update(pageSections)
           .set({
-            draft: draft.draft,
+            draft: restorable(
+              typeOf.get(draft.sectionId) ?? "",
+              draft.draft,
+              placeOf((slot) => slot.kind === "existing" && slot.sectionId === draft.sectionId),
+            ),
             draftStyles: draft.draftStyles,
             draftAnimation: draft.draftAnimation,
             draftMotionConfig: draft.draftMotionConfig,
@@ -483,7 +546,7 @@ export async function applyRestorePlanIn(
             position: next,
             isPublished: false,
             published: emptyValues(block),
-            draft: entry.draft,
+            draft: restorable(entry.blockType, entry.draft, placeOf((slot) => slot.kind === "recreate" && slot.index === index)),
             draftStyles: entry.draftStyles,
             draftAnimation: entry.draftAnimation,
             draftMotionConfig: entry.draftMotionConfig,
@@ -523,7 +586,7 @@ export async function applyRestorePlanIn(
     }
   }
 
-  return { ok: true, recreated, updated };
+  return { ok: true, recreated, updated, leftOut };
 }
 
 /**
@@ -539,7 +602,12 @@ export async function applyRestorePlan(
   actor: RestoreActor = {},
 ): Promise<RestoreApplied> {
   try {
-    return await db.transaction(async (tx) => applyRestorePlanIn(tx, plan, actor));
+    return await db.transaction(async (tx) => {
+      // The page and its sections first, as every page-wide write takes them,
+      // so the pictures `applyRestorePlanIn` holds come after the rows.
+      await lockPageForWrite(tx, plan.pageId);
+      return applyRestorePlanIn(tx, plan, actor);
+    });
   } catch (error) {
     if (error instanceof UnownedSections) {
       return { ok: false, reason: "unowned_sections", sectionIds: error.sectionIds };
@@ -576,7 +644,7 @@ export async function applyRestorePlan(
  * is refused by the revision the restore bumped.
  */
 export type RestoreOutcome =
-  | { ok: true; pageId: number; plan: RestorePlan; recreated: number[]; updated: number[] }
+  | { ok: true; pageId: number; plan: RestorePlan; recreated: number[]; updated: number[]; leftOut: LeftOut[] }
   | {
       ok: false;
       reason: "missing" | "wrong_page" | "unowned_sections" | "unsupported" | "not_clean";
@@ -600,7 +668,7 @@ export async function restoreVersionToDraft(
   const record = read.record;
   if (record.pageId !== expectedPageId) return { ok: false, reason: "wrong_page" };
 
-  let outcome: { plan: RestorePlan; recreated: number[]; updated: number[] } | null = null;
+  let outcome: { plan: RestorePlan; recreated: number[]; updated: number[]; leftOut: LeftOut[] } | null = null;
 
   try {
     await db.transaction(async (tx) => {
@@ -677,7 +745,7 @@ export async function restoreVersionToDraft(
           );
       }
 
-      outcome = { plan, recreated: applied.recreated, updated: applied.updated };
+      outcome = { plan, recreated: applied.recreated, updated: applied.updated, leftOut: applied.leftOut };
     });
   } catch (error) {
     if (error instanceof RestoreStopped) return { ok: false, reason: error.reason };
@@ -685,7 +753,7 @@ export async function restoreVersionToDraft(
     throw error;
   }
 
-  const done = outcome as { plan: RestorePlan; recreated: number[]; updated: number[] } | null;
+  const done = outcome as { plan: RestorePlan; recreated: number[]; updated: number[]; leftOut: LeftOut[] } | null;
   if (!done) return { ok: false, reason: "not_clean" };
   return {
     ok: true,
@@ -693,5 +761,23 @@ export async function restoreVersionToDraft(
     plan: done.plan,
     recreated: done.recreated,
     updated: done.updated,
+    leftOut: done.leftOut,
   };
+}
+
+/**
+ * What a restore says about the pictures it left out (decision B) — nothing
+ * when there were none. It names every place (a section's field, a card's
+ * picture), because one picture in two places is two fields to fill again,
+ * and counts the pictures apart from the places: one picture used twice is
+ * one picture, not "pictures".
+ */
+export function leftOutSentence(leftOut: readonly LeftOut[]): string {
+  if (!leftOut.length) return "";
+  const places = [...new Set(leftOut.map((entry) => entry.place))];
+  const pictures = new Set(leftOut.map((entry) => entry.picture)).size;
+  const where = places.length === 1 ? `: ${places[0]}` : ` in ${places.length} places: ${places.join("; ")}`;
+  return pictures === 1
+    ? ` One picture this version used is no longer in the media library and was left out${where}. Choose another before publishing.`
+    : ` Pictures this version used are no longer in the media library and were left out${where}. Choose others before publishing.`;
 }

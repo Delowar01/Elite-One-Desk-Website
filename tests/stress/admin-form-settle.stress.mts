@@ -21,6 +21,10 @@
  *   F2  every question added on the FAQ screen does the same
  *   F3  the database holds every one of them, exactly once
  *   F4  no page errors
+ *   F5  every package created on the Packages screen lands on its own screen
+ *       — an action that answers with `redirect()`, whose next screen stalls
+ *       the same way (Batch 26) — stored exactly once
+ *   F6  every package deleted from its screen lands on the list, and is gone
  *
  *   STRESS_LOOPS=12 (saves per screen per server)
  */
@@ -41,7 +45,18 @@ const SETTLE_MS = 8_000;
 const say = (label: string, ok: boolean, detail = "") =>
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
 
-type Outcome = { users: number; faqs: number; stored: number; duplicates: number; errors: string[]; misses: string[] };
+type Outcome = {
+  users: number;
+  faqs: number;
+  stored: number;
+  duplicates: number;
+  creates: number;
+  deletes: number;
+  errors: string[];
+  misses: string[];
+  /** F5 and F6's own, so F1's detail stays about the forms that answer. */
+  unlanded: string[];
+};
 
 /** Waits, touching nothing, for the answer to be on screen and the button released. */
 async function settles(page: Page, confirmation: string): Promise<boolean> {
@@ -54,8 +69,13 @@ async function settles(page: Page, confirmation: string): Promise<boolean> {
   return shown && released;
 }
 
+/** Waits, touching nothing, for the browser to arrive where the action sent it. */
+async function lands(page: Page, where: (path: string) => boolean): Promise<boolean> {
+  return page.waitForURL((url) => where(url.pathname), { timeout: SETTLE_MS }).then(() => true, () => false);
+}
+
 async function worker(index: number): Promise<Outcome> {
-  const out: Outcome = { users: 0, faqs: 0, stored: 0, duplicates: 0, errors: [], misses: [] };
+  const out: Outcome = { users: 0, faqs: 0, stored: 0, duplicates: 0, creates: 0, deletes: 0, errors: [], misses: [], unlanded: [] };
   const browser: Browser = await launchChromium();
   const database = giveFresh(`form_settle_${index}`);
   const sql = connect(database);
@@ -73,6 +93,8 @@ async function worker(index: number): Promise<Outcome> {
       await context.addCookies([{ name: cookieName!, value: cookieValue!, domain: "127.0.0.1", path: "/" }]);
       const page = await context.newPage();
       page.on("pageerror", (error) => out.errors.push(error.message.slice(0, 160)));
+      // "Delete …? This cannot be undone." — answered yes, as the editor would.
+      page.on("dialog", (dialog) => void dialog.accept());
       return { context, page };
     };
 
@@ -108,6 +130,39 @@ async function worker(index: number): Promise<Outcome> {
         await context.close();
       }
 
+      // A create that redirects to the new package's screen, from cold; then,
+      // from cold again, its delete, which redirects to the list.
+      const slug = `settle-${index}-${round}`;
+      origin = await cold();
+      ({ context, page } = await open());
+      try {
+        await page.goto(`${origin}/admin/packages/new`, { waitUntil: "load" });
+        await page.locator("#titleEn").fill(`Settle ${index}-${round}`);
+        await page.locator("#slug").fill(slug);
+        await page.getByRole("button", { name: "Create package" }).click();
+        const landed = await lands(page, (path) => /^\/admin\/packages\/\d+$/.test(path));
+        const [made] = await sql<{ n: number }[]>`select count(*)::int as n from travel_packages where slug = ${slug}`;
+        if (landed && made!.n === 1) out.creates += 1;
+        else out.unlanded.push(`server ${index} round ${round}: the new package's screen never arrived (rows ${made!.n})`);
+      } finally {
+        await context.close();
+      }
+      const [row] = await sql<{ id: number }[]>`select id from travel_packages where slug = ${slug}`;
+      if (row) {
+        origin = await cold();
+        ({ context, page } = await open());
+        try {
+          await page.goto(`${origin}/admin/packages/${row.id}`, { waitUntil: "load" });
+          await page.getByRole("button", { name: "Delete package" }).click();
+          const landed = await lands(page, (path) => path === "/admin/packages");
+          const [left] = await sql<{ n: number }[]>`select count(*)::int as n from travel_packages where id = ${row.id}`;
+          if (landed && left!.n === 0) out.deletes += 1;
+          else out.unlanded.push(`server ${index} round ${round}: the list never arrived after the delete (rows ${left!.n})`);
+        } finally {
+          await context.close();
+        }
+      }
+
       const [users] = await sql<{ n: number }[]>`select count(*)::int as n from users where email = ${email}`;
       const [faqs] = await sql<{ n: number }[]>`select count(*)::int as n from faqs where question_en = ${question}`;
       if (users!.n === 1 && faqs!.n === 1) out.stored += 1;
@@ -123,9 +178,14 @@ async function worker(index: number): Promise<Outcome> {
 }
 
 const outcomes = await Promise.all(Array.from({ length: WORKERS }, (_, index) => worker(index)));
-const total = (key: "users" | "faqs" | "stored" | "duplicates") => outcomes.reduce((sum, outcome) => sum + outcome[key], 0);
+const total = (key: "users" | "faqs" | "stored" | "duplicates" | "creates" | "deletes") =>
+  outcomes.reduce((sum, outcome) => sum + outcome[key], 0);
 const misses = outcomes.flatMap((outcome) => outcome.misses);
 const errors = outcomes.flatMap((outcome) => outcome.errors);
+const unlanded = (what: string) => {
+  const lines = outcomes.flatMap((outcome) => outcome.unlanded).filter((line) => line.includes(what));
+  return lines.length ? ` · ${lines.slice(0, 3).join(" | ")}` : "";
+};
 const runs = WORKERS * LOOPS;
 
 say(
@@ -136,3 +196,13 @@ say(
 say("F2. every question added on the FAQ screen does the same", total("faqs") === runs, `${total("faqs")}/${runs}`);
 say("F3. the database holds every account and question, exactly once", total("stored") === runs && total("duplicates") === 0, `${total("stored")}/${runs}`);
 say("F4. no page errors", errors.length === 0, errors.slice(0, 3).join(" | "));
+say(
+  "F5. every package created on the Packages screen lands on its own screen, untouched, each from cold — an action that redirects (Batch 26)",
+  total("creates") === runs,
+  `${total("creates")}/${runs}${unlanded("new package")}`,
+);
+say(
+  "F6. every package deleted from its screen lands on the list, untouched, and is gone",
+  total("deletes") === runs,
+  `${total("deletes")}/${runs}${unlanded("after the delete")}`,
+);

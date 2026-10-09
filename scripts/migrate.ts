@@ -37,10 +37,20 @@ type Db = ReturnType<typeof drizzle>;
  * Safe to run against a database it has already run against: `backfillItemIds`
  * returns `null` for a section whose rows all carry a well-formed, unique id,
  * so the second run reads everything and writes nothing. Safe to interrupt,
- * too — each section is its own statement, so a half-finished run is simply
+ * too — each section is its own transaction, so a half-finished run is simply
  * finished by the next one. That is why there is no wrapping transaction: the
  * work is idempotent, and holding write locks across the whole table while the
  * previous release is still serving buys nothing.
+ *
+ * Each section is stamped from what it holds **under its own row lock**, read
+ * again just before the write (Batch 26). The list above it is read ahead, in
+ * pages of 500, and an editor of the release still serving can save a section
+ * between that read and its write: stamping the list's copy would put the
+ * older document back over the save — losing the edit, and bringing back any
+ * picture the save had removed, which the library may delete meanwhile. The
+ * release still serving has no revision column to compare against, so the row
+ * is re-read under `FOR NO KEY UPDATE` instead; a save that comes after waits
+ * for one row's stamp.
  *
  * `updated_at` and `revision` are deliberately left alone. Nobody edited these
  * sections; stamping them would make the admin's "last changed" column lie.
@@ -74,15 +84,25 @@ async function backfillRowIds(db: Db): Promise<void> {
       after = row.id;
       scanned += 1;
 
-      const published = backfillItemIds(row.blockType, row.published);
-      const draft = backfillItemIds(row.blockType, row.draft);
-      if (!published && !draft) continue;
+      if (!backfillItemIds(row.blockType, row.published) && !backfillItemIds(row.blockType, row.draft)) continue;
 
-      await db
-        .update(pageSections)
-        .set({ ...(published ? { published } : {}), ...(draft ? { draft } : {}) })
-        .where(eq(pageSections.id, row.id));
-      stamped += 1;
+      const wrote = await db.transaction(async (tx) => {
+        const [now] = await tx
+          .select({ blockType: pageSections.blockType, published: pageSections.published, draft: pageSections.draft })
+          .from(pageSections)
+          .where(eq(pageSections.id, row.id))
+          .for("no key update");
+        if (!now) return false;
+        const published = backfillItemIds(now.blockType, now.published);
+        const draft = backfillItemIds(now.blockType, now.draft);
+        if (!published && !draft) return false;
+        await tx
+          .update(pageSections)
+          .set({ ...(published ? { published } : {}), ...(draft ? { draft } : {}) })
+          .where(eq(pageSections.id, row.id));
+        return true;
+      });
+      if (wrote) stamped += 1;
     }
   }
 

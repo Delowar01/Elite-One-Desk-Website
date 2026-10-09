@@ -6,7 +6,9 @@ import { db } from "@/lib/db";
 import type { Executor } from "@/lib/db/revision";
 import { reusableComponentVersions, reusableComponents } from "@/lib/db/schema";
 
-import { isReusableKind } from "./kinds";
+import { PicturesGone, holdMedia, holdPictures, picturesGone, type Transaction } from "@/lib/media/hold";
+import { componentMediaIds, mediaPlaces, picturesGoneMessage, withoutMedia, type LeftOut } from "../media-refs";
+import { isReusableKind, kindDef } from "./kinds";
 import { componentValues, type ComponentRow } from "./store";
 import { componentUsage, pageVersionReferences } from "./usage";
 
@@ -49,6 +51,8 @@ export const COMPONENT_MESSAGES = {
   nothingToDiscard: "There is no draft to discard.",
   missingVersion: "That version is no longer kept.",
   sameAsLive: "That version is what is published now, so there is nothing to restore.",
+  sameAsLiveWithoutPictures:
+    "Without the pictures that are no longer in the media library, that version is what is published now, so there is nothing to restore.",
   archived: "Archived components cannot be edited. Restore it from the archive first.",
   inUse: (pages: number, instances: number) =>
     `It is still used on ${pages} ${pages === 1 ? "page" : "pages"} (${instances} ` +
@@ -231,21 +235,36 @@ export async function createComponent(input: {
   const values = componentValues(input.kind, input.values ?? {});
   if (!values) return failure("invalid", COMPONENT_MESSAGES.invalidValues);
   const now = new Date();
-  const [row] = await db
-    .insert(reusableComponents)
-    .values({
-      kind: input.kind,
-      name,
-      published: input.publish ? values : null,
-      draft: input.publish ? null : values,
-      publishedVersion: input.publish ? 1 : 0,
-      publishedAt: input.publish ? now : null,
-      publishedBy: input.publish ? input.actor.userId : null,
-      createdBy: input.actor.userId,
-      updatedBy: input.actor.userId,
+  /**
+   * The row, then its pictures, held until it commits (Batch 26,
+   * `lib/media/hold.ts`). Every picture is new to a new component — whether
+   * the screen chose it or it was read from a section a moment ago — so one
+   * that has left the library refuses the creation by name.
+   */
+  const created = await db
+    .transaction(async (tx) => {
+      const [row] = await tx
+        .insert(reusableComponents)
+        .values({
+          kind: input.kind,
+          name,
+          published: input.publish ? values : null,
+          draft: input.publish ? null : values,
+          publishedVersion: input.publish ? 1 : 0,
+          publishedAt: input.publish ? now : null,
+          publishedBy: input.publish ? input.actor.userId : null,
+          createdBy: input.actor.userId,
+          updatedBy: input.actor.userId,
+        })
+        .returning();
+      await holdPictures(tx, componentMediaIds(input.kind, values));
+      return { row: row! };
     })
-    .returning();
-  return { ok: true, component: toDetail(row!) };
+    .catch(picturesGone);
+  if ("gone" in created) {
+    return failure("invalid", picturesGoneMessage(mediaPlaces(kindDef(input.kind)?.definition, values), created.gone));
+  }
+  return { ok: true, component: toDetail(created.row) };
 }
 
 /**
@@ -268,7 +287,24 @@ export async function saveComponentDraft(input: {
   const values = componentValues(current.kind, input.values);
   if (!values) return failure("invalid", COMPONENT_MESSAGES.invalidValues);
   const draft = current.published && sameContent(values, current.published) ? null : values;
-  const result = await guarded(db, input.id, input.expectedRevision, { draft, updatedBy: input.actor.userId });
+  // The row, then the pictures the draft names (Batch 26, `lib/media/hold.ts`):
+  // one the component already held is kept as it was; one this draft brings
+  // in that has left the library refuses the save.
+  const result = await db
+    .transaction(async (tx) => {
+      const saved = await guarded(tx, input.id, input.expectedRevision, { draft, updatedBy: input.actor.userId });
+      if (saved.ok) {
+        await holdPictures(tx, componentMediaIds(current.kind, values), [
+          ...componentMediaIds(current.kind, current.draft),
+          ...componentMediaIds(current.kind, current.published),
+        ]);
+      }
+      return saved;
+    })
+    .catch(picturesGone);
+  if ("gone" in result) {
+    return failure("invalid", picturesGoneMessage(mediaPlaces(kindDef(current.kind)?.definition, values), result.gone));
+  }
   if (!result.ok) return guardFailure(result.reason);
   return { ok: true, component: toDetail(result.row) };
 }
@@ -340,6 +376,15 @@ export async function publishComponent(input: {
         updatedBy: input.actor.userId,
       });
       if (!result.ok) throw new Stop(result.reason, result.reason === "missing" ? COMPONENT_MESSAGES.missing : COMPONENT_MESSAGES.conflict);
+      // The pictures going live, held until this commits (Batch 26). One that
+      // is live already is kept as it is; one the draft would newly put live
+      // that has left the library refuses the publication by its field.
+      try {
+        await holdPictures(tx, componentMediaIds(row.kind, values), componentMediaIds(row.kind, row.published));
+      } catch (error) {
+        if (!(error instanceof PicturesGone)) throw error;
+        throw new Stop("invalid", picturesGoneMessage(mediaPlaces(kindDef(row.kind)?.definition, values), error.ids, "publish"));
+      }
       await pruneVersionsIn(tx, row.id);
       return { component: toDetail(result.row), previousVersion: row.publishedVersion };
     });
@@ -372,7 +417,7 @@ export async function restoreComponentVersion(input: {
   versionId: number;
   expectedRevision: number;
   actor: Actor;
-}): Promise<ComponentResult<{ component: ComponentDetail; version: number }>> {
+}): Promise<ComponentResult<{ component: ComponentDetail; version: number; leftOut: LeftOut[] }>> {
   if (!validRevision(input.expectedRevision)) return failure("conflict", COMPONENT_MESSAGES.conflict);
   const current = await getComponent(input.id);
   if (!current) return failure("missing", COMPONENT_MESSAGES.missing);
@@ -394,9 +439,42 @@ export async function restoreComponentVersion(input: {
   if (current.published && sameContent(values, current.published)) {
     return failure("nothing", COMPONENT_MESSAGES.sameAsLive);
   }
-  const result = await guarded(db, input.id, input.expectedRevision, { draft: values, updatedBy: input.actor.userId });
-  if (!result.ok) return guardFailure(result.reason);
-  return { ok: true, component: toDetail(result.row), version: version.version };
+  /**
+   * Decision B (docs/admin/seo-and-share-images.md B.6), held (Batch 26,
+   * `lib/media/hold.ts`): the component's row, then the pictures the version
+   * names, `FOR KEY SHARE` until this commits. A version is history, which the
+   * media delete does not count, so a picture it names may have left the
+   * library since: it is left out — the field emptied — and named, and the
+   * rest comes back. One still there cannot be deleted before this commits.
+   */
+  const definition = kindDef(current.kind)?.definition;
+  const restored = await db.transaction(async (tx: Transaction) => {
+    const [row] = await tx
+      .select({ revision: reusableComponents.revision, published: reusableComponents.published })
+      .from(reusableComponents)
+      .where(eq(reusableComponents.id, input.id))
+      .for("no key update");
+    const held = await holdMedia(tx, componentMediaIds(current.kind, values));
+    const kept = withoutMedia(definition, values, new Set(held.missing));
+    // With what has gone left out, the version may be exactly what is live —
+    // read as every screen reads it, through the same validator the version
+    // went through: that is the answer the exact match above gives, nothing
+    // to restore, rather than a draft identical to the live content that
+    // would put "Draft pending" on a component nobody changed and arm
+    // Publish for nothing. A pending draft is left as it is, as there.
+    const live = row?.published ? componentValues(current.kind, row.published) : null;
+    if (kept.removed.length && row && row.revision === input.expectedRevision && live && sameContent(kept.values, live)) {
+      return { nothing: true as const };
+    }
+    const result = await guarded(tx, input.id, input.expectedRevision, {
+      draft: kept.values as Record<string, unknown>,
+      updatedBy: input.actor.userId,
+    });
+    return { nothing: false as const, result, leftOut: kept.removed.map((place) => ({ place: place.label, picture: place.id })) };
+  });
+  if (restored.nothing) return failure("nothing", COMPONENT_MESSAGES.sameAsLiveWithoutPictures);
+  if (!restored.result.ok) return guardFailure(restored.result.reason);
+  return { ok: true, component: toDetail(restored.result.row), version: version.version, leftOut: restored.leftOut };
 }
 
 /** Admin metadata only: the public text is the component's values, never its name. */

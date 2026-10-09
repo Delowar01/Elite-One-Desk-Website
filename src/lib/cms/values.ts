@@ -1,6 +1,7 @@
 import type { Locale } from "@/lib/i18n/config";
 import { pick } from "@/lib/i18n/config";
 import { ITEM_ID_KEY } from "./item-id";
+import { pictureId, pictureIdOfDigits } from "./media-id";
 import type { BlockDef, FieldDef } from "./blocks";
 
 export type LocalisedValue = { en: string; ar: string };
@@ -32,10 +33,9 @@ export function bool(values: BlockValues, name: string, fallback = false): boole
   return typeof raw === "boolean" ? raw : fallback;
 }
 
+/** A top-level `media` field, read as the hold and the media delete read it (`media-id.ts`). */
 export function mediaId(values: BlockValues, name: string): number | null {
-  const raw = values?.[name];
-  const id = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
-  return Number.isFinite(id) && id > 0 ? id : null;
+  return pictureId(values?.[name]);
 }
 
 export type BlockItem = Record<string, string>;
@@ -70,7 +70,8 @@ export function items(
         // back through `itemMediaId` rather than widening the row type for the
         // one field that is not text.
         if (field.type === "media") {
-          out[field.name] = typeof value === "number" && value > 0 ? String(value) : "";
+          const id = pictureId(value);
+          out[field.name] = id ? String(id) : "";
           continue;
         }
         out[field.name] = field.localised && isLocalised(value)
@@ -84,10 +85,9 @@ export function items(
     .filter((row): row is BlockItem => Boolean(row && (!primary || row[primary]?.trim())));
 }
 
-/** A repeatable row's `media` field, read back as a library id. */
+/** A repeatable row's `media` field, read back as a library id (`items` carries it as its digits). */
 export function itemMediaId(row: BlockItem, name: string): number | null {
-  const id = Number.parseInt(row[name] ?? "", 10);
-  return Number.isFinite(id) && id > 0 ? id : null;
+  return pictureIdOfDigits(row[name]);
 }
 
 /** Empty shell for a new section, so the admin form always has every key. */

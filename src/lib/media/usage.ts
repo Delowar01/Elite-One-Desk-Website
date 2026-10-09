@@ -1,6 +1,6 @@
 import "server-only";
 
-import { eq, or, sql } from "drizzle-orm";
+import { eq, or, sql, type SQL } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import type { Executor } from "@/lib/db/revision";
@@ -19,6 +19,58 @@ import {
 } from "@/lib/db/schema";
 
 export type MediaUse = { label: string; where: string; href: string };
+
+/**
+ * The picture ids a block's stored values can hold, as rows of `image_id`: a
+ * top-level value, and a value in a row of a top-level list — where Quick
+ * Links keeps its cards' pictures (Batch 26; until then the guard read the top
+ * level only, so a card's picture could be deleted while the card showed it,
+ * Batch 25 A.14 X1). Searched by value, so a block that gains a picture field
+ * is covered without anyone coming back here; that also counts a `limit` of 6
+ * as picture 6 (X2), which errs on the side of keeping a picture. It is a
+ * superset of every value the hold and the renderer read as a picture
+ * (`media-id.ts`) and it must stay one: a picture a writer holds, or a page
+ * draws, that this cannot see would be deletable while it is shown. Those
+ * readers take a JSON number after JavaScript has parsed it as a double, so
+ * this counts every number whose value as a double is whole — `12`, `12.0`
+ * and even `12.0000000000000001`, which a hand-made row could hold and every
+ * reader takes for 12 — compared as `float8`, the same double. Text never
+ * counts: a Statistics figure "15" is not picture 15. A document that is not
+ * an object names nothing, rather than failing every delete in the library.
+ *
+ * Two `jsonb_path_query` calls rather than nested `jsonb_each` /
+ * `jsonb_array_elements`: the planner estimates every set-returning function
+ * at a hundred rows or more, and nesting three of them multiplied the
+ * estimate until Postgres JIT-compiled the media library's count — about a
+ * second on every render of the library and every delete, on a few hundred
+ * sections. The cast sits inside a `case`, never beside a filter: a caller's
+ * `image_id = $1` is pushed down into these selects, and Postgres orders the
+ * conditions it ends up with by cost, not as written — a `case` is evaluated
+ * in order, and the cast to `float8` sits in a `case` of its own, reached only
+ * by text the outer test has already shown to be a decimal number from 0.1 up
+ * to ten digits. Below 0.1 a number is never a whole double, so never a
+ * picture — and far below it, a hand-written `1e-400` is beyond a double
+ * altogether, where the cast would fail every delete in the library.
+ */
+const pictureId = (value: SQL): SQL => sql`case
+  when jsonb_typeof(${value}) = 'number' and (${value} #>> '{}') ~ '^[0-9]{1,10}([.][0-9]+)?$' and (${value} #>> '{}') !~ '^0[.]0' then
+    case when (${value} #>> '{}')::float8 = floor((${value} #>> '{}')::float8) then (${value} #>> '{}')::float8::bigint end
+end`;
+const objectOrEmpty = (doc: SQL | unknown): SQL => sql`case when jsonb_typeof(${doc}) = 'object' then ${doc} else '{}'::jsonb end`;
+export const jsonbPictureIds = (doc: SQL | unknown): SQL => sql`(
+  select image_id from (
+    select ${pictureId(sql`v`)} as image_id
+      from jsonb_path_query(${objectOrEmpty(doc)}, 'strict $.*') v
+    union all
+    select ${pictureId(sql`v`)}
+      from jsonb_path_query(${objectOrEmpty(doc)}, 'strict $.* ? (@.type() == "array")[*] ? (@.type() == "object").*') v
+  ) ids
+   where image_id is not null
+)`;
+
+/** Whether a block's stored values name picture `id` anywhere `jsonbPictureIds` looks. */
+const namesPicture = (doc: SQL | unknown, id: number): SQL =>
+  sql`exists (select 1 from ${jsonbPictureIds(doc)} named where named.image_id = ${id})`;
 
 /**
  * Where a picture is placed.
@@ -59,14 +111,7 @@ export async function mediaUsage(id: number, on: Executor = db): Promise<MediaUs
         })
         .from(pageSections)
         .innerJoin(pages, eq(pages.id, pageSections.pageId))
-        .where(
-          sql`
-            exists (select 1 from jsonb_each(${pageSections.published}) e
-                    where e.value = to_jsonb(${id}::int))
-            or exists (select 1 from jsonb_each(coalesce(${pageSections.draft}, '{}'::jsonb)) e
-                       where e.value = to_jsonb(${id}::int))
-          `,
-        ),
+        .where(or(namesPicture(pageSections.published, id), namesPicture(pageSections.draft, id))),
       on
         .select({ id: serviceCategories.id, title: serviceCategories.titleEn })
         .from(serviceCategories)
@@ -102,14 +147,7 @@ export async function mediaUsage(id: number, on: Executor = db): Promise<MediaUs
       on
         .select({ id: reusableComponents.id, name: reusableComponents.name })
         .from(reusableComponents)
-        .where(
-          sql`
-            exists (select 1 from jsonb_each(coalesce(${reusableComponents.published}, '{}'::jsonb)) e
-                    where e.value = to_jsonb(${id}::int))
-            or exists (select 1 from jsonb_each(coalesce(${reusableComponents.draft}, '{}'::jsonb)) e
-                       where e.value = to_jsonb(${id}::int))
-          `,
-        ),
+        .where(or(namesPicture(reusableComponents.published, id), namesPicture(reusableComponents.draft, id))),
       /**
        * A dynamic route's draft (Batch 22): a picture a category's, a
        * service's, a package's or a destination's page — or a package's card

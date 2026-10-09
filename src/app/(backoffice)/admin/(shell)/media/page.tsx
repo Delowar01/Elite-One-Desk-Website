@@ -16,6 +16,7 @@ import {
   videos,
 } from "@/lib/db/schema";
 import { MEDIA_FOLDERS, isMediaFolder } from "@/lib/media/folders";
+import { jsonbPictureIds } from "@/lib/media/usage";
 import { routeDraftMedia } from "@/lib/routes/media-usage";
 import { seoMediaUsage } from "@/lib/seo-targets";
 import { LibraryGrid, UploadPanel, type LibraryItem } from "./media-client";
@@ -42,15 +43,9 @@ export default async function MediaPage({
   const [usageRows] = await Promise.all([
     db.execute<{ image_id: number; n: number }>(sql`
       select image_id, count(*)::int as n from (
-        select (e.value #>> '{}')::int as image_id
-          from ${pageSections},
-               lateral jsonb_each(${pageSections.published}) e
-         where jsonb_typeof(e.value) = 'number'
+        select named.image_id from ${pageSections}, lateral ${jsonbPictureIds(pageSections.published)} named
         union all
-        select (e.value #>> '{}')::int
-          from ${pageSections},
-               lateral jsonb_each(coalesce(${pageSections.draft}, '{}'::jsonb)) e
-         where jsonb_typeof(e.value) = 'number'
+        select named.image_id from ${pageSections}, lateral ${jsonbPictureIds(pageSections.draft)} named
         union all select ${serviceCategories.imageId} from ${serviceCategories} where ${serviceCategories.imageId} is not null
         union all select ${services.imageId} from ${services} where ${services.imageId} is not null
         union all select ${travelPackages.imageId} from ${travelPackages} where ${travelPackages.imageId} is not null
@@ -58,15 +53,9 @@ export default async function MediaPage({
         union all select ${videos.thumbnailId} from ${videos} where ${videos.thumbnailId} is not null
         union all select ${testimonials.imageId} from ${testimonials} where ${testimonials.imageId} is not null
         union all
-        select (e.value #>> '{}')::int
-          from ${reusableComponents},
-               lateral jsonb_each(coalesce(${reusableComponents.published}, '{}'::jsonb)) e
-         where jsonb_typeof(e.value) = 'number'
+        select named.image_id from ${reusableComponents}, lateral ${jsonbPictureIds(reusableComponents.published)} named
         union all
-        select (e.value #>> '{}')::int
-          from ${reusableComponents},
-               lateral jsonb_each(coalesce(${reusableComponents.draft}, '{}'::jsonb)) e
-         where jsonb_typeof(e.value) = 'number'
+        select named.image_id from ${reusableComponents}, lateral ${jsonbPictureIds(reusableComponents.draft)} named
       ) placements
       where image_id is not null
       group by image_id

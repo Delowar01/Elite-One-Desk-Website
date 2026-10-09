@@ -319,3 +319,60 @@ the next item rows held back 600 ms by a proxy, the vendored chunk mismatched
 the page works. The fix is a newer vendored React, through Next.js 16 or a
 patch to the vendored file. Both are dependency changes, outside a hardening
 batch.
+
+### The hydration matrix, and what Batch 26 found with it
+
+`tests/browser/matrix/hydration.matrix.mts` measures the condition instead of
+waiting for a probe to trip on it. It is not a probe — the runner never runs
+it, and it prints no `PASS`/`FAIL` — but one `matrix canvas` line per error
+React recovered from (React's own report, with its component stack, through
+`onRecovered` in `evidence.ts`), one `matrix step` line per step and a
+`matrix summary`: canvas documents counted from the browser's own document
+requests, occurrences, paths and stacks, whether Layers still selects after
+every load, whether anything was written that nobody asked for, whether a
+save was lost (the last value typed against the one stored), Server Action
+failures, 5xx answers, failure lines in the server's output, and whether the
+server stayed up.
+
+```sh
+MATRIX_CLASS=normal|moderate|heavy MATRIX_MODE=loads|redraws|visits \
+MATRIX_NETWORK=none|broadband|mobile|slow MATRIX_LOADS=40 \
+  node --import tsx tests/browser/matrix/hydration.matrix.mts
+```
+
+- **Modes:** `loads` opens the Visual Editor on every kind of route in turn
+  and selects from Layers; `redraws` edits one route and saves, the canvas
+  redrawn after every save; `visits` is a signed-out visitor on the public
+  pages the editor publishes.
+- **Classes:** `normal` — nothing else; `moderate` — a second editor saving
+  and redrawing another route and three visitors reading public pages the
+  whole time; `heavy` — four busy loops with the server at the lowest CPU
+  priority (synthetic: the Batch 25 reproduction).
+- **Networks** (Chromium's own emulation): `broadband` 40 ms / 20 Mbit/s,
+  `mobile` 80 ms / 5 Mbit/s, `slow` 150 ms / 1.6 Mbit/s — the throttling
+  Lighthouse applies to its mobile runs.
+
+Batch 26 ran it on the release candidate. #418 appeared — with the Batch 25
+signature, a services list's `<ul>` under `Reveal` (minified `p`:
+`ul ← div ← p ← div ← div ← div ← section`, and on `/services` the same a few
+levels deeper), and on public pages also in a place of its own, the footer's
+`ul ← div ← footer ← body ← html` — in the `heavy`
+class, in the `moderate` class with no throttling (the second editor redrawing
+`/services`), and for signed-out visitors on the `slow` network with nothing
+else running. No save was ever lost, nothing was written that nobody asked
+for, Layers always selected, no Server Action failed, nothing answered 5xx
+and the server never restarted. The numbers and the release decision they
+lead to are in `docs/release/release-hardening-batch-26.md` §5.
+
+Batch 26 changed three probes and added none. `seo-media` S8 fetches the
+share image at the address a page now names for it, as a crawler would.
+`route-services` and `route-packages` wait for each screen action's answer — a create's or a
+delete's redirect, "Service saved." after a move, the canvas drawn again after
+a publication — before they read a public page, because the catalogue's cache
+is dropped only after the action has logged itself. Waiting for the redirect
+uncovered an admin form whose redirect React could leave uncommitted — see
+`useSettledActionState` and the `admin-form-settle` stress script's F5/F6 —
+and `route-packages` now double-clicks a card's title with
+`clickCanvasNode(…, { double: true })`: Playwright's own `dblclick()` measured
+while the canvas was still moving and landed on the card's summary (release
+doc §6).

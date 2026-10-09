@@ -384,17 +384,18 @@ describe("25 · F5: the check is the server's (§20, §21)", () => {
       insert into seo_metadata (entity_type, entity_key, entity_id, og_image_id)
       values ('service', 'travel-tourism/airport-transfer', ${service!.id}, ${shown.id})`;
     await sql`insert into seo_metadata (entity_type, entity_key) values ('service', 'business-setup/airport-transfer')`;
-    // The Services form's move, held open — with the site's settings, which the
-    // delete reads straight after the SEO rows, so it stops there.
+    // A move of the record, held open — with the site's settings, which the
+    // delete reads straight after the SEO rows, so it stops there. It leaves
+    // the row that names the picture where it is (bound by id, it stays the
+    // service's): since Batch 26 a delete takes the rows naming its picture
+    // first, without waiting, so a move holding that row is refused at once
+    // (media-references.test.ts) and never reaches the count this is about.
     const move = holdLock(async (tx) => {
       await tx`lock table site_settings in access exclusive mode`;
       await tx`update services set category_id = ${ids["category/business-setup"]!}, subcategory_id = null where id = ${service!.id}`;
       await tx`
         update seo_metadata set entity_id = 0, entity_key = '~' || id
          where entity_type = 'service' and entity_key = 'business-setup/airport-transfer'`;
-      await tx`
-        update seo_metadata set entity_key = 'business-setup/airport-transfer'
-         where entity_type = 'service' and entity_id = ${service!.id}`;
     });
     await move.held;
     const deleting = deleteMedia(shown.id);

@@ -17,8 +17,10 @@
  * has a draft form. Restoring them would take effect the moment the row was
  * written, so a restore could not be previewed — and a restore that goes live
  * on click is the most dangerous button a CMS can have. Media is referenced by
- * id, never by bytes; the library's own delete guard (`lib/media/usage.ts`)
- * is what keeps those ids resolvable.
+ * id, never by bytes. The library's delete guard (`lib/media/usage.ts`) does
+ * not count history (decision B, docs/admin/seo-and-share-images.md B.6), so a
+ * picture a snapshot names may have left the library since: a restore leaves
+ * it out and says so (`lib/versions.ts`, Batch 26).
  *
  * A version row is written by every path that changes live section content —
  * publishing one section, and publishing a page's saved changes — always as

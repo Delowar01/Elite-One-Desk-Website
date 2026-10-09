@@ -10,19 +10,32 @@
  * show that a change is live at the next request with nothing refreshed.
  */
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { after, before, describe, test } from "node:test";
 
+import sharp from "sharp";
+
 import { callAction } from "./helpers/action";
+import { REPO_ROOT } from "./helpers/env";
 import { giveFresh } from "./helpers/fixtures";
 import { fetchHead, jsonLdOf, type Head } from "./helpers/head";
 import { formContaining, get, submitForm } from "./helpers/http";
 import { connect, dropDatabase, type Sql } from "./helpers/pg";
+import { decidingRule, robotsAllows } from "./helpers/robots";
 import { BUILD_HINT, isBuilt, startServer, type Server } from "./helpers/server";
 import { openSeoForm, withSeoChanges } from "./helpers/seo-form";
 import { signIn, type TestSession } from "./helpers/session";
 
 const PORT = 3513;
 const SEO_ACTIONS = "app/(backoffice)/admin/(shell)/seo/actions.ts";
+/** Where the test servers keep uploads (`helpers/env.ts`) — shared, so every name here is this run's own. */
+const UPLOADS = path.join(REPO_ROOT, ".data", "test-uploads");
+const RUN = randomBytes(3).toString("hex");
+/** A picture the page `/seo-crawl` shares, with its files on disk: the one a crawler is sent to fetch (Batch 26). */
+const CRAWL = `seo-crawl-${RUN}`;
+const crawlFiles: string[] = [];
 
 const SITE_EN = "Elite One Desk";
 const SITE_AR = "إيليت ون ديسك";
@@ -93,6 +106,8 @@ before(async () => {
   };
   await page("seo-english-only", "English only", true);
   await page("seo-hidden", "SEO hidden page", false);
+  // Written by hand, as a row from before the rule could be: addresses the site answers itself.
+  for (const slug of ["ar", "en", "monitoring"]) await page(slug, `A page called ${slug}`, true);
 
   await record("page", "about", ids["page/about"]!, {
     title_en: "About our desk",
@@ -125,6 +140,24 @@ before(async () => {
   // As the previous release writes a row: by address, bound to nothing.
   await record("category", "iqama-services", null, { title_en: "Iqama, by address" });
 
+  // A share image a crawler is sent to fetch (Batch 26): a real picture, with
+  // its original and its renditions on disk, as an upload leaves them.
+  mkdirSync(UPLOADS, { recursive: true });
+  const original = await sharp({ create: { width: 2400, height: 1260, channels: 3, background: { r: 20, g: 90, b: 160 } } })
+    .jpeg()
+    .toBuffer();
+  const write = (name: string, bytes: Buffer) => {
+    writeFileSync(path.join(UPLOADS, name), bytes);
+    crawlFiles.push(name);
+  };
+  write(`${CRAWL}.jpg`, original);
+  for (const width of [400, 800, 1600]) write(`${CRAWL}@${width}.webp`, await sharp(original).resize({ width }).webp().toBuffer());
+  write(`${CRAWL}-vector.svg`, Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>'));
+  await picture(`${CRAWL}.jpg`, "image/jpeg", 2400, 1260, [400, 800, 1600], "A picture to share");
+  await picture(`${CRAWL}-vector.svg`, "image/svg+xml", 10, 10, []);
+  await page("seo-crawl", "Crawl", true);
+  await record("page", "seo-crawl", ids["page/seo-crawl"]!, { og_image_id: pictures[`${CRAWL}.jpg`]! });
+
   server = await startServer(database, PORT);
   site = new URL((await en("/")).canonical ?? "").origin;
   assert.ok(site, "the homepage declares no canonical");
@@ -134,6 +167,7 @@ after(async () => {
   await server?.stop();
   await sql?.end({ timeout: 5 });
   if (database) dropDatabase(database);
+  for (const name of crawlFiles) rmSync(path.join(UPLOADS, name), { force: true });
 });
 
 /**
@@ -169,6 +203,13 @@ describe("25 · each page in each language: the record, then its own words, then
     assert.deepEqual(arabic.og["og:locale:alternate"], ["en_US"]);
     assert.deepEqual(english.og["og:locale"], ["en_US"]);
     assert.deepEqual(english.og["og:locale:alternate"], ["ar_SA"]);
+    // The rest of the card (Batch 26 §13): its kind, the site's name in the page's language, X's description, and no
+    // `twitter:site` while the site default handle is empty.
+    assert.deepEqual(english.og["og:type"], ["website"]);
+    assert.deepEqual(english.og["og:site_name"], ["Elite One Desk"]);
+    assert.deepEqual(arabic.og["og:site_name"], ["إيليت ون ديسك"]);
+    assert.equal(english.twitter["twitter:description"], "Who we are and how we work.");
+    assert.equal(english.twitter["twitter:site"], undefined);
   });
 
   test("a category: its Arabic record and Arabic share title in Arabic; in English, its own title and words", async () => {
@@ -287,7 +328,8 @@ describe("25 · the share image (B.4, B.6)", () => {
   test("the record's picture at its 1600 rendition, its real size and its alt text in each language — one picture for both editions", async () => {
     const english = await en("/about");
     const arabic = await ar("/about");
-    const url = `${site}/media/share-wide@1600.webp`;
+    // At the address crawlers may fetch: the rendition, under `/media/share/` (Batch 26).
+    const url = `${site}/media/share/share-wide.webp`;
     for (const [head, alt] of [[english, "A wide share picture"], [arabic, "صورة مشاركة عريضة"]] as const) {
       assert.deepEqual(head.og["og:image"], [url]);
       assert.deepEqual(head.og["og:image:width"], ["1600"]);
@@ -296,6 +338,78 @@ describe("25 · the share image (B.4, B.6)", () => {
       assert.equal(head.twitter["twitter:card"], "summary_large_image");
       assert.equal(head.twitter["twitter:image"], url);
     }
+  });
+
+  test("a link-preview crawler may fetch the exact picture a page names, by robots.txt as served — and nothing but the rendition is there (Batch 26)", async () => {
+    const english = await en("/seo-crawl");
+    const arabic = await ar("/seo-crawl");
+    const url = english.og["og:image"]?.[0] ?? "";
+    assert.equal(new URL(url).pathname, `/media/share/${CRAWL}.webp`);
+    assert.deepEqual(arabic.og["og:image"], [url], "one picture for both editions");
+    assert.equal(english.twitter["twitter:image"], url);
+
+    const robots = (await get(server.origin, "/robots.txt")).html;
+    for (const agent of ["Twitterbot", "facebookexternalhit", "LinkedInBot", "Slackbot", "WhatsApp", "Discordbot", "Googlebot", "*"]) {
+      assert.ok(robotsAllows(robots, agent, new URL(url).pathname), `${agent} may not fetch ${url}`);
+      assert.deepEqual(decidingRule(robots, agent, new URL(url).pathname), { allow: true, pattern: "/media/share/" });
+      // Every other rendition stays out; the original is as reachable as it was.
+      for (const width of [400, 800, 1600]) assert.ok(!robotsAllows(robots, agent, `/media/${CRAWL}@${width}.webp`), `${agent}: @${width}`);
+      assert.ok(robotsAllows(robots, agent, `/media/${CRAWL}.jpg`), `${agent}: the original`);
+    }
+
+    // Fetched as a crawler does: no session, its own user agent, from the address as named.
+    const fetched = await fetch(new URL(new URL(url).pathname, server.origin), { headers: { "user-agent": "Twitterbot/1.0" } });
+    assert.equal(fetched.status, 200);
+    assert.equal(fetched.headers.get("content-type"), "image/webp");
+    assert.equal(fetched.headers.get("x-content-type-options"), "nosniff");
+    assert.match(fetched.headers.get("cache-control") ?? "", /public/);
+    const bytes = Buffer.from(await fetched.arrayBuffer());
+    assert.ok(bytes.equals(readFileSync(path.join(UPLOADS, `${CRAWL}@1600.webp`))), "not the 1600 rendition");
+    const size = await sharp(bytes).metadata();
+    assert.equal(size.width, 1600);
+    assert.deepEqual(english.og["og:image:width"], ["1600"]);
+    assert.deepEqual(english.og["og:image:height"], [String(size.height)]);
+
+    // The share address names a rendition and nothing else.
+    for (const refused of [
+      `/media/share/${CRAWL}.jpg`, // an original's own name
+      `/media/share/${CRAWL}-vector.webp`, // an SVG: it has no rendition
+      `/media/share/${CRAWL}@1600.webp`,
+      `/media/share/..%2F${CRAWL}.webp`,
+      `/media/share/.${CRAWL}.webp`,
+      `/media/share/x/${CRAWL}.webp`,
+      `/media/share/`,
+    ]) {
+      const answer = await fetch(new URL(refused, server.origin));
+      await answer.arrayBuffer();
+      assert.equal(answer.status, 404, refused);
+    }
+    // The originals and the other renditions are served exactly as before.
+    const original = await fetch(new URL(`/media/${CRAWL}.jpg`, server.origin));
+    assert.equal(original.status, 200);
+    assert.equal(original.headers.get("content-type"), "image/jpeg");
+    assert.ok(Buffer.from(await original.arrayBuffer()).equals(readFileSync(path.join(UPLOADS, `${CRAWL}.jpg`))));
+    const vector = await fetch(new URL(`/media/${CRAWL}-vector.svg`, server.origin));
+    assert.equal(vector.status, 200);
+    assert.equal(vector.headers.get("content-type"), "image/svg+xml");
+    await vector.arrayBuffer();
+
+    // The static fallback every page without a usable picture names is as fetchable.
+    for (const agent of ["Twitterbot", "facebookexternalhit", "*"]) {
+      assert.ok(robotsAllows(robots, agent, "/brand/og-default.jpg"), `${agent} may not fetch the fallback`);
+    }
+    const fallback = await fetch(new URL("/brand/og-default.jpg", server.origin), { headers: { "user-agent": "Twitterbot/1.0" } });
+    assert.equal(fallback.status, 200);
+    assert.equal(fallback.headers.get("content-type"), "image/jpeg");
+    await fallback.arrayBuffer();
+
+    // In production nginx answers `/media/` from the upload directory first. It
+    // must hand a share address it has no file for to the application, or the
+    // address the page names is a 404 there however the app answers it.
+    const nginx = readFileSync(path.join(REPO_ROOT, "deploy", "nginx.conf"), "utf8");
+    const mediaBlock = /location \/media\/ \{([^}]*)\}/.exec(nginx)?.[1] ?? "";
+    assert.match(mediaBlock, /try_files \$uri @app;/, "nginx's /media/ block no longer falls through to the app");
+    assert.doesNotMatch(nginx, /location[^{]*\/media\/share/, "nginx intercepts the share address itself");
   });
 
   test("a picture too small for a large card is declared at its size, and X is asked for a small card", async () => {
@@ -372,10 +486,15 @@ describe("25 · public and preview stay apart (§11)", () => {
   });
 });
 
+/** The paths the sitemap lists, both editions. */
+async function sitemapPaths(): Promise<Set<string>> {
+  const xml = (await get(server.origin, "/sitemap.xml")).html;
+  return new Set([...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => new URL(match[1]!).pathname));
+}
+
 describe("25 · sitemap and robots.txt (§15, §17)", () => {
-  test("the sitemap lists what is published, in both languages — SEO records change nothing in it", async () => {
-    const xml = (await get(server.origin, "/sitemap.xml")).html;
-    const listed = new Set([...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map((match) => new URL(match[1]!).pathname));
+  test("the sitemap lists what is published and indexable, in both languages — and nothing a record marks noindex", async () => {
+    const listed = await sitemapPaths();
     for (const path of [
       "/",
       "/about",
@@ -384,26 +503,75 @@ describe("25 · sitemap and robots.txt (§15, §17)", () => {
       "/seo-english-only",
       "/services/business-setup",
       "/services/iqama-services",
-      // Marked noindex on the SEO screen and still listed (A.14 F6j — recorded, not changed here).
-      "/services/travel-tourism/air-ticket-booking",
       "/packages/egypt",
       "/packages/red-sea-sharm-el-sheikh",
     ]) {
       assert.ok(listed.has(path), `${path} is missing`);
       assert.ok(listed.has(path === "/" ? "/ar" : `/ar${path}`), `/ar${path} is missing`);
     }
+    // Marked noindex in its record: its page says so (above), and the sitemap no longer offers it (Batch 26, F6j).
+    for (const path of ["/services/travel-tourism/air-ticket-booking", "/ar/services/travel-tourism/air-ticket-booking"]) {
+      assert.ok(!listed.has(path), `${path} is listed though its record says noindex`);
+    }
     for (const path of ["/home", "/search", "/seo-hidden", "/ar/home", "/ar/search", "/ar/seo-hidden"]) {
       assert.ok(!listed.has(path), `${path} is listed`);
     }
-    assert.ok(![...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].some((match) => match[1]!.includes("?")), "an address with a query is listed");
+    // A page whose slug is an address the site answers itself is not that address: `/ar` is
+    // the Arabic homepage, `/en` a redirect, `/monitoring` nothing (Batch 26).
+    for (const path of ["/en", "/monitoring", "/ar/ar", "/ar/en", "/ar/monitoring"]) {
+      assert.ok(!listed.has(path), `${path} is listed`);
+    }
+    const xml0 = (await get(server.origin, "/sitemap.xml")).html;
+    const arabicRoot = [...xml0.matchAll(/<loc>([^<]+)<\/loc>/g)].filter((match) => new URL(match[1]!).pathname === "/ar");
+    assert.equal(arabicRoot.length, 1, "the Arabic homepage is listed twice");
+    const xml = (await get(server.origin, "/sitemap.xml")).html;
+    assert.ok(![...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].some((match) => /[?#]|preview|editor=/.test(match[1]!)), "a preview or query address is listed");
+  });
+
+  test("every address the sitemap lists says index on its own page, in both languages — the two read one record", async () => {
+    const listed = [...(await sitemapPaths())];
+    assert.ok(listed.length > 20, `only ${listed.length} addresses listed`);
+    for (let start = 0; start < listed.length; start += 8) {
+      await Promise.all(
+        listed.slice(start, start + 8).map(async (path) => {
+          const head = await fetchHead(server.origin, path);
+          assert.equal(head.status, 200, path);
+          assert.equal(head.robots, "index, follow, max-image-preview:large", `${path} is listed but says ${head.robots}`);
+        }),
+      );
+    }
   });
 
   test("robots.txt: everything but the admin, the API and the resized media files; the sitemap at the site's own address", async () => {
     const robots = (await get(server.origin, "/robots.txt")).html;
     assert.match(robots, /^User-Agent: \*$/m);
     assert.match(robots, /^Allow: \/$/m);
-    for (const rule of ["/admin", "/api/", "/media/*@*"]) assert.ok(robots.includes(`Disallow: ${rule}\n`), rule);
+    assert.match(robots, /^Allow: \/media\/share\/$/m);
+    for (const rule of ["/admin$", "/admin?", "/admin/", "/api/", "/media/*@*"]) assert.ok(robots.includes(`Disallow: ${rule}\n`), rule);
     assert.equal(robots.match(/^User-Agent:/gm)?.length, 1, "one group for every crawler");
+    // Read as a crawler reads it (RFC 9309): the pages, the originals and the
+    // share renditions may be fetched; the admin, the API and every other
+    // rendition may not.
+    for (const [path, allowed] of [
+      ["/", true],
+      ["/about", true],
+      ["/ar/services/business-setup", true],
+      ["/media/one-desk.webp", true],
+      ["/media/share/one-desk.webp", true],
+      ["/media/one-desk@1600.webp", false],
+      ["/media/one-desk@400.webp", false],
+      ["/admin", false],
+      ["/admin?denied=1", false],
+      ["/admin/seo", false],
+      ["/admin/", false],
+      ["/api/enquiries", false],
+      // A page the panel may make, whose address only begins like the admin's (Batch 26).
+      ["/administrative-services", true],
+      ["/ar/administrative-services", true],
+    ] as const) {
+      assert.equal(robotsAllows(robots, "Twitterbot", path), allowed, `${path} for Twitterbot`);
+      assert.equal(robotsAllows(robots, "*", path), allowed, `${path} for any crawler`);
+    }
     // robots.txt is prerendered at build time (build-isolation.test.ts), so its
     // origin is the one the build was given, and its sitemap is named at it.
     const host = /^Host: (.+)$/m.exec(robots)?.[1] ?? "";
@@ -463,5 +631,58 @@ describe("25 · a change is live at the next request (§18)", () => {
     await seo("clearSeo", { target, _base: opened._base! });
     assert.equal((await en("/contact")).title, enTitle("Contact"));
     assert.equal((await ar("/contact")).title, arTitle("تواصل معنا"));
+  });
+
+  test("noindex saved on the SEO screen takes every kind of page out of the sitemap in both editions at the next request; cleared, it is back (Batch 26)", async () => {
+    // One target of every kind, none of which has a record of its own yet.
+    const [category] = await sql<{ id: number; slug: string }[]>`select id, slug from service_categories where slug = 'travel-tourism'`;
+    const [service] = await sql<{ id: number; path: string }[]>`
+      select s.id, '/services/' || c.slug || '/' || s.slug as path from services s join service_categories c on c.id = s.category_id
+       where s.is_published and c.is_published and s.slug <> 'air-ticket-booking' order by s.id limit 1`;
+    const [tour] = await sql<{ id: number; slug: string }[]>`
+      select id, slug from travel_packages where is_published and slug <> 'red-sea-sharm-el-sheikh' order by id limit 1`;
+    assert.ok(category && service && tour, "the fixture has a target of every kind");
+    /**
+     * The fixture's one destination is Egypt, whose record holds a canonical
+     * stored before Batch 25 on another site — a value the screen refuses to
+     * save again, so its noindex goes in with that canonical cleared, as an
+     * editor would have to; the stored value is put back afterwards. Its case
+     * is not the last, so a later save drops the cached rows.
+     */
+    const egypt = ids["destination/egypt"]!;
+    const putBackEgypt = () =>
+      sql`update seo_metadata set canonical_url = 'https://other.example/egypt', noindex = false
+           where entity_type = 'destination' and entity_id = ${egypt}`;
+    const cases: Array<{ target: string; path: string; restore: "clear" | "save"; extra?: Record<string, string>; after?: () => Promise<unknown> }> = [
+      { target: `page:${ids["page/home"]}`, path: "/", restore: "clear" },
+      { target: `page:${ids["page/seo-english-only"]}`, path: "/seo-english-only", restore: "save" },
+      { target: "serviceIndex:1", path: "/services", restore: "clear" },
+      { target: `destination:${egypt}`, path: "/packages/egypt", restore: "save", extra: { canonicalUrl: "" }, after: putBackEgypt },
+      { target: "packageIndex:1", path: "/packages", restore: "save" },
+      { target: `category:${category.id}`, path: `/services/${category.slug}`, restore: "clear" },
+      { target: `service:${service.id}`, path: service.path, restore: "clear" },
+      { target: `package:${tour.id}`, path: `/packages/${tour.slug}`, restore: "clear" },
+    ];
+    const arabic = (path: string) => (path === "/" ? "/ar" : `/ar${path}`);
+    for (const { target, path, restore, extra, after: cleanup } of cases) {
+      const before = await sitemapPaths();
+      assert.ok(before.has(path) && before.has(arabic(path)), `${path} is not listed to begin with`);
+
+      await seo("saveSeo", withSeoChanges(await openSeoForm(sql, server.origin, owner.cookie, target), { ...extra, noindex: "on" }));
+      const hidden = await sitemapPaths();
+      assert.ok(!hidden.has(path) && !hidden.has(arabic(path)), `${path} is still listed after noindex was saved`);
+      assert.equal(hidden.size, before.size - 2, `${path}: something else left the sitemap too`);
+      assert.equal((await en(path)).robots, "noindex, follow", path);
+      assert.equal((await ar(path)).robots, "noindex, follow", arabic(path));
+
+      const opened = await openSeoForm(sql, server.origin, owner.cookie, target);
+      if (restore === "clear") await seo("clearSeo", { target, _base: opened._base! });
+      else await seo("saveSeo", withSeoChanges(opened, { noindex: null }));
+      const back = await sitemapPaths();
+      assert.ok(back.has(path) && back.has(arabic(path)), `${path} did not come back`);
+      assert.equal(back.size, before.size, `${path}: the sitemap did not come back whole`);
+      assert.equal((await en(path)).robots, "index, follow, max-image-preview:large", path);
+      await cleanup?.();
+    }
   });
 });

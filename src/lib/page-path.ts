@@ -1,4 +1,4 @@
-import { DEFAULT_LOCALE, localeHref, type Locale } from "@/lib/i18n/config";
+import { DEFAULT_LOCALE, LOCALES, localeHref, type Locale } from "@/lib/i18n/config";
 
 /**
  * Where a CMS page lives on the public site.
@@ -14,6 +14,23 @@ import { DEFAULT_LOCALE, localeHref, type Locale } from "@/lib/i18n/config";
  * owns it. There is deliberately no `/en/...` form.
  */
 export const publicPathForPage = (slug: string): string => (slug === "home" ? "/" : `/${slug}`);
+
+/**
+ * Addresses the site's own routes answer, so no page created in the panel may
+ * take one: the homepage is `/`, search and the two catalogues have routes of
+ * their own, and the rest are not pages at all. A `pages` row holding one of
+ * these slugs — the homepage's own row, or one written before the rule — is
+ * never what that address serves, which is why the sitemap reads this list
+ * too rather than keeping its own (Batch 26). That includes the language
+ * prefixes — `/en` answers with a redirect to `/` and `/ar` is the Arabic
+ * homepage — and `/monitoring`, which the middleware never routes to a page:
+ * a page called `ar` would have put the Arabic homepage in the sitemap a
+ * second time, under that page's record rather than the homepage's.
+ */
+export const SITE_OWNED_SLUGS: ReadonlySet<string> = new Set([
+  "admin", "api", "media", "services", "packages", "search", "home", "_next", "brand", "fonts",
+  ...LOCALES, "monitoring",
+]);
 
 export const localisedPagePath = (slug: string, locale: Locale): string =>
   localeHref(locale, publicPathForPage(slug));

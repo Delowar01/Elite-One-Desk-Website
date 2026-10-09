@@ -12,8 +12,10 @@ import {
 } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
 import { recordRestorePointIn } from "@/lib/versions";
+import { holdMedia } from "@/lib/media/hold";
 
 import { getBlock } from "./blocks";
+import { linkedMediaIds, mediaPlaces, sectionMediaIds } from "./media-refs";
 import { draftDomainsOf } from "./drafts";
 import { motionPromotion, type MotionColumns } from "./motion-write";
 import { checkReferencesForPublish, referenceProblemMessage } from "./reuse/store";
@@ -231,7 +233,8 @@ export type PublishFailure =
   | "nothing"
   | "corrupt_structure"
   | "invalid_motion"
-  | "reference";
+  | "reference"
+  | "pictures";
 
 export type PublishCounts = {
   promoted: number;
@@ -269,7 +272,19 @@ export const PUBLISH_MESSAGES = {
   reference:
     "A section on this page is linked to a reusable component that cannot be published. Nothing " +
     "was published.",
+  pictures:
+    "A picture a section on this page would show is no longer in the media library. Nothing was " +
+    "published — choose another picture for it, then publish again.",
 } as const;
+
+/** The refusal of a publication whose sections would newly show pictures the library no longer has. */
+function picturesGoneSentence(places: readonly string[]): string {
+  if (!places.length) return PUBLISH_MESSAGES.pictures;
+  return (
+    `The picture in ${places.join(", ")} ${places.length === 1 ? "is" : "are"} no longer in the media library. ` +
+    `Nothing was published — choose another picture, then publish again.`
+  );
+}
 
 /** Thrown inside the transaction so the abort rolls everything back by construction. */
 class PublishStopped extends Error {
@@ -367,7 +382,8 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
       }
 
       /* --- what each kept row becomes ---------------------------------- */
-      type Write = { row: SectionRow; values: Record<string, unknown> };
+      /** `place`: the row's place on the page this publishes, from one — how a refusal names it. */
+      type Write = { row: SectionRow; values: Record<string, unknown>; place: number };
       const writes: Write[] = [];
       let promoted = 0;
       let added = 0;
@@ -411,7 +427,7 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
         // different part of the page.
         if (Object.keys(values).length) {
           values.updatedBy = userId;
-          writes.push({ row, values });
+          writes.push({ row, values, place: index + 1 });
         }
       });
 
@@ -442,6 +458,68 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
       });
       const problems = await checkReferencesForPublish(tx, going);
       if (problems.length) throw new PublishStopped("reference", referenceProblemMessage(problems[0]!));
+
+      /**
+       * Every picture going live, held `FOR KEY SHARE` until this commits
+       * (Batch 26, `lib/media/hold.ts`) — after the page and its sections,
+       * which `readPage` locked above. One a section shows live already is
+       * kept as it is; one a section would newly put live that has left the
+       * library refuses the publication, by its section's place and field
+       * (decision B, as a route publication always has). Judged section by
+       * section: a picture another section of the page happens to show
+       * already is no licence for this one to start showing it — the same
+       * answer the Pages screen's Publish gives for the one section — and a
+       * hidden section shown by this publication shows nothing live yet, so
+       * the content it already had is judged as new. One that stays hidden
+       * puts nothing live; its pictures are held, not judged. Nor is a
+       * picture in a field a linked component supplies: the page draws the
+       * component's picture there, and no editor can choose another for the
+       * section's fallback copy (`linkedMediaIds`).
+       */
+      const showing = writes.flatMap((write) => {
+        const liveBefore = write.row.isPublished && !write.row.isDraftOnly;
+        const visibleAfter = write.values.isPublished === undefined ? write.row.isPublished : write.values.isPublished === true;
+        // What the section will show: its new content, or — a hidden section
+        // shown by this publication — the content it already had.
+        const values =
+          write.values.published !== undefined
+            ? write.values.published
+            : write.row.isDraftOnly || (!liveBefore && visibleAfter)
+              ? write.row.published
+              : undefined;
+        if (values === undefined) return [];
+        return [{
+          blockType: write.row.blockType,
+          values,
+          place: write.place,
+          visible: visibleAfter,
+          // What it may carry without being judged: what it already shows,
+          // which it may keep showing as it is — nothing, for a section not
+          // on the live page until now — and a fallback a linked component
+          // covers, which the page does not draw and no editor can change.
+          carried: [
+            ...(liveBefore ? sectionMediaIds(write.row.blockType, write.row.published) : []),
+            ...linkedMediaIds(write.row.blockType, values),
+          ],
+        }];
+      });
+      const held = await holdMedia(
+        tx,
+        showing.flatMap((entry) => sectionMediaIds(entry.blockType, entry.values)),
+      );
+      if (held.missing.length) {
+        const gone = new Set(held.missing);
+        const places = showing.flatMap((entry) => {
+          // A section that stays hidden puts nothing live.
+          if (!entry.visible) return [];
+          const block = getBlock(entry.blockType);
+          const carried = new Set(entry.carried);
+          return mediaPlaces(block, entry.values)
+            .filter((place) => gone.has(place.id) && !carried.has(place.id))
+            .map((place) => `“${place.label}” (${block?.name ?? entry.blockType}, section ${entry.place})`);
+        });
+        if (places.length) throw new PublishStopped("pictures", picturesGoneSentence([...new Set(places)]));
+      }
 
       /* --- the restore point, before a single promotion ----------------- */
       const { versionId } = await recordRestorePointIn(tx, {
@@ -505,7 +583,9 @@ export async function publishPageChanges(context: PublishContext): Promise<Publi
                     ? error.detail
                       ? `${error.detail} Nothing was published.`
                       : PUBLISH_MESSAGES.reference
-                    : PUBLISH_MESSAGES.conflict;
+                    : error.reason === "pictures"
+                      ? error.detail ?? PUBLISH_MESSAGES.pictures
+                      : PUBLISH_MESSAGES.conflict;
       return { ok: false, reason: error.reason, message };
     }
     throw error;

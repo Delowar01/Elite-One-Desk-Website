@@ -18,7 +18,7 @@
  * screen, opened before a publication, keeps the editor's work.
  */
 
-import { canvasRedrawn, canvasUrl, editorIdle, editorSettled, selectCanvasNode, selectFromLayers } from "../canvas";
+import { canvasRedrawn, canvasUrl, clickCanvasNode, editorIdle, editorSettled, selectCanvasNode, selectFromLayers } from "../canvas";
 import { giveFresh } from "../../helpers/fixtures";
 import { connect, dropDatabase } from "../../helpers/pg";
 import { startServer } from "../../helpers/server";
@@ -101,11 +101,17 @@ try {
   const publishFromPanel = async () => {
     const panel = await openPanel();
     const ready = await until(async () => await panel.locator("[data-route-publish]").isEnabled(), 15_000);
+    const drawn = canvasUrl(page);
     if (ready) await panel.locator("[data-route-publish]").click();
     const done = await until(async () => (await pendingDrafts()) === 0, 20_000);
+    // The drafts go first; the publication logs itself, then drops the
+    // catalogue's caches, then answers, and the canvas is drawn again. A public
+    // page is read after that (Batch 26: the route-services probe read the
+    // moment in between under CPU load).
+    const redrawn = ready && (await canvasRedrawn(page, drawn));
     await closePanel();
     await editorSettled(page, 60_000);
-    return ready && done;
+    return ready && done && redrawn;
   };
   const h1Of = (html: string) => /<h1[^>]*>([\s\S]*?)<\/h1>/.exec(html)?.[1]?.replace(/<[^>]+>/g, "").trim() ?? "";
   const ldOf = (html: string, type: string) => {
@@ -189,15 +195,19 @@ try {
   const destinations = await field("group").locator("option").allTextContents();
   say("Catalogue: clicking a card's title selects the card, with its words, picture and structure", picked.ok && cardFields && destinations.includes("No destination") && destinations.some((label) => label.includes(home.title_en)), picked.shows);
 
-  // A direct edit of the card's title, on the canvas.
+  // A direct edit of the card's title, on the canvas. Double-clicked once the
+  // canvas holds still (`clickCanvasNode`): selecting the card focuses its
+  // link, the page's smooth scrolling glides the card into view, and
+  // Playwright's own double-click measured mid-glide and landed on the
+  // summary below the title (Batch 26) — which the editor, rightly, opened.
   const title = frame().locator(`[data-eod-address="packageCard:${main.id}/field:title"]`);
-  await title.dblclick();
+  const cardLanding = await clickCanvasNode(page, title, "own", { double: true });
   await until(async () => (await title.getAttribute("contenteditable")) !== null, 10_000);
   await page.keyboard.press("End");
   await page.keyboard.type(" Revisited");
   await page.keyboard.press("Enter");
   const typed = await until(async () => (await draftOf(`packageCard:${main.id}`))?.draft_content?.titleEn?.value === `${main.title_en} Revisited`, 20_000);
-  say("Catalogue: a direct edit on a card becomes the package's title draft", typed);
+  say("Catalogue: a direct edit on a card becomes the package's title draft", typed, typed ? "" : `the double-click landed on ${cardLanding.resolved}`);
   say("Catalogue: …and the package row is untouched", (await packageRow(main.id))?.title_en === main.title_en);
   await editorIdle(page);
 
@@ -382,13 +392,18 @@ try {
     await openRoute(`category:${card!.category_id}`);
     await selectCanvasNode(page, `service:${card!.id}/field:title`);
     const serviceTitle = frame().locator(`[data-eod-address="service:${card!.id}/field:title"]`);
-    await serviceTitle.dblclick();
+    // Once the canvas holds still, as the package card's above.
+    const serviceLanding = await clickCanvasNode(page, serviceTitle, "own", { double: true });
     const editing = await until(async () => (await serviceTitle.getAttribute("contenteditable")) !== null, 10_000);
     await page.keyboard.press("End");
     await page.keyboard.type(" Typed");
     await page.keyboard.press("Enter");
     const typedCard = await until(async () => (await draftOf(`service:${card!.id}`))?.draft_content?.titleEn?.value === `${card!.title_en} Typed`, 20_000);
-    say("Service card: a category page's card title is typed into on the canvas, too", editing && typedCard);
+    say(
+      "Service card: a category page's card title is typed into on the canvas, too",
+      editing && typedCard,
+      editing && typedCard ? "" : `the double-click landed on ${serviceLanding.resolved}; editing ${editing}`,
+    );
     await editorIdle(page);
     const panel = await openPanel();
     await until(async () => await panel.locator("[data-route-discard]").isEnabled(), 15_000);
@@ -551,9 +566,14 @@ try {
     const published = page.locator('input[name="isPublished"]');
     if (!(await published.isChecked())) await published.check();
     await page.getByRole("button", { name: "Create package" }).click();
-    const made = await until(async () => (await sql`select 1 from travel_packages where slug = ${slug}`).length === 1, 20_000);
+    // The action logs the new package and drops the catalogue before it sends
+    // the browser to the package's own screen; the editor is opened after that.
+    const answered = await page
+      .waitForURL((url) => /^\/admin\/packages\/\d+$/.test(url.pathname), { timeout: 30_000 })
+      .then(() => true, () => false);
+    const made = answered && (await until(async () => (await sql`select 1 from travel_packages where slug = ${slug}`).length === 1, 20_000));
     const [{ id }] = await sql<{ id: number }[]>`select id from travel_packages where slug = ${slug}`;
-    say("Created: the Packages screen makes the package", made);
+    say("Created: the Packages screen makes the package", made, made ? "" : `the redirect ${answered ? "arrived but no row" : "never arrived"}`);
     await page.goto(`${server.origin}/admin/visual-editor`, { waitUntil: "load" });
     await editorSettled(page, 60_000);
     say("Created: the editor's page list offers it, under its destination, with no code", (await page.locator(`#ve-page optgroup[label="Packages · ${home.title_en}"] option[value="package:${id}"]`).count()) === 1);
@@ -569,12 +589,15 @@ try {
     say("Created: …and the catalogue gives it a card in its destination's group", (await openRoute("packageIndex:1")) && (await regionAround(id)) === `destinationGroup:${home.id}`);
     await page.goto(`${server.origin}/admin/packages/${id}`, { waitUntil: "load" });
     await page.getByRole("button", { name: "Delete package" }).click();
-    const deleted = await until(async () => (await packageRow(id)) === null, 20_000);
-    say("Created: the Packages screen deletes it, its page goes, and the editor no longer offers it", deleted && (await statusOf(`/packages/${slug}`)) === 404 && (await (async () => {
+    // The row goes first; the catalogue is dropped after the delete is logged,
+    // and then the browser is sent back to the Packages list.
+    const gone = await until(async () => (await packageRow(id)) === null, 20_000);
+    const listed = gone && (await page.waitForURL((url) => url.pathname === "/admin/packages", { timeout: 30_000 }).then(() => true, () => false));
+    say("Created: the Packages screen deletes it, its page goes, and the editor no longer offers it", listed && (await statusOf(`/packages/${slug}`)) === 404 && (await (async () => {
       await page.goto(`${server!.origin}/admin/visual-editor`, { waitUntil: "load" });
       await editorSettled(page, 60_000);
       return page.locator(`#ve-page option[value="package:${id}"]`).count();
-    })()) === 0);
+    })()) === 0, gone ? (listed ? "" : "the list never arrived") : "the row is still there");
   }
 
   say("Clean-up: no draft is pending", (await pendingDrafts()) === 0);

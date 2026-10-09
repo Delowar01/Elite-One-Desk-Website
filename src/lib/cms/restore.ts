@@ -90,10 +90,12 @@ export type RestorePlan = {
  *
  * `validatePageSnapshot` is the whole of it — content through the block
  * registry, styles through the token vocabulary, unknown block types dropped —
- * and it is idempotent, so running it again on a snapshot that already came out
- * of it costs a rebuild and changes nothing. That is the point: `planRestore`
- * is exported and takes a `PageSnapshot`, so the guarantee cannot depend on
- * every caller having read it from `page_versions` first.
+ * and running it again on a snapshot that already came out of it costs a
+ * rebuild and changes nothing, except rich text: the sanitizer escapes the
+ * character references it wrote itself again on every pass, a defect older
+ * than this code (docs/release/release-hardening-batch-26.md §11). That is the
+ * point: `planRestore` is exported and takes a `PageSnapshot`, so the guarantee
+ * cannot depend on every caller having read it from `page_versions` first.
  */
 export function revalidateSnapshot(snapshot: PageSnapshot): PageSnapshot {
   return validatePageSnapshot(snapshot);

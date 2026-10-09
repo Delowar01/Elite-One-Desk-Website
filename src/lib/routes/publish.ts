@@ -9,7 +9,7 @@ import type { Executor } from "@/lib/db/revision";
 import { routeNodes, routeVersions } from "@/lib/db/schema";
 import { motionForBlock } from "@/lib/visual-editor/motion-targets";
 
-import { existingMedia } from "./category";
+import { holdMedia } from "@/lib/media/hold";
 import { RECORD_OWNERS, type RouteData } from "./adapter";
 import { describeValue, readRouteContext, type RouteContext } from "./drafts";
 import { ownerKeyOf, parseOwnerKey, type RouteOwner } from "./owners";
@@ -305,8 +305,14 @@ export async function publishRoute(input: {
         }
       }
 
-      // Every value, checked again.
-      const mediaIds = await existingMedia(tx, mediaIdsOfPatches(ownedPatches(context)));
+      /**
+       * Every value, checked again — the pictures held `FOR KEY SHARE` until
+       * this commits (Batch 26, `lib/media/hold.ts`), after the records and
+       * regions `readRouteContext` locked: one deleted since its draft was
+       * saved is a refusal by name here, never a foreign-key error from the
+       * record's own column, and none can be deleted before this commits.
+       */
+      const mediaIds = (await holdMedia(tx, mediaIdsOfPatches(ownedPatches(context)))).present;
       const groupIds = context.adapter.groupIds(context.data);
       for (const owner of pending) {
         const patch = context.patches.get(ownerKeyOf(owner)) ?? {};
@@ -656,11 +662,23 @@ export async function restoreRouteVersion(input: {
       const snapshot = row ? readSnapshot(row.snapshot) : null;
       if (!snapshot) throw new Refusal({ ok: false, reason: "missing", message: "That version is not available." });
 
+      /**
+       * The pictures the version names — the fields its regions declare
+       * pictures, never any number — held `FOR KEY SHARE` until this commits
+       * (Batch 26, `lib/media/hold.ts`), after the records and regions locked
+       * above. One deleted since is skipped and named below (decision B); one
+       * still there cannot be deleted before the restored draft is counted.
+       */
       const wantedMedia: number[] = [];
-      for (const owned of Object.values(snapshot.owners)) {
-        for (const value of Object.values(owned.fields)) if (typeof value === "number") wantedMedia.push(value);
+      for (const [ownerKey, owned] of Object.entries(snapshot.owners)) {
+        const owner = parseOwnerKey(ownerKey);
+        if (!owner) continue;
+        for (const spec of SPECS[owner.type]) {
+          const value = owned.fields[spec.key];
+          if (spec.check === "media" && typeof value === "number") wantedMedia.push(value);
+        }
       }
-      const mediaIds = await existingMedia(tx, wantedMedia);
+      const mediaIds = (await holdMedia(tx, wantedMedia)).present;
       const groupIds = context.adapter.groupIds(context.data);
 
       let restored = 0;
@@ -713,11 +731,19 @@ export async function restoreRouteVersion(input: {
         restored += 1;
       }
 
+      // What could not come back is said in the answer, not only in the
+      // activity log: an editor reviewing the draft must know a picture is
+      // missing from it (decision B, Batch 26).
+      const leftOut = skipped.length
+        ? ` Left out, because ${skipped.length === 1 ? "it" : "they"} can no longer be restored: ${skipped.join("; ")}.`
+        : "";
       return {
         ok: true as const,
         message: restored
-          ? `The version is now a draft on ${restored} region${restored === 1 ? "" : "s"}. Review it, then publish.`
-          : "That version is the same as the live page. Nothing to restore.",
+          ? `The version is now a draft on ${restored} region${restored === 1 ? "" : "s"}. Review it, then publish.${leftOut}`
+          : skipped.length
+            ? `Nothing was restored.${leftOut}`
+            : "That version is the same as the live page. Nothing to restore.",
         changes: restored,
         resources: skipped,
       };

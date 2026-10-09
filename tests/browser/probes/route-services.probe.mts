@@ -610,7 +610,16 @@ try {
       await page.locator("#categoryId").selectOption(String(categoryId));
       await page.locator("#subcategoryId").selectOption(groupId === null ? "" : String(groupId));
       await page.getByRole("button", { name: "Save changes" }).click();
-      return until(async () => Number((await serviceRow(second.id))?.category_id) === categoryId, 20_000);
+      // The row moves first; the action logs the change, then drops the
+      // catalogue's cache, then answers. The public addresses are read once it
+      // has answered, as an editor reads "Service saved." (Batch 26: under CPU
+      // load the probe read the moment in between and found the old address
+      // still gone).
+      const answered = await until(
+        async () => ((await page.getByRole("status").first().textContent().catch(() => "")) ?? "").includes("Service saved."),
+        20_000,
+      );
+      return answered && (await until(async () => Number((await serviceRow(second.id))?.category_id) === categoryId, 20_000));
     };
     const moved = await moveTo(target!.id, null);
     const newPath = await pathOf(second.id);
@@ -642,7 +651,12 @@ try {
     const publish = page.locator('input[name="isPublished"]');
     if (!(await publish.isChecked())) await publish.check();
     await page.getByRole("button", { name: "Create service" }).click();
-    const madeOk = await until(async () => (await sql`select 1 from services where slug = ${slug}`).length === 1, 20_000);
+    // The action logs the new service and drops the catalogue before it sends
+    // the browser to the service's own screen; the editor is opened after that.
+    const answered = await page
+      .waitForURL((url) => /^\/admin\/services\/\d+$/.test(url.pathname), { timeout: 30_000 })
+      .then(() => true, () => false);
+    const madeOk = answered && (await until(async () => (await sql`select 1 from services where slug = ${slug}`).length === 1, 20_000));
     const [{ id }] = await sql<{ id: number }[]>`select id from services where slug = ${slug}`;
     const made: Service = { id, slug, title_en: "Made During The Probe", category_id: third.category_id, subcategory_id: null };
     say("Created: the Services screen makes the service", madeOk);
@@ -663,15 +677,27 @@ try {
     await until(async () => (await draftOf(`serviceHero:${id}`))?.draft_content?.timelineEn?.value === "Ready in a day", 20_000);
     await editorIdle(page);
     const panel = await openPanel();
+    const drawnBefore = canvasUrl(page);
     await panel.locator("[data-route-publish]").click();
     const live = await until(async () => (await serviceRow(id))?.timeline_en === "Ready in a day", 20_000);
-    say("Created: it publishes like any other service", live && (await visit(path)).html.includes("Ready in a day"));
+    // The publication drops the catalogue after it has logged itself, and the
+    // canvas is drawn again once it has answered: the public page is read then.
+    const redrawn = await canvasRedrawn(page, drawnBefore);
+    say("Created: it publishes like any other service", live && redrawn && (await visit(path)).html.includes("Ready in a day"));
     await closePanel();
 
     await page.goto(`${server.origin}/admin/services/${id}`, { waitUntil: "load" });
     await page.getByRole("button", { name: "Delete service" }).click();
     const deleted = await until(async () => (await serviceRow(id)) === null, 20_000);
-    say("Created: the Services screen deletes it again", deleted);
+    // The row goes first; the action drops the catalogue's cache only after
+    // it has logged the delete, and then sends the browser back to the
+    // Services list. A page read in between is the catalogue as it was a
+    // moment before — so the checks below wait for the action to finish, as
+    // an editor does (Batch 26: under CPU load the probe read that moment).
+    const finished = await page
+      .waitForURL((url) => url.pathname === "/admin/services", { timeout: 30_000 })
+      .then(() => true, () => false);
+    say("Created: the Services screen deletes it again", deleted && finished);
     say("Created: …its page is gone, and the editor no longer offers it", (await statusOf(path)) === 404 && (await (async () => {
       await page.goto(`${server!.origin}/admin/visual-editor`, { waitUntil: "load" });
       await editorSettled(page, 60_000);

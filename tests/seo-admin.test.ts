@@ -1197,6 +1197,23 @@ describe("25 · who may save, and what a form may name (§21)", () => {
     assert.equal(anonymous.ok, false);
     assert.match(anonymous.message ?? "", /session has expired/);
     assert.equal((await sql`select 1 from seo_metadata where title_en = 'Forged'`).length, 0);
+
+    // Remove override, the same way (Batch 26 §13: until now only the save was posted forged).
+    const [before] = await rowsOf("page", ids["page/contact"]!, "contact");
+    saved(await seoAction("saveSeo", withSeoChanges(await open(ref), { titleEn: "Kept through forged removals" })));
+    const opened = await open(ref);
+    const removal = { target: opened.target!, _base: opened._base! };
+    const forgedRemoval = await seoAction("clearSeo", removal, owner, "not-the-token");
+    assert.equal(forgedRemoval.ok, false);
+    assert.match(forgedRemoval.message ?? "", /This form expired/);
+    assert.equal((await seoAction("clearSeo", removal, owner, null)).ok, false);
+    const anonymousRemoval = await seoAction("clearSeo", removal, null);
+    assert.equal(anonymousRemoval.ok, false);
+    assert.match(anonymousRemoval.message ?? "", /session has expired/);
+    assert.equal((await sql`select 1 from seo_metadata where title_en = 'Kept through forged removals'`).length, 1, "a forged removal removed the record");
+    // Left as the earlier tests left it.
+    if (before) saved(await seoAction("saveSeo", withSeoChanges(await open(ref), { titleEn: String(before.title_en ?? "") })), "putting the title back");
+    else saved(await remove(await open(ref)), "the real removal");
   });
 
   test("the reference names the target, parsed strictly — never an address, a type or a key the browser sends", async () => {
@@ -1476,5 +1493,17 @@ describe("25 · the SEO screen's writes, by name", () => {
     assert.ok(!entries.some((entry) => entry.exportedName === "saveSeoDefaults"));
     const settings = readFileSync(path.join(REPO_ROOT, "src", "app", "(backoffice)", "admin", "(shell)", "settings", "actions.ts"), "utf8");
     assert.ok(!settings.includes("saveSeoDefaults"), "the orphan is still in the settings actions");
+  });
+});
+
+describe("26 · a page the panel makes cannot take an address the site owns (§6)", () => {
+  test("the language prefixes and /monitoring are refused by name like the names reserved before, and no page is made", async () => {
+    for (const slug of ["en", "ar", "monitoring", "admin", "services"]) {
+      const title = `Owned address ${slug}`;
+      const answer = await act(PAGE_ACTIONS, "/admin/pages", "createPage", { titleEn: title, slug });
+      assert.equal(answer?.ok, false, `${slug} was accepted`);
+      assert.equal(answer?.message, "That address is used by the site itself.", slug);
+      assert.equal((await sql`select 1 from pages where title_en = ${title}`).length, 0, `${slug}: a page was made`);
+    }
   });
 });

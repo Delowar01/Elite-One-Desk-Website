@@ -4,10 +4,12 @@ import { and, asc, eq, sql } from "drizzle-orm";
 
 import { db } from "@/lib/db";
 import { updatePageGuarded, updatePageGuardedIn } from "@/lib/db/revision";
+import { holdMedia } from "@/lib/media/hold";
 import { pageSections, pages, reusableComponents } from "@/lib/db/schema";
 
 import { blocksForPage, getBlock, type BlockDef } from "./blocks";
 import { withFreshItemIds, remapMotionItemIds, remapStyleItemIds } from "./duplicate";
+import { mediaPlaces, picturesGoneMessage, sectionMediaIds } from "./media-refs";
 import { effectiveMotion } from "./motion";
 import { isEmptyMotionDocument, legacyProjection } from "./motion-doc";
 import { currentMotionDocument } from "./motion-write";
@@ -456,6 +458,15 @@ export async function addStructureSection(
       .returning({ id: pageSections.id });
     created = row!.id;
 
+    // A linked component's pictures become the new section's fallback copy:
+    // held after its row, and one that has left the library refuses the
+    // addition (Batch 26, `lib/media/hold.ts`).
+    const pictures = await holdMedia(tx, sectionMediaIds(blockType, values));
+    if (pictures.missing.length) {
+      refused = picturesGoneMessage(mediaPlaces(block, values), pictures.missing);
+      tx.rollback();
+    }
+
     const next = insertAfter(
       opened.structure.sections,
       { sectionId: created, visible: true },
@@ -632,6 +643,18 @@ export async function duplicateStructureSection(
       })
       .returning({ id: pageSections.id });
     created = row!.id;
+
+    /**
+     * The copy's pictures, held after its row (Batch 26, `lib/media/hold.ts`).
+     * The original was read before this transaction, so a picture it named
+     * then may have left the library since — and the copy would name nothing.
+     * Every picture is new to the copy, so one that has gone refuses it.
+     */
+    const pictures = await holdMedia(tx, sectionMediaIds(source.blockType, copiedValues));
+    if (pictures.missing.length) {
+      refused = picturesGoneMessage(mediaPlaces(block, copiedValues), pictures.missing, "copy");
+      tx.rollback();
+    }
 
     const next = insertAfter(opened.structure.sections, { sectionId: created, visible: true }, sectionId)!;
     const guard = await updatePageGuardedIn(tx, context.pageId, context.expectedRevision, {

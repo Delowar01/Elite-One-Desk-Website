@@ -259,11 +259,16 @@ try {
   const chosen = await choose("Share picture A");
   const sharedEn = await headOf(visitor, "/packages/egypt-tours");
   const sharedAr = await headOf(visitor, "/ar/packages/egypt-tours");
-  const urlA = `${site}/media/${pictureA.filename.replace(/\.[^.]+$/, "")}@1600.webp`;
+  // Its 1600 rendition, at the address link-preview crawlers may fetch (Batch 26).
+  const urlA = `${site}/media/share/${pictureA.filename.replace(/\.[^.]+$/, "")}.webp`;
+  const crawled = await fetch(new URL(new URL(urlA).pathname, origin), { headers: { "user-agent": "Twitterbot/1.0" } });
+  const crawledType = crawled.headers.get("content-type");
+  const crawledWidth = (await sharp(Buffer.from(await crawled.arrayBuffer())).metadata().catch(() => ({ width: 0 }))).width;
   say(
-    "S8. two pictures are uploaded; one becomes the destination's share image — its 1600 rendition, at its real width, in both languages",
-    chosen === "SEO saved." && sharedEn.ogImage === urlA && sharedEn.ogImageWidth === "1600" && sharedAr.ogImage === urlA,
-    JSON.stringify({ chosen, image: sharedEn.ogImage, width: sharedEn.ogImageWidth }),
+    "S8. two pictures are uploaded; one becomes the destination's share image — its 1600 rendition, at its real width, in both languages, fetchable by a crawler",
+    chosen === "SEO saved." && sharedEn.ogImage === urlA && sharedEn.ogImageWidth === "1600" && sharedAr.ogImage === urlA &&
+      crawled.status === 200 && crawledType === "image/webp" && crawledWidth === 1600,
+    JSON.stringify({ chosen, image: sharedEn.ogImage, width: sharedEn.ogImageWidth, crawled: crawled.status, crawledType, crawledWidth }),
   );
 
   await admin.goto(`${origin}/admin/media`, { waitUntil: "load" });

@@ -45,6 +45,8 @@ import {
   referenceProblemMessage,
 } from "@/lib/cms/reuse/store";
 import { emptyValues } from "@/lib/cms/values";
+import { mediaPlaces, picturesGoneMessage, sectionMediaIds } from "@/lib/cms/media-refs";
+import { holdPictures, picturesGone } from "@/lib/media/hold";
 import {
   addStructureSection,
   discardLayoutDraft,
@@ -66,7 +68,7 @@ import {
   restoreBlockers,
   RESTORE_BLOCKED,
 } from "@/lib/cms/publish-service";
-import { KEEP_PAGE_VERSIONS, listPageVersions, restoreVersionToDraft } from "@/lib/versions";
+import { KEEP_PAGE_VERSIONS, leftOutSentence, listPageVersions, restoreVersionToDraft } from "@/lib/versions";
 import { db } from "@/lib/db";
 import { updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages, reusableComponents } from "@/lib/db/schema";
@@ -370,15 +372,26 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
      * Content, style and motion are three draft domains sharing one row and
      * one concurrency timeline; each save writes only its own column.
      *
-     * A section that links to reusable components writes inside a
-     * transaction that first checks every component against the database —
-     * it exists, it is the kind the slot takes, it has been published, and it
-     * is not archived unless this section already linked it — holding them
-     * `FOR SHARE` until the write commits, so none can be deleted in between.
-     * The browser names ids; everything else is read here.
+     * One transaction, in the order every writer keeps (`lib/media/hold.ts`).
+     * A section that links to reusable components first checks every
+     * component against the database — it exists, it is the kind the slot
+     * takes, it has been published, and it is not archived unless this
+     * section already linked it — holding them `FOR SHARE` until the write
+     * commits, so none can be deleted in between. Then the row. Then every
+     * picture the values name, held `FOR KEY SHARE` (Batch 26): a picture the
+     * library is deleting either waits for this save and is then refused,
+     * or has gone, and a picture this save would bring in that has gone takes
+     * the save back with it. A picture the section already held is kept as it
+     * was. The browser names ids; everything else is read here.
      */
-    const written = Object.keys(reuse.map).length
-      ? await db.transaction(async (tx) => {
+    const pictures = sectionMediaIds(found.block.type, values);
+    const held = [
+      ...sectionMediaIds(found.block.type, found.row.draft),
+      ...sectionMediaIds(found.block.type, found.row.published),
+    ];
+    const written = await db
+      .transaction(async (tx) => {
+        if (Object.keys(reuse.map).length) {
           const problems = await checkReferencesForSave(tx, {
             blockType: found.block.type,
             map: reuse.map,
@@ -387,21 +400,18 @@ export async function saveVisualSectionDraft(form: FormData): Promise<VisualCont
           if (problems.length) {
             return { kind: "refused" as const, message: referenceProblemMessage(problems[0]!) };
           }
-          return {
-            kind: "written" as const,
-            result: await updateSectionGuardedIn(tx, sectionId, expected, {
-              draft: values,
-              updatedBy: session.user.id,
-            }),
-          };
-        })
-      : {
-          kind: "written" as const,
-          result: await updateSectionGuarded(sectionId, expected, {
-            draft: values,
-            updatedBy: session.user.id,
-          }),
-        };
+        }
+        const result = await updateSectionGuardedIn(tx, sectionId, expected, {
+          draft: values,
+          updatedBy: session.user.id,
+        });
+        if (result.ok) await holdPictures(tx, pictures, held);
+        return { kind: "written" as const, result };
+      })
+      .catch(picturesGone);
+    if ("gone" in written) {
+      return { ok: false, reason: "invalid", message: picturesGoneMessage(mediaPlaces(found.block, values), written.gone) };
+    }
     if (written.kind === "refused") return { ok: false, reason: "invalid", message: written.message };
     const result = written.result;
 
@@ -501,7 +511,8 @@ export async function detachVisualInstance(form: FormData): Promise<VisualDetach
       return { ok: false, reason: "invalid", message: "That part of the section is not linked any more. Reload the canvas." };
     }
 
-    const outcome = await db.transaction(async (tx) => {
+    const outcome = await db
+      .transaction(async (tx) => {
       const [component] = await tx
         .select({
           id: reusableComponents.id,
@@ -533,9 +544,21 @@ export async function detachVisualInstance(form: FormData): Promise<VisualDetach
         draft: values,
         updatedBy: session.user.id,
       });
+      // The component's pictures become the section's own (Batch 26): held
+      // like any picture a save brings in, after the rows (`lib/media/hold.ts`).
+      if (result.ok) {
+        await holdPictures(tx, sectionMediaIds(found.block.type, values), [
+          ...sectionMediaIds(found.block.type, found.row.draft),
+          ...sectionMediaIds(found.block.type, found.row.published),
+        ]);
+      }
       return { result, values, name: component?.name ?? null } as const;
-    });
+      })
+      .catch(picturesGone);
 
+    if ("gone" in outcome) {
+      return { ok: false, reason: "invalid", message: picturesGoneMessage([], outcome.gone, "detach") };
+    }
     if ("stale" in outcome) {
       return {
         ok: false,
@@ -1201,7 +1224,8 @@ export async function restoreVersionFromEditor(form: FormData): Promise<PageActi
       ok: true,
       revision: page?.revision ?? 0,
       message:
-        "Restored into saved changes. Preview the page, then publish when you are ready — the live site has not changed.",
+        "Restored into saved changes. Preview the page, then publish when you are ready — the live site has not changed." +
+        leftOutSentence(result.leftOut),
     };
   } catch (error) {
     if (error instanceof AccessError) return pageFailure("denied", error.message);

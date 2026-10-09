@@ -50,14 +50,13 @@ import { checkReferencesForPublish, referenceProblemMessage } from "@/lib/cms/re
 import { db } from "@/lib/db";
 import { lockPageForWrite, updateSectionGuarded, updateSectionGuardedIn } from "@/lib/db/revision";
 import { pageSections, pages } from "@/lib/db/schema";
-import { recordRestorePointIn, restoreVersionToDraft } from "@/lib/versions";
+import { SITE_OWNED_SLUGS } from "@/lib/page-path";
+import { linkedMediaIds, mediaPlaces, picturesGoneMessage, sectionMediaIds } from "@/lib/cms/media-refs";
+import { PicturesGone, holdPictures, picturesGone } from "@/lib/media/hold";
+import { leftOutSentence, recordRestorePointIn, restoreVersionToDraft } from "@/lib/versions";
 import { dropSeoRows, freeSeoAddress } from "@/lib/seo-targets";
 
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-/** Addresses the site owns; a custom page may not shadow one. */
-const RESERVED = new Set([
-  "admin", "api", "media", "services", "packages", "search", "home", "_next", "brand", "fonts",
-]);
 
 /**
  * What a lost race is called in front of an editor.
@@ -272,7 +271,7 @@ export async function createPage(_prev: ActionState, form: FormData): Promise<Ac
         slug: "Use letters, numbers and hyphens only.",
       });
     }
-    if (RESERVED.has(slug)) {
+    if (SITE_OWNED_SLUGS.has(slug)) {
       return fail("That address is used by the site itself.", { slug: "Choose another address." });
     }
 
@@ -543,10 +542,13 @@ async function publishSectionIn(input: {
   label: string;
   userId: number;
   actorName: string;
+  /** The pictures the published values name, and those the section already held (Batch 26, `lib/media/hold.ts`). */
+  pictures: { ids: number[]; already: number[] };
 }): Promise<
   | { ok: true; revision: number }
   | { ok: false; reason: "conflict" | "missing" }
   | { ok: false; reason: "reference"; message: string }
+  | { ok: false; reason: "pictures"; gone: number[] }
 > {
   try {
     return await db.transaction(async (tx) => {
@@ -580,6 +582,10 @@ async function publishSectionIn(input: {
       // Thrown, so the abort rolls the restore point and the prune back with
       // it: a refused publish leaves no trace in history.
       if (!result.ok) throw new SectionPublishRace(result.reason);
+      // The rows first, then the pictures going live, held until this commits
+      // — and a picture this brings in that has gone takes the publication,
+      // its restore point included, back with it (Batch 26).
+      await holdPictures(tx, input.pictures.ids, input.pictures.already);
       return { ok: true as const, revision: result.revision };
     });
   } catch (error) {
@@ -599,6 +605,7 @@ async function publishSectionIn(input: {
     if (error instanceof SectionPublishReference) {
       return { ok: false as const, reason: "reference" as const, message: error.detail };
     }
+    if (error instanceof PicturesGone) return { ok: false as const, reason: "pictures" as const, gone: error.ids };
     throw error;
   }
 }
@@ -786,6 +793,21 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
     ...(publish ? { published: values, draft: null } : { draft: values }),
     ...motion,
   };
+  /**
+   * The pictures the values name, held until the write commits (Batch 26,
+   * `lib/media/hold.ts`). A draft keeps what the section already names; a
+   * publication keeps only what is already live, so a picture that has left
+   * the library refuses it by name rather than going live as an id that names
+   * nothing (decision B, as a route publication always has) — except in a
+   * field a linked component supplies, which the page does not draw and no
+   * editor can change (`linkedMediaIds`).
+   */
+  const pictures = {
+    ids: sectionMediaIds(block.type, values),
+    already: publish
+      ? [...sectionMediaIds(block.type, section.published), ...linkedMediaIds(block.type, values)]
+      : [...sectionMediaIds(block.type, section.draft), ...sectionMediaIds(block.type, section.published)],
+  };
   // Publishing changes what a visitor sees, so it leaves a restore point;
   // saving a draft changes nothing anybody can see, so it does not.
   const result = publish
@@ -797,11 +819,21 @@ async function writeSectionValues(form: FormData, publish: boolean): Promise<Act
         label: `Before publishing the ${block.name} section`,
         userId: session.user.id,
         actorName: session.user.name,
+        pictures,
       })
-    : await updateSectionGuarded(id, expected, { ...written, updatedBy: session.user.id });
+    : await db
+        .transaction(async (tx) => {
+          const saved = await updateSectionGuardedIn(tx, id, expected, { ...written, updatedBy: session.user.id });
+          if (saved.ok) await holdPictures(tx, pictures.ids, pictures.already);
+          return saved;
+        })
+        .catch((error) => ({ ok: false as const, reason: "pictures" as const, ...picturesGone(error) }));
   if (!result.ok) {
     if (result.reason === "missing") return fail(CONFLICT.gone);
     if (result.reason === "reference") return fail("message" in result ? result.message : CONFLICT.publish);
+    if (result.reason === "pictures") {
+      return fail(picturesGoneMessage(mediaPlaces(block, values), "gone" in result ? result.gone : [], publish ? "publish" : "save"));
+    }
     return fail(publish ? CONFLICT.publish : CONFLICT.save);
   }
 
@@ -886,9 +918,19 @@ export async function publishSection(_prev: ActionState, form: FormData): Promis
       label: `Before publishing the ${block?.name ?? section.blockType} section`,
       userId: session.user.id,
       actorName: session.user.name,
+      // Held going live; one that has left the library and is not live already refuses it (`lib/media/hold.ts`),
+      // unless a linked component supplies its field (`linkedMediaIds`).
+      pictures: {
+        ids: sectionMediaIds(section.blockType, promoted.values.published),
+        already: [
+          ...sectionMediaIds(section.blockType, section.published),
+          ...linkedMediaIds(section.blockType, promoted.values.published),
+        ],
+      },
     });
     if (!result.ok) {
       if (result.reason === "reference") return fail(result.message);
+      if (result.reason === "pictures") return fail(picturesGoneMessage(mediaPlaces(block, promoted.values.published), result.gone, "publish"));
       return fail(result.reason === "missing" ? CONFLICT.gone : CONFLICT.publish);
     }
 
@@ -1093,7 +1135,8 @@ export async function restorePageVersion(_prev: ActionState, form: FormData): Pr
     revalidatePath("/admin/pages");
     return ok(
       "Restored into saved changes. Preview the page, then publish when you are ready — the " +
-        "live site has not changed.",
+        "live site has not changed." +
+        leftOutSentence(result.leftOut),
     );
   });
 }

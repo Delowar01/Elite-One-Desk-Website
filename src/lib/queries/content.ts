@@ -155,6 +155,7 @@ export const getPublishedPages = unstable_cache(
   async () =>
     db
       .select({
+        id: pages.id,
         slug: pages.slug,
         kind: pages.kind,
         titleEn: pages.titleEn,

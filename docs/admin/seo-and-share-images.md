@@ -439,7 +439,7 @@ disagree about which row applies. Each reader indexes **every** row, not only
 the ones that hold what it is looking for: the media guard once indexed only
 rows naming a picture, and so could protect a picture on a row the page does
 not use (C.3, T3).
-The sitemap reads no SEO record (B.13).
+Since Batch 26 the sitemap reads each candidate's record too, with the storage its own page reads, to leave out an address marked `noindex` (B.13).
 
 ### B.2 Identity
 
@@ -633,9 +633,9 @@ The share image is the 1600-pixel rendition when the library made one and the
 original is wider, else the original — as before Batch 25 — now declared with
 its **real** width and height and its alt text in the page's language (the
 site name when it has none). X is asked for a small card (`summary`) when the
-picture is under 300×157. `robots.txt` still disallows the renditions
-(`/media/*@*`), as it did before Batch 25; that is recorded, not changed
-(C.4).
+picture is under 300×157. Since Batch 26 a page names that rendition at
+`/media/share/<stem>.webp`, an address `robots.txt` allows, rather than at
+`/media/<stem>@1600.webp`, which it disallows with every other rendition (B.13).
 
 ### B.5 F5: which share images are in use
 
@@ -681,7 +681,10 @@ nothing relies on what the browser was shown (brief §20).
 The Media screen now **shows** the refusal under the picture's card ("Still in
 use on 1 screen: Egypt — search and sharing image. Remove it there first.").
 It was returned and never drawn, so a click on Delete for a picture in use did
-nothing visible (C.3, N1).
+nothing visible (C.3, N1). Since Batch 26 it can also read "A search and
+sharing record that names this image is being saved right now. Nothing was
+deleted — try again in a moment.": an SEO save holding a record that names the
+picture refuses the delete at once rather than making it wait (B.11).
 
 ### B.6 History: decision B
 
@@ -813,14 +816,21 @@ of its own. The editor's drafts never reach metadata.
 | Destination slug change, service move | the record row `FOR UPDATE` (as before) → its SEO rows and the row holding its new address, `FOR UPDATE` in one statement, in the order of their ids |
 | Record create | the new record's row (its insert) → the row holding its address `FOR UPDATE` (`freeSeoAddress`) |
 | Record delete | the record row (by the delete; a category `FOR UPDATE` first, then its services `FOR UPDATE` as they are listed) → its SEO rows |
-| Media delete | the media row `FOR UPDATE` → reads only (the SEO rows and the records' addresses in one statement, B.5) → the referring rows by the foreign key's `SET NULL` |
+| Media delete | the media row `FOR UPDATE` → the SEO rows naming it `FOR NO KEY UPDATE NOWAIT`, in the order of their ids (Batch 26: a row a writer holds refuses the delete at once rather than making it wait) → reads only (the SEO rows and the records' addresses in one statement, B.5) → the referring rows by the foreign key's `SET NULL` |
 | Deploy reconciliation | `seo_metadata` `EXCLUSIVE` — a write that has not touched the table waits for it; one under way is waited for, its own later statements going ahead of the queued lock; reads go on → reads of the record tables at one `REPEATABLE READ` snapshot, no row locks, and no picture: no row is updated twice where it shows one (B.3) |
 
 Record before SEO row everywhere, and the picture before the SEO row; two
 writers that each take a row the other holds — records whose rows hold each
 other's addresses — lock every SEO row they need in one statement, in id
 order, so one waits for the other (C.3, W1³); and the deploy's run never locks
-a picture. So no two of these can wait on each other in a cycle. A `FOR KEY SHARE` on a record lets
+a picture. So no two of these can wait on each other in a cycle — the media
+delete included since Batch 26: until then it could wait, through the foreign
+key's `SET NULL`, for an SEO row whose writer was itself waiting for the
+picture, and PostgreSQL aborted one of the two; it now takes those rows
+without waiting, after the picture, and waits for nothing else
+(docs/release/release-hardening-batch-26.md §1.4, which also names the table
+locks a delete can still meet — a later deploy's schema migration among
+them). A `FOR KEY SHARE` on a record lets
 nothing that locks it `FOR UPDATE` — the edit forms, a delete — proceed until
 the SEO save has committed, and the save waits for them likewise.
 
@@ -841,10 +851,24 @@ site defaults is live at the next request.
 
 ### B.13 Sitemap and robots
 
-Unchanged. The sitemap's publication rules are what they were, and an SEO
-save never changes whether anything is published. It still lists an address
-whose record says `noindex` (A.14 F6j — recorded, C.4). `robots.txt` keeps its
-rules, including the disallowed renditions (C.4).
+Batch 25 left both unchanged and recorded the two contradictions (F6j, F6l).
+**Batch 26 fixed both** (`docs/release/release-hardening-batch-26.md` §2–§3):
+
+- The sitemap's publication rules are what they were — an SEO save never
+  changes whether anything is published — and an address whose record says
+  `noindex` is now left out, in both languages, for every kind of page: the
+  sitemap reads each candidate's record through `getSeoRecord` with the
+  storage the page's own metadata reads, so the two cannot disagree, and the
+  rows are the `seo`-tagged cache entry every SEO write drops (B.12).
+- A share image's 1600 rendition is named at `/media/share/<stem>.webp`, which
+  the media route maps to `<stem>@1600.webp` and nothing else, and
+  `robots.txt` allows `/media/share/`. `Disallow: /media/*@*` is unchanged, so
+  every other rendition stays out; originals are as they were. The admin rule
+  is now `Disallow: /admin$`, `Disallow: /admin?` (the admin with a query —
+  `/admin?denied=1` is where a refused permission lands; `?` is no wildcard
+  in robots.txt) and `Disallow: /admin/` rather than the prefix `/admin`,
+  which also kept crawlers off a panel page whose address merely begins with
+  "admin" (`/administrative-services`) while the sitemap listed it.
 
 ### B.14 Public and preview isolation
 
@@ -969,7 +993,9 @@ saving without its region base values, as it always could (DEPLOYMENT.md,
 |---|---|
 | `tests/seo-model.test.ts` (26) | references; which row a target uses, the newer row by address included, and a row by address at a reserved key nobody's (W2³); each language on its own; canonical acceptance, storage and drawing — what a page would emit is what is checked (S1), empty segments refused and trailing slashes dropped (V1²) |
 | `tests/seo-admin.test.ts` (45) | the 93 targets in order, the badges and `?target=`; saving every kind by reference, logged by reference; share-image and canonical validation; an untouched legacy canonical no edit, alone or beside another person's change (X1³); a legacy row bound in place; a service's move and a destination's new address carrying the record, dead rows moved aside and never inherited; a stale-keyed live row parked at `#id` by a create — past a key made by hand to look like it (V2²) — and put back, and parked by a first save (T4²); a save and a rename each taking an address the other's row holds, neither refused, in both id orders, each held by a gate the test opens (W1³, T2⁴, T3⁴); a hand-made row at a long-address service's `#<id>` passed by and set aside, by a save and by a create (W2³); a hand-made holder of a `~<id>` moved aside first, in a create and in a save (X3³); a newer row by address used by the page and the screen, a save and a removal setting aside the row it shadowed, `#id` given up on the way (D2, T6²); deletes taking records with them, a service moved out while its category is deleted keeping its record (C1); all five creates moving a dead row aside — an unbound one, with the cached rows already holding it, and a page published through its own form — the public page drawn without it at once (D1, R6², W4³); a form drawn before its record was deleted; permissions, CSRF, strict references, a browser-sent type or key ignored, bases replayed across records and kinds or altered, the previous release's form exactly as it posts (T1); two forms on one record (different fields, the same field, both orders, the same change, first inserts at once, a stale removal, a removal twice); a save that waited for a move (N2); the Visual Editor's link; the screen's exported actions |
-| `tests/seo-metadata.test.ts` (24) | every route class in both languages; precedence; canonicals, alternates, robots, `/home`, `/en` redirect; share-image renditions, dimensions, card size, skipped SVG and missing default; TouristTrip and breadcrumb unchanged by a record; unpublished pages and previews; the sitemap and `robots.txt` — its sitemap at its own origin, and that origin the pages' whenever the build was given one (a build given none, CI's, leaves the pages naming the server's runtime address, which a prerendered file cannot know); no Arabic alternate or share locale while Arabic is off (F6n); a change live at the next request |
+| `tests/seo-metadata.test.ts` (27 since Batch 26) | every route class in both languages; precedence; canonicals, alternates, robots, `/home`, `/en` redirect; share-image renditions, dimensions, card size, skipped SVG and missing default; TouristTrip and breadcrumb unchanged by a record; unpublished pages and previews; the sitemap and `robots.txt` — its sitemap at its own origin, and that origin the pages' whenever the build was given one (a build given none, CI's, leaves the pages naming the server's runtime address, which a prerendered file cannot know); no Arabic alternate or share locale while Arabic is off (F6n); a change live at the next request; since Batch 26, an address marked noindex out of the sitemap for every kind of page in both editions and back when cleared, and the exact `og:image` a page names fetchable by link-preview crawlers under the `robots.txt` the server answers with — and nothing but that rendition at its address |
+| `tests/robots-matcher.test.ts` (6, Batch 26) | the RFC 9309 reader the crawl test relies on: the longest rule wins, `Allow` wins a tie, `*` and `$`, a crawler's own group, comments, and this site's rules |
+| `tests/media-references.test.ts` (Batch 26) | the jsonb writers against the media delete, every ordering forced (`docs/release/release-hardening-batch-26.md` §1.8) |
 | `tests/seo-media.test.ts` (14) | the brief §4 lifecycle on the real delete: a record's share image, the site default, a shared picture, an unpublished page's record, a legacy row; records no page uses protect nothing, a row shadowed by a newer one included (T3); a deleted record releases its picture; authority; the delete/save race in each forced order and left free; a move committed while the delete counts hides no use (W5³) |
 | `tests/seo-reconcile.test.ts` (26) | every row state the previous release can leave, through the real migrate script, settled to what this release shows, with the exact counts logged (T4, T5²); dead rows — a deleted record's, one naming no record, one at the address of a record with none — set aside, never bound (R1², R3²); `#<id>` keys given up, and the record's row following it on its next move (D3); an open save of the previous release waited for (C2), and an open save of this release that has locked its row waited for without a deadlock (L1²); a record moved mid-run settled at the run's snapshot (L2²); hand-made reserved keys set aside first (V2²) — a row by address at a long-keyed record's own `#<id>` among them, never bound, the record's own row moving there (T1⁴) — and rows made by hand to hold each other's `~<id>` set aside once, under the run's own key, and left there by the next run (R1⁴); a row set aside out of the previous release's sight, its next save starting a new row (R2²); a delete holding the pictures of rows the run moves and sets aside does not hold it up, and rows that swapped addresses swap back in one run — or, all showing pictures, wait at `#<id>` for the next (D1³); nothing deleted; a second run changes nothing |
 | `tests/media-pipeline.test.ts` | an EXIF-rotated upload stored, sized and rendered at its upright size (M2) |
@@ -1033,9 +1059,9 @@ next request after any save.
 | F6g | fixed — canonicals name a page of this site only, checked on save and on render (B.15) |
 | F6h | fixed — an unpublished page's 404 and preview carry nothing of its record (B.14) |
 | F6i | fixed — `/home` carries `/`'s metadata and canonical (B.14) |
-| F6j | **recorded, not changed** — the sitemap still lists an address marked noindex (C.4) |
-| F6k | **recorded, not changed** — the site defaults are shown read-only; their form is a later batch (C.4) |
-| F6l | fixed: real dimensions, the small-card rule, no SVG as a share image, the orphan `saveSeoDefaults` removed; **recorded**: `robots.txt` disallows the renditions a card names (C.4) |
+| F6j | **recorded, not changed** in Batch 25 — **fixed in Batch 26**: an address marked noindex leaves the sitemap (B.13) |
+| F6k | **recorded, not changed** — the site defaults are shown read-only; their form is a later batch (C.4). Batch 26 classified it: no screen writes them (an owner-control gap, not built) |
+| F6l | fixed: real dimensions, the small-card rule, no SVG as a share image, the orphan `saveSeoDefaults` removed; **recorded** in Batch 25 and **fixed in Batch 26**: the rendition a card names is at an address `robots.txt` allows (B.13) |
 | F6m | fixed — an overlong address is keyed `#<id>` and found by id (B.2) |
 | F6n | fixed — `og:locale:alternate` only while Arabic is on (B.4) |
 | N1 | found and fixed in this batch — the Media screen never drew a refused delete's reason (B.5) |
@@ -1074,26 +1100,27 @@ next request after any save.
 | T1⁴ | fixed — a test that could not fail: step 0's `#<id>` arm, which keeps the deploy from binding a hand-made row at a long-keyed record's own key, has one now (B.18) |
 | T2⁴, T3⁴ | fixed — tests: W1³'s save-side half is held by a test with the claimed row first in id order, and both W1³ tests hold the rename by a gate the test opens rather than a two-second sleep (B.18) |
 | T4⁴ | fixed — documentation: B.18 described a move parking a row at `#<id>`, which only a ring now does (B.3 step 5) |
-| X1–X8 | recorded, unchanged (A.14) |
+| X1–X8 | recorded, unchanged (A.14); X1 and X3 closed in Batch 26 (`docs/release/release-hardening-batch-26.md` §1.5, §1.6) |
 
 ### C.4 Known limitations, recorded
 
-- **F6j** — the sitemap lists addresses whose record says `noindex`. Listing a
-  page while asking engines not to index it is contradictory but harmless: the
-  page's own `noindex` wins. Changing the sitemap was left out of this batch.
+- **F6j** — fixed in Batch 26 (B.13).
 - **F6k** — the site defaults (default title, template, description, share
   image, X handle) have no form. They are read-only on the SEO screen; the
-  default share image is protected while it is set.
-- **Renditions behind `robots.txt`** — a share image's 1600 rendition lives at
-  `/media/<stem>@1600.webp`, which `robots.txt` disallows for every crawler;
-  link-preview crawlers that honour it (X's does) may show no picture. As
-  before Batch 25; a crawler group of its own for the preview fetchers was
-  considered and left for a later batch.
-- **jsonb writers and the media delete** — page sections, reusable components
-  and Visual Editor route drafts store picture ids in jsonb, take no lock on
-  the picture, and so can still name a picture in the moment between the
-  delete's recount and its commit. The delete is atomic against every writer
-  that names a picture through a foreign key (C.3 F5c).
+  default share image is protected while it is set. Batch 26 confirmed that no
+  other screen writes them either: an owner-control gap, recorded, not built
+  (`docs/release/release-hardening-batch-26.md` §4).
+- **Renditions behind `robots.txt`** — fixed in Batch 26 (B.13).
+- **jsonb writers and the media delete** — closed in Batch 26: every writer
+  that stores a picture id in jsonb holds the picture `FOR KEY SHARE` until it
+  commits — the deploy's seed and row-id backfill included — the delete
+  counts Quick Links' card pictures and takes the SEO rows naming its picture
+  without waiting, and the validator, the hold, the count and the renderer
+  read a picture id one way (`docs/release/release-hardening-batch-26.md`
+  §1). Not while the previous release serves — the deploy window and a
+  rollback — whose delete takes no lock. A picture referenced by its address
+  (`/media/<file>`) in a link field is outside the protocol: a delete leaves a
+  dead link there, never a broken picture.
 - **Arabic where the page has none** — an Arabic page with no Arabic title of
   its own (a custom page, the homepage) shows an English-only record's title
   rather than the Arabic site default (B.4); the screen's hint says so. CMS
@@ -1132,4 +1159,5 @@ next request after any save.
 - **Preview JSON-LD** describes the draft being previewed — private, never
   stored, never public (B.14).
 - **Rollback corners** — B.16.
-- **X1–X8** — A.14.
+- **X1–X8** — A.14; X1 (a Quick Links card's picture uncounted) and X3 (a
+  restore copying a deleted picture back silently) closed in Batch 26.

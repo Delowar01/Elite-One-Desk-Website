@@ -49,6 +49,16 @@ const NUDGE_FOR_MS = 15_000;
  * before the first check and is never nudged. Held by
  * `tests/stress/admin-form-settle.stress.mts`.
  *
+ * An action that sends the browser elsewhere — `redirect()` after a create or
+ * a delete — does not answer: it throws, and the screen it sends the browser
+ * to is rendered in a transition that stalls in exactly the same way (Batch
+ * 26: a package created, its row stored, and the screen left on "Saving…" at
+ * /admin/packages/new — on a warm server 4 creates in 26 and 1 delete in 25,
+ * and 2 creates in 25 on Batch 25, so not new; the root in the state above
+ * every time, released at once by a keystroke). So a throw is nudged too,
+ * until the form has gone — which is the next screen arriving — and is then
+ * handed on to Next.js exactly as it came.
+ *
  * Until the form has hydrated, the hook hands React the Server Action itself,
  * not the wrapper: React writes a server reference into the server-rendered
  * form as hidden fields, so a form submitted before hydration — or without
@@ -72,20 +82,32 @@ export function useSettledActionState(
     };
   }, []);
 
+  /** A no-op update every `NUDGE_EVERY_MS` until `done()`, the form has gone, or `NUDGE_FOR_MS` has passed. */
+  const nudgeUntil = useCallback((done: () => boolean) => {
+    const deadline = Date.now() + NUDGE_FOR_MS;
+    const check = () => {
+      if (!mounted.current || done() || Date.now() > deadline) return;
+      nudge();
+      window.setTimeout(check, NUDGE_EVERY_MS);
+    };
+    window.setTimeout(check, NUDGE_EVERY_MS);
+  }, []);
+
   const settled = useCallback(
     async (previous: ActionState, payload: FormData): Promise<ActionState> => {
-      const answer = await action(previous, payload);
+      let answer: ActionState;
+      try {
+        answer = await action(previous, payload);
+      } catch (error) {
+        // A redirect, or a failure: what renders next replaces this form.
+        nudgeUntil(() => false);
+        throw error;
+      }
       unseen.current = answer;
-      const deadline = Date.now() + NUDGE_FOR_MS;
-      const check = () => {
-        if (!mounted.current || unseen.current !== answer || Date.now() > deadline) return;
-        nudge();
-        window.setTimeout(check, NUDGE_EVERY_MS);
-      };
-      window.setTimeout(check, NUDGE_EVERY_MS);
+      nudgeUntil(() => unseen.current !== answer);
       return answer;
     },
-    [action],
+    [action, nudgeUntil],
   );
 
   // React reads the action a dispatch calls from its latest render, so the

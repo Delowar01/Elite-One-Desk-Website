@@ -219,8 +219,8 @@ complete, verified runtime exists on disk.
 
 1. **The production working tree must be completely clean.** Modified, staged,
    deleted *or untracked* — any of them cancels the release, the status is
-   printed, and nothing is fetched, built or changed. `git reset --hard` in
-   step 13 can delete an untracked file that stands where the target commit
+   printed, and nothing is fetched, built or changed. The forced checkout in
+   step 14 can delete an untracked file that stands where the target commit
    needs to write, so "clean" here means spotless. The script never stashes,
    never runs `git clean`, and never deletes anything to get out of the way.
 2. `git fetch origin main`, then the target is decided **once**: `RELEASE_SHA`
@@ -249,7 +249,10 @@ complete, verified runtime exists on disk.
    no migration run and production untouched. The dumps it produced are named
    in the output so a rollback has a specific file to point at.
 10. `npm run db:migrate`, then `npm run db:seed`, from the verified worktree
-    against the production `.env`.
+    against the production `.env` — then `npm run db:check-permissions`,
+    read-only: if the permission upgrade the seed made does not verify, the
+    release stops here, with the previous release still serving
+    (`docs/release/permission-upgrade.md`).
 11. The new runtime is staged at `app/.next/standalone.incoming`.
 12. `systemctl stop elite-one-desk.service` — that service only.
 13. The switch is two renames, not a copy into a live directory:
@@ -262,8 +265,9 @@ complete, verified runtime exists on disk.
     nothing else does. Uploads live outside `app/` and are never touched.
 15. `chown -R eliteonedesk:eliteonedesk` the new runtime, then
     `systemctl start elite-one-desk.service`.
-16. The marker on the now-live runtime is re-read and must equal the target
-    commit; anything else rolls straight back.
+16. The marker on the runtime now in place is re-read — straight after the
+    renames in step 13, before the checkout and the start — and must equal the
+    target commit; anything else rolls straight back.
 17. Health checks, with a short retry loop: `systemctl is-active`, then
     `http://127.0.0.1:3000/` with `Host: eliteonedesk.com` and
     `X-Forwarded-Proto: https`, then `https://eliteonedesk.com/` and
@@ -300,6 +304,29 @@ or nothing:
 fixtures to hold each of those rules. `RELEASE_SHA` empty keeps the old
 behaviour (the tip of `origin/main`) for development servers; a production
 release should never rely on it.
+
+#### The first release over `b807663` — run the approved commit's own script
+
+The command above runs the `deploy.sh` **in the production checkout**, which is
+the copy of the release that is serving. The release production runs today
+(`deploy/previous-release`, `b807663`) predates `RELEASE_SHA`, the
+`db:check-permissions` gate and the checkout read-back (Batches 19A and 19C):
+its script ignores `RELEASE_SHA`, releases whatever the tip of `origin/main` is,
+and switches straight after the seed. So the next release — and only that one —
+must run the approved commit's own script, taken from git (Batch 26 deploy
+audit, `docs/release/release-hardening-batch-26.md` §10 — with the checklist
+for that release in §10.2). The script copies itself to a private temporary file before it does
+anything and finds the application by `APP_ROOT`/`APP_DIR` alone, never by its
+own location, so it runs the same from anywhere:
+
+```bash
+sudo -u eliteonedesk git -C /var/www/elite-one-desk/app fetch origin main
+sudo -u eliteonedesk git -C /var/www/elite-one-desk/app show <approved sha>:deploy/deploy.sh > /tmp/deploy-approved.sh
+sudo RELEASE_SHA=<approved sha> bash /tmp/deploy-approved.sh
+```
+
+From then on the checkout's own copy is the approved release's, and the
+command at the top of this section is right again.
 
 ### Admin pages and editor tabs left open across a release
 
@@ -497,7 +524,7 @@ Building against production was never intentional, and it bought nothing:
 **Migrations still run after the build, deliberately.** The alternative —
 migrating first — means every release mutates production schema before anyone
 knows the release can build at all. The order stays: build, stamp, back up,
-migrate, seed, stage, stop, switch, start, health-check. There is no flag to
+migrate, seed, check permissions, stage, stop, switch, start, health-check. There is no flag to
 reverse it.
 
 **If a future feature genuinely needs the database at build time: stop.** The
@@ -604,10 +631,14 @@ A runtime from before this marker existed reads as unmarked. That counts as
 drift on the way in (one redeployment stamps it), and during a rollback it is
 reported as `legacy/unmarked` rather than treated as a failure.
 
-**A failure before step 11 leaves production byte-identical** — everything up to
-that point happens in the worktree, and the old release keeps serving.
+**A failure before step 10 leaves production byte-identical** — everything up to
+that point happens in the worktree, and the old release keeps serving. A
+failure in step 10 or 11 — a migration, the seed, the permission check, the
+staging copy — stops the release with the old runtime still serving and
+whatever the database step applied left in place: every migration is additive and readable by the release
+before it (below), and nothing has been switched.
 
-**A failure at or after step 11 rolls the runtime back automatically:** the
+**A failure after the service is stopped (step 12) rolls the runtime back automatically:** the
 service is stopped, the failed runtime is moved aside to
 `standalone.failed-<sha>-<timestamp>` (kept, not deleted, so it can be
 examined), the previous runtime is renamed back into place, `app/` is reset to
