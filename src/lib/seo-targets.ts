@@ -19,7 +19,9 @@ import {
 import { PACKAGES_OVERVIEW_META, SERVICES_OVERVIEW_META } from "@/lib/seo-defaults";
 import {
   indexSeoRows,
+  isReservedSeoKey,
   overviewStorage,
+  seoRecordKeys,
   preferredSeoRow,
   recordStorage,
   seoRefOf,
@@ -553,29 +555,35 @@ export type SeoRow = typeof seoMetadata.$inferSelect;
  * address (normally at most one of them exists). `own` is the one the rule
  * uses (`preferredSeoRow` — the same rule every reader follows): the bound row,
  * else the unbound one, unless the bound row sits at another address beside a
- * newer unbound row at this one.
+ * newer unbound row at this one. An unbound row at a key in a reserved form is
+ * dead (`indexSeoRows`), never the target's.
+ *
+ * `claim` is a key the caller is about to take (`claimSeoKey`): the row that
+ * holds it — another record's, as often as not — is locked by the same
+ * statement, every row in the order of its id. Two writers each taking a key
+ * the other holds then lock the same rows in the same order, and one waits for
+ * the other instead of each for the other (W1³). It is not one of `rows`.
  */
 export async function lockOwnSeoRows(
   tx: Executor,
   storage: SeoStorage,
+  claim?: string,
 ): Promise<{ own: SeoRow | null; rows: SeoRow[] }> {
-  const where =
-    storage.entityId === null
-      ? and(
-          eq(seoMetadata.entityType, storage.entityType),
-          isNull(seoMetadata.entityId),
-          eq(seoMetadata.entityKey, storage.entityKey),
-        )
-      : and(
-          eq(seoMetadata.entityType, storage.entityType),
-          or(
-            eq(seoMetadata.entityId, storage.entityId),
-            and(isNull(seoMetadata.entityId), eq(seoMetadata.entityKey, storage.entityKey)),
-          ),
-        );
-  const rows = await tx.select().from(seoMetadata).where(where).orderBy(asc(seoMetadata.id)).for("update");
-  const bound = storage.entityId === null ? null : rows.find((row) => row.entityId === storage.entityId) ?? null;
-  const unbound = rows.find((row) => row.entityId === null && row.entityKey === storage.entityKey) ?? null;
+  const byAddress = !isReservedSeoKey(storage.entityKey);
+  const mine = or(
+    storage.entityId === null ? undefined : eq(seoMetadata.entityId, storage.entityId),
+    byAddress ? and(isNull(seoMetadata.entityId), eq(seoMetadata.entityKey, storage.entityKey)) : undefined,
+  );
+  const where = and(
+    eq(seoMetadata.entityType, storage.entityType),
+    or(mine, claim === undefined ? undefined : eq(seoMetadata.entityKey, claim)),
+  );
+  const locked = await tx.select().from(seoMetadata).where(where).orderBy(asc(seoMetadata.id)).for("update");
+  const bound = storage.entityId === null ? null : locked.find((row) => row.entityId === storage.entityId) ?? null;
+  const unbound = byAddress
+    ? locked.find((row) => row.entityId === null && row.entityKey === storage.entityKey) ?? null
+    : null;
+  const rows = locked.filter((row) => row === bound || row === unbound);
   return { own: preferredSeoRow(bound, unbound, storage), rows };
 }
 
@@ -613,15 +621,14 @@ export async function detachSeoRow(tx: Executor, type: SeoEntityType, rowId: num
  * record gone since is set aside to `~<row id>`, and another live record's row
  * keyed by an address that record no longer has is parked at `#<its id>` — so
  * the new record starts with nothing of either, under this release and under
- * the previous one after a rollback (which reads by address). In the create
- * transaction, after the record's own insert; the caller drops the `seo` tag
- * once it has committed.
+ * the previous one after a rollback (which reads by address). A long address's
+ * key, `#<new id>`, is cleared the same way: no row of this release can hold
+ * it, but a hand-made request to the previous release's form can have put one
+ * there (A.9, W2³). In the create transaction, after the record's own insert;
+ * the caller drops the `seo` tag once it has committed.
  */
 export async function freeSeoAddress(tx: Executor, type: SeoEntityType, address: string, id: number): Promise<void> {
-  const key = storedKeyOf(address, id);
-  // `#<new id>` is the record's own; nothing else can hold it.
-  if (key.startsWith("#")) return;
-  await claimSeoKey(tx, type, key, null);
+  await claimSeoKey(tx, type, storedKeyOf(address, id), null);
 }
 
 /** Whether a record of a type still exists — the test between a stale key and a dead row. */
@@ -692,7 +699,8 @@ export async function moveSeoRow(
 ): Promise<boolean> {
   const from = recordStorage(type, fromAddress, id);
   const toKey = storedKeyOf(toAddress, id);
-  const { own, rows } = await lockOwnSeoRows(tx, from);
+  // Whatever holds the new key is locked with the record's own rows, in one order (W1³).
+  const { own, rows } = await lockOwnSeoRows(tx, from, toKey);
   for (const row of rows) {
     if (own && row.id !== own.id) await detachSeoRow(tx, type, row.id);
   }
@@ -706,8 +714,9 @@ export async function moveSeoRow(
 /**
  * Records deleted: their SEO rows go with them, in the same transaction and
  * after the records' own rows (B.7, B.11) — the bound rows, and an unbound row
- * at a deleted record's address. The share images they named are released.
- * Returns how many rows went.
+ * at a deleted record's address (never one at a reserved key, which is nobody's:
+ * `indexSeoRows`). The share images they named are released. Returns how many
+ * rows went.
  */
 export async function dropSeoRows(
   tx: Executor,
@@ -721,12 +730,13 @@ export async function dropSeoRows(
       and(
         eq(seoMetadata.entityType, type),
         or(
-          ...records.map((record) =>
-            or(
+          ...records.map((record) => {
+            const key = storedKeyOf(record.address, record.id);
+            return or(
               eq(seoMetadata.entityId, record.id),
-              and(isNull(seoMetadata.entityId), eq(seoMetadata.entityKey, storedKeyOf(record.address, record.id))),
-            ),
-          ),
+              isReservedSeoKey(key) ? undefined : and(isNull(seoMetadata.entityId), eq(seoMetadata.entityKey, key)),
+            );
+          }),
         ),
       ),
     )
@@ -752,34 +762,57 @@ const isMediaId = (value: unknown): value is number => typeof value === "number"
  * inside the transaction that holds the picture.
  */
 export async function seoMediaUsage(on: Executor = db): Promise<SeoMediaUse[]> {
-  // Every row, not only those naming a picture: which row a target uses is
-  // decided among all of them (a row without a picture can be the one it uses),
-  // exactly as the page decides it — only then is its picture looked at.
-  const [rows, settingsRows] = await Promise.all([
-    on
-      .select({
-        entityType: seoMetadata.entityType,
-        entityKey: seoMetadata.entityKey,
-        entityId: seoMetadata.entityId,
-        ogImageId: seoMetadata.ogImageId,
-      })
-      .from(seoMetadata),
+  // The rows and the records in one statement, so at one moment (W5³): which
+  // row a record uses is decided by the rows and the record's present address
+  // together, and a move committed between reading the one and the other could
+  // hide a use that every moment before and after it had. Every row, not only
+  // those naming a picture — a row without one can be the one a record uses —
+  // exactly as the page decides it; only then is its picture looked at. The
+  // records are read as the deploy reads them (`seoRecordKeys`).
+  type Read = { what: "row" | "record"; type: string; key: string; id: number | null; image: number | null };
+  const [read, settingsRows] = await Promise.all([
+    on.execute<Read>(sql`
+      select 'row' as what, entity_type as type, entity_key as key, entity_id as id, og_image_id as image from seo_metadata
+      union all
+      select 'record', type, k, id, null from (${seoRecordKeys()}) records`),
     on.select({ value: siteSettings.value }).from(siteSettings).where(eq(siteSettings.key, "seo")).limit(1),
   ]);
+  const rows = read
+    .filter((entry) => entry.what === "row")
+    .map((entry) => ({ entityType: entry.type, entityKey: entry.key, entityId: entry.id, ogImageId: entry.image }));
 
-  const uses: SeoMediaUse[] = [];
+  const used: Array<{ mediaId: number; ref: string }> = [];
   if (rows.some((row) => row.ogImageId !== null)) {
     const index = indexSeoRows(rows);
-    for (const target of await listSeoTargets(on)) {
-      if (!target.storage) continue;
-      const row = seoRowFor(index, target.storage);
-      if (row && isMediaId(row.ogImageId)) {
-        uses.push({
-          mediaId: row.ogImageId,
-          label: `${target.label} — search and sharing image`,
-          href: `/admin/seo?target=${target.ref}`,
-        });
-      }
+    const storages: Array<{ ref: string; storage: SeoStorage }> = [
+      { ref: "serviceIndex:1", storage: overviewStorage("serviceIndex") },
+      { ref: "packageIndex:1", storage: overviewStorage("packageIndex") },
+      ...read
+        .filter((entry) => entry.what === "record")
+        .map((entry) => ({
+          ref: `${entry.type}:${entry.id}`,
+          storage: { entityType: entry.type as SeoEntityType, entityKey: entry.key, entityId: entry.id },
+        })),
+    ];
+    for (const { ref, storage } of storages) {
+      const row = seoRowFor(index, storage);
+      if (row && isMediaId(row.ogImageId)) used.push({ mediaId: row.ogImageId, ref });
+    }
+  }
+
+  // What each use is called, and where the screen lists it: read after, as
+  // they name a use and decide none — in the screen's own order.
+  const uses: SeoMediaUse[] = [];
+  if (used.length) {
+    const targets = await listSeoTargets(on);
+    const place = new Map(targets.map((target, at) => [target.ref, { target, at }]));
+    used.sort((a, b) => (place.get(a.ref)?.at ?? targets.length) - (place.get(b.ref)?.at ?? targets.length));
+    for (const { mediaId, ref } of used) {
+      uses.push({
+        mediaId,
+        label: `${place.get(ref)?.target.label ?? ref} — search and sharing image`,
+        href: `/admin/seo?target=${ref}`,
+      });
     }
   }
   const siteImage = settingsRows[0]?.value?.ogImageId;

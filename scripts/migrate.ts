@@ -98,14 +98,19 @@ async function backfillRowIds(db: Db): Promise<void> {
  * `reconcileSeoRows` in `src/lib/seo-model.ts`, docs/admin/seo-and-share-images.md
  * B.3). Data rather than shape, so it runs here beside the row-id backfill and
  * for the same reasons: every deploy already runs this script, and a second run
- * writes nothing. It also settles whatever the previous release wrote since the
- * last deploy — a rollback's edits and renames included.
+ * writes nothing — unless the first had to leave rows that held each other's
+ * addresses at their record's own key, which it then moves. It also settles
+ * whatever the previous release wrote since the last deploy — a rollback's edits
+ * and renames included.
  */
 async function reconcileSeo(db: Db): Promise<void> {
-  const { bound, rekeyed, setAside } = await reconcileSeoRows(db);
+  const { bound, rekeyed, setAside, parked } = await reconcileSeoRows(db);
+  const waiting = parked
+    ? ` ${parked} left at their record's own key for the next deploy: they held each other's addresses, and each shows a share image.`
+    : "";
   console.log(
-    bound || rekeyed || setAside
-      ? `SEO records: ${bound} bound, ${rekeyed} moved to their record's address, ${setAside} set aside.`
+    bound || rekeyed || setAside || parked
+      ? `SEO records: ${bound} bound, ${rekeyed} moved to their record's address, ${setAside} set aside.${waiting}`
       : "SEO records: nothing to reconcile.",
   );
 }

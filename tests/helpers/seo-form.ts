@@ -29,7 +29,8 @@ export async function seoFormBase(origin: string, cookie: string, target: string
  * blanks. That is the rule every reader follows (docs B.2): the overviews'
  * rows by their fixed keys; for a record, its own (bound) row — unless that
  * row sits at another address beside a newer row by address at the present
- * one, which the previous release wrote and which is the one it shows.
+ * one, which the previous release wrote and which is the one it shows. A row
+ * by address at a key in a reserved form (`#<id>`, `~<n>`) is nobody's (W2³).
  */
 export async function seoFormFields(sql: Sql, target: string): Promise<SeoFields> {
   const [kind, rawId] = target.split(":") as [string, string];
@@ -47,7 +48,8 @@ export async function seoFormFields(sql: Sql, target: string): Promise<SeoFields
       select * from seo_metadata
        where entity_type = ${kind} and (entity_id = ${id} or (entity_id is null and entity_key = ${key ?? ""}))`;
     const bound = rows.find((candidate) => candidate.entity_id === id);
-    const unbound = rows.find((candidate) => candidate.entity_id === null && candidate.entity_key === key);
+    const reserved = key !== null && /^[#~]/.test(key);
+    const unbound = reserved ? undefined : rows.find((candidate) => candidate.entity_id === null && candidate.entity_key === key);
     row = bound && unbound && bound.entity_key !== key ? unbound : bound ?? unbound;
   }
   const text = (name: string) => (row ? String(row[name] ?? "") : "");

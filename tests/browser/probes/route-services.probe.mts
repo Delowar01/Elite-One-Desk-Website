@@ -22,6 +22,7 @@ import { giveFresh } from "../../helpers/fixtures";
 import { connect, dropDatabase } from "../../helpers/pg";
 import { startServer } from "../../helpers/server";
 import { signIn } from "../../helpers/session";
+import { recordEvidence, serverEvidence } from "../evidence";
 import { launchChromium } from "../harness";
 import { until } from "../wait";
 
@@ -33,6 +34,8 @@ const browser = await launchChromium();
 const database = giveFresh("route_services_probe");
 const sql = connect(database);
 let server;
+/** Never printed: removed by value from every line of evidence. */
+const secrets: string[] = [];
 try {
   const owner = await signIn(sql);
   server = await startServer(database, PORT);
@@ -44,6 +47,8 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message.slice(0, 160)));
   page.on("dialog", (dialog) => void dialog.accept());
+  secrets.push(value!);
+  await recordEvidence(page, secrets);
 
   type Service = { id: number; slug: string; title_en: string; category_id: number; subcategory_id: number | null };
   // The first published service of each published category, in the site's own order.
@@ -178,11 +183,14 @@ try {
     say(`${label}: the public page, its <title> and its structured data do not`, !live.html.includes("(draft)") && !titleTag(live.html).includes("(draft)") && serviceLd(live.html)?.name === service.title_en);
 
     const panel = await openPanel();
+    // The canvas is redrawn once the editor has re-read the page, after the
+    // drafts are already gone (CI 37850382078, route-categories).
+    const drawn = canvasUrl(page);
     await panel.locator("[data-route-discard]").click();
     await until(async () => (await pendingDrafts()) === 0, 20_000);
-    say(`${label}: Discard removes the draft`, (await draftOf(`serviceHero:${service.id}`))?.draft_content == null);
+    const redrawn = await canvasRedrawn(page, drawn);
+    say(`${label}: Discard removes the draft`, (await draftOf(`serviceHero:${service.id}`))?.draft_content == null && redrawn);
     await closePanel();
-    await editorSettled(page);
     const after = await visit(path);
     say(`${label}: the public page never changed`, h1Of(after.html) === h1Of(before.html) && !after.html.includes("data-eod-"), h1Of(after.html));
   }
@@ -226,10 +234,16 @@ try {
   say("Main: selecting a region from Layers shows its fields in the Inspector", requestFields);
 
   // An Inspector edit: the timeline, as a draft of the service.
-  await selectCanvasNode(page, `serviceHero:${main.id}/field:title`);
+  const heroPick = await selectCanvasNode(page, `serviceHero:${main.id}/field:title`);
   await contentTab();
   const timeline = field("timeline").locator("input").first();
-  await timeline.waitFor({ timeout: 15_000 });
+  await timeline.waitFor({ timeout: 15_000 }).catch(async (error: unknown) => {
+    // CI 37850382078 stopped here with nothing but the timeout to go on: what
+    // the click selected and what the Inspector held instead go to the job log.
+    const holds = (await inspector.innerText().catch(() => "")).replace(/\s+/g, " ").slice(0, 300);
+    console.log(`diag the timeline never appeared: the click selected "${heroPick.shows}" (${heroPick.ok ? "as asked" : "not as asked"}); the Inspector holds: ${holds}`);
+    throw error;
+  });
   await timeline.fill("Usually five working days");
   const timed = await until(async () => (await draftOf(`serviceHero:${main.id}`))?.draft_content?.timelineEn?.value === "Usually five working days", 20_000);
   say("Main: an Inspector edit is saved as a draft of the service", timed);
@@ -669,6 +683,10 @@ try {
   const leftovers = await sql<{ n: number }[]>`select count(*)::int as n from services where slug = 'made-during-the-probe'`;
   say("Clean-up: no draft is pending and the created service is gone", (await pendingDrafts()) === 0 && leftovers[0]!.n === 0);
   say("no page errors in the editor or the canvas", errors.length === 0, errors.join(" | "));
+} catch (error) {
+  // A probe that dies says, in the job log, what its server said (`../evidence`).
+  serverEvidence(server, secrets);
+  throw error;
 } finally {
   await browser.close();
   await server?.stop();

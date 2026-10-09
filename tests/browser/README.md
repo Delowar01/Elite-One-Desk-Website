@@ -282,3 +282,40 @@ the sitemap; a Visual Editor draft of a package's title reaches no public tag,
 JSON-LD or page, and the editor's own preview keeps the published title in its
 metadata; and a preview answers `noindex` and is never stored, with no query in
 its canonical. The last check is that neither window met a page error.
+
+## Known issue — React #418 when hydration overtakes the page's data (Batch 25)
+
+Under heavy CPU contention a page can fail with "Minified React error #418"
+(`args[]=HTML`). The `route-categories` and `route-services` probes report it
+as a page error in the canvas. With three busy loops beside it,
+`route-categories` met it in 2 of 4 runs on the current tree and in 2 of 4 on
+Batch 25's base `da96625`; it has not appeared without that load. **It predates Batch 25, and nothing
+in this repository causes it.** The React that runs in the browser is the copy
+Next.js vendors, not `node_modules/react-dom`. Next.js 15.5.25 (this
+repository's) and 15.5.27 (the newest 15.x) both vendor `react-dom`
+`19.2.0-canary-0bdb9206-20250818`.
+
+React streams a long list's later items as rows of their own: once a row
+passes 3,200 characters, Flight writes each further element as a row of its
+own (`deferTask`). So a services group's `<ul>` holds `$L24`… for those
+items. When hydration reaches the `<ul>` before the rows have arrived,
+the `<ul>` suspends. The canary then replays it with
+`replaySuspendedUnitOfWork`, but the cursor had already moved inside the
+`<ul>`. The replayed `<ul>` therefore tries to claim its own first `<li>` as
+itself, and fails. React's component stack names that element:
+`ul ← div ← Reveal ← div ← div ← div ← section`. `recordEvidence`
+(`evidence.ts`) now writes that stack as a `diag recovered:` line, so a CI run
+shows whether a #418 is this one. A loaded run of `route-categories` also
+printed `div ← div ← div ← div ← section` beside it. That stack fits the same
+replay one level up: a group's `<div>` replayed on its pending `Reveal` row
+silently claims its own first `<div>`. Only the `<ul>` form was traced in the
+instrumented chunk.
+
+React 19.3.0 resets the cursor in that replay:
+`popToNextHostParent(fiber); nextHydratableInstance = fiber.stateNode`. With
+the next item rows held back 600 ms by a proxy, the vendored chunk mismatched
+2 times in 30 loads. The same chunk with only that change made 3 replays and
+0 mismatches. After the error React re-renders the page on the client, and
+the page works. The fix is a newer vendored React, through Next.js 16 or a
+patch to the vendored file. Both are dependency changes, outside a hardening
+batch.

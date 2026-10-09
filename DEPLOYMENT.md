@@ -695,39 +695,57 @@ later forward deploy finds them as they were left.
 `(entity_type, entity_id) WHERE entity_id > 0`. No column changes meaning for
 the release before it: it still finds every SEO record by `entity_type` and
 `entity_key`, and this release keeps `entity_key` the record's present address
-on every write, rename and deploy.
+on every write, rename and deploy — the one exception being rows a deploy has
+to leave at their record's own key until the next (below).
 
 After the migrations, `npm run db:migrate` also **reconciles** the rows
 (`reconcileSeoRows`, `src/lib/seo-model.ts`): a row is bound to the record
 whose address it carries, moved to its record's present address if the
 previous release renamed that record, and set aside (`entity_id = 0`, keyed
 `~<row id>`, kept, never used) if it is dead — it names no record, or its
-record was deleted, or a newer row replaced it. Each row ends as this release
+record was deleted, or a newer row replaced it. (Rows a hand-made request left
+holding each other's `~<row id>` take `~<row id>~<nonce>` instead, and stay
+there.) Each row ends as this release
 already shows it, so the deploy changes nothing on this release's pages. It
-deletes nothing, runs in one transaction, and a second run writes nothing — it
-runs on every deploy, so a rollback's edits are settled by the next one. It
-first locks `seo_metadata` against writes (`EXCLUSIVE`): every SEO save, on
+deletes nothing, runs in one transaction, and never touches a share image: a
+row that shows one is updated at most once, straight to where it belongs,
+because a second update of a row in one transaction makes PostgreSQL check its
+picture again — locking the picture after the SEO table, the opposite order to
+a media delete, and the two would wait on each other. Rows the previous release
+left holding each other's addresses need a key on the way, so a row with no
+picture steps aside through its record's own key (`#<id>`) and the rest move
+into the address that frees; where every row of such a ring shows a picture,
+each waits at its record's own key — bound, found by id and shown exactly as
+before — and moves to its address at the next deploy, or its record's next save
+or move. A second run therefore writes nothing, except to finish those; it runs
+on every deploy, so a rollback's edits are settled by the next one. It first
+locks `seo_metadata` against writes (`EXCLUSIVE`): every SEO save, on
 whichever release is serving, waits the few milliseconds the run takes, and a
 save already under way makes the run wait for it — so a slow or stuck SEO
 save shows up here as `db:migrate` waiting, not failing. Page reads are never
 blocked. The run reads the records at one snapshot (`REPEATABLE READ`), so a
 record the serving release moves meanwhile is settled by the next run rather
 than half by this one. The log line says what it did:
-`SEO records: N bound, N moved to their record's address, N set aside.`
-or `SEO records: nothing to reconcile.`
+`SEO records: N bound, N moved to their record's address, N set aside.` —
+followed, when it left such a ring waiting, by `N left at their record's own
+key for the next deploy: they held each other's addresses, and each shows a
+share image.` — or `SEO records: nothing to reconcile.`
 
 After a rollback the older release reads the same rows by address, so every
 override still applies — including the destination and overview records only
-this release can create. What it does not have: the Arabic share title and
+this release can create — except for rows a deploy left waiting at their
+record's own key (below). What it does not have: the Arabic share title and
 description (it shows the English ones on `/ar`, as before), an Arabic page's
 own Arabic title in place of an English-only override (it shows the English
 override, as before), and the canonical restrictions. SEO edits it makes go to
 the same rows; the next deploy binds any row it created. Rows this release has
 set aside are keyed `~<row id>`, so the older release finds none of them at
 any address: a record it creates where one used to be starts with nothing, and
-its first SEO save there writes a new row. The corners, each needing a
-rollback plus a specific edit during it (`docs/admin/seo-and-share-images.md`
-B.16):
+its first SEO save there writes a new row. Rows waiting at their record's own
+key are not at an address either, so during a rollback those records show
+their own content until the next deploy puts the rows back. The corners, each
+needing a rollback plus a specific edit during it
+(`docs/admin/seo-and-share-images.md` B.16):
 
 - an Arabic share text written before the rollback stays as it was while the
   English one is edited (the older release does not know the Arabic column);
@@ -741,9 +759,13 @@ B.16):
   next deploy gives the row back to its own record;
 - if the older release deletes a record and then creates or moves another
   onto its address, the newcomer shows the deleted record's row during the
-  rollback (and an SEO save there edits that row); the next deploy sets the
-  row aside, and the newcomer shows its own content until its SEO is saved
-  again.
+  rollback (and an SEO save there edits that row). What the next deploy does
+  depends on the row: one this release had bound to the deleted record is set
+  aside, and the newcomer shows its own content until its SEO is saved again;
+  one the older release wrote itself, by address, cannot be told from a row
+  written for the newcomer, so it is bound to the newcomer — the deleted
+  record's title, description and noindex included, as both releases already
+  show them — setting aside the newcomer's own row if it was moved there.
 
 ### Temporary passwords
 

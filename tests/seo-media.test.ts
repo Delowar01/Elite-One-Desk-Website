@@ -374,4 +374,38 @@ describe("25 · F5: the check is the server's (§20, §21)", () => {
     // Which side wins is the scheduler's business; the two tests above force each order.
     console.log(`[seo-media] race: ${outcomes.saved} saves won, ${outcomes.deleted} deletes won`);
   });
+
+  test("a move committed while the delete counts cannot hide a use: the rows and the records are read at one moment (W5³)", async () => {
+    // A service whose record shows a picture, and a dead row the previous
+    // release left at the address the service is about to take.
+    const [service] = await sql<{ id: number }[]>`select id from services where slug = 'airport-transfer'`;
+    const shown = await picture("moved-while-counted");
+    await sql`
+      insert into seo_metadata (entity_type, entity_key, entity_id, og_image_id)
+      values ('service', 'travel-tourism/airport-transfer', ${service!.id}, ${shown.id})`;
+    await sql`insert into seo_metadata (entity_type, entity_key) values ('service', 'business-setup/airport-transfer')`;
+    // The Services form's move, held open — with the site's settings, which the
+    // delete reads straight after the SEO rows, so it stops there.
+    const move = holdLock(async (tx) => {
+      await tx`lock table site_settings in access exclusive mode`;
+      await tx`update services set category_id = ${ids["category/business-setup"]!}, subcategory_id = null where id = ${service!.id}`;
+      await tx`
+        update seo_metadata set entity_id = 0, entity_key = '~' || id
+         where entity_type = 'service' and entity_key = 'business-setup/airport-transfer'`;
+      await tx`
+        update seo_metadata set entity_key = 'business-setup/airport-transfer'
+         where entity_type = 'service' and entity_id = ${service!.id}`;
+    });
+    await move.held;
+    const deleting = deleteMedia(shown.id);
+    await untilWaiting();
+    await move.release();
+    // Before the move and after it the service shows the picture: so does every
+    // moment the delete could have read.
+    assertRefused(await deleting, ["Airport Transfer — search and sharing image"]);
+    assert.ok(await inLibrary(shown));
+    const [row] = await sql<{ og_image_id: number | null }[]>`
+      select og_image_id from seo_metadata where entity_type = 'service' and entity_id = ${service!.id}`;
+    assert.equal(row!.og_image_id, shown.id, "the service's record lost its picture");
+  });
 });

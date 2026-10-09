@@ -15,11 +15,12 @@
  * Categories screen keeps a group's Arabic summary, which the editor can set.
  */
 
-import { editorIdle, editorSettled, selectCanvasNode, selectFromLayers } from "../canvas";
+import { canvasRedrawn, canvasUrl, editorIdle, editorSettled, selectCanvasNode, selectFromLayers } from "../canvas";
 import { giveFresh } from "../../helpers/fixtures";
 import { connect, dropDatabase } from "../../helpers/pg";
 import { startServer } from "../../helpers/server";
 import { signIn } from "../../helpers/session";
+import { recordEvidence, serverEvidence } from "../evidence";
 import { launchChromium } from "../harness";
 import { until } from "../wait";
 
@@ -31,6 +32,8 @@ const browser = await launchChromium();
 const database = giveFresh("route_categories_probe");
 const sql = connect(database);
 let server;
+/** Never printed: removed by value from every line of evidence. */
+const secrets: string[] = [];
 try {
   const owner = await signIn(sql);
 
@@ -56,6 +59,8 @@ try {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message.slice(0, 160)));
   page.on("dialog", (dialog) => void dialog.accept());
+  secrets.push(value!);
+  await recordEvidence(page, secrets);
 
   type Category = { id: number; slug: string; title_en: string };
   const bySlug = async (slug: string) =>
@@ -165,11 +170,15 @@ try {
     say(`${label}: Preview shows the draft`, preview.includes(`${category.title_en} (draft)`));
 
     const panel = await openPanel();
+    // The canvas is redrawn once the editor has re-read the page, after the
+    // drafts are already gone: until then the canvas on screen is the one about
+    // to be replaced (CI 37850382078).
+    const drawn = canvasUrl(page);
     await panel.locator("[data-route-discard]").click();
     await until(async () => (await draftOf(`category:${category.id}`))?.draft_content == null, 20_000);
-    say(`${label}: Discard removes the draft`, (await draftOf(`category:${category.id}`))?.draft_content == null);
+    const redrawn = await canvasRedrawn(page, drawn);
+    say(`${label}: Discard removes the draft`, (await draftOf(`category:${category.id}`))?.draft_content == null && redrawn);
     await closePanel();
-    await editorSettled(page);
     const after = await visit(`/services/${category.slug}`);
     say(`${label}: the public page never changed`, h1Of(after) === h1Of(before) && !after.includes("data-eod-"), h1Of(after));
   }
@@ -350,10 +359,14 @@ try {
   const live = await visit(`/services/${travel.slug}`);
   say("Travel: the public page shows none of it", !live.includes("A draft introduction from the probe.") && !live.includes("data-eod-"));
   const panel = await openPanel();
+  // What follows selects on the canvas, so it waits for the redraw the discard
+  // ends with — not only for the drafts to go, which happens first.
+  const drawn = canvasUrl(page);
   await panel.locator("[data-route-discard]").click();
   await until(async () => (await pendingDrafts()) === 0, 20_000);
   const pending = await pendingDrafts();
-  say("Travel: Discard clears every draft on the page", pending === 0, `${pending}`);
+  const redrawn = await canvasRedrawn(page, drawn);
+  say("Travel: Discard clears every draft on the page", pending === 0 && redrawn, `${pending}${redrawn ? "" : ", and the canvas was not redrawn"}`);
   await closePanel();
 
   /* ------------------------------------------------------------------ */
@@ -507,6 +520,10 @@ try {
   }
 
   say("no page errors in the editor or the canvas", errors.length === 0, errors.join(" | "));
+} catch (error) {
+  // A probe that dies says, in the job log, what its server said (`../evidence`).
+  serverEvidence(server, secrets);
+  throw error;
 } finally {
   await browser.close();
   await server?.stop();

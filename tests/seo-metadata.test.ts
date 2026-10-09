@@ -37,7 +37,12 @@ let database = "";
 let sql: Sql;
 let server: Server;
 let owner: TestSession;
-/** The site's own origin — the build's `NEXT_PUBLIC_SITE_URL`, read back out of a page. */
+/**
+ * The origin the pages name, read back out of one: the build's
+ * `NEXT_PUBLIC_SITE_URL` when the build was given one (production, and a local
+ * build with `.env`), else the server's own address, which the test server
+ * sets at runtime (CI builds without it).
+ */
 let site = "";
 
 const ids: Record<string, number> = {};
@@ -399,7 +404,15 @@ describe("25 · sitemap and robots.txt (§15, §17)", () => {
     assert.match(robots, /^Allow: \/$/m);
     for (const rule of ["/admin", "/api/", "/media/*@*"]) assert.ok(robots.includes(`Disallow: ${rule}\n`), rule);
     assert.equal(robots.match(/^User-Agent:/gm)?.length, 1, "one group for every crawler");
-    assert.ok(robots.includes(`Sitemap: ${site}/sitemap.xml`));
+    // robots.txt is prerendered at build time (build-isolation.test.ts), so its
+    // origin is the one the build was given, and its sitemap is named at it.
+    const host = /^Host: (.+)$/m.exec(robots)?.[1] ?? "";
+    assert.match(host, /^https?:\/\/[^/\s]+$/, "robots.txt names the site's origin");
+    assert.ok(robots.includes(`Sitemap: ${host}/sitemap.xml\n`), robots);
+    // A build given the address puts that same one on every page, as production
+    // does (one .env feeds both). Only a build given none — CI's — leaves the pages
+    // naming the server's runtime address, which a static file cannot know.
+    if (site !== server.origin) assert.equal(host, site, "robots.txt and the pages name different origins");
   });
 });
 

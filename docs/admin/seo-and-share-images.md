@@ -449,7 +449,8 @@ The sitemap reads no SEO record (B.13).
   wherever the record's address goes;
 - **unbound** (`entity_id` null) — a row only the address names: the two
   overviews always, and a row the previous release wrote that this one has
-  not bound yet;
+  not bound yet. One whose key is in a reserved form (below) names nothing —
+  no address is one — and is as dead as a detached row (W2³);
 - **detached** (`entity_id = 0`) — a dead row: it named no record when it was
   last examined, or its record was deleted, or a newer row replaced it. It is
   kept, never used, and keyed `~<row id>` — a key no address and no record can
@@ -478,17 +479,23 @@ address cannot be used:
 - `#<record id>` — a service address longer than the column (two long slugs);
   the previous release could not find such a row anyway (A.9), and this one
   finds it by id. A bound row whose own address is momentarily held by another
-  record's row is parked here too, until its record's address is free.
+  record's row is parked here too, until its record's address is free — and
+  the deploy leaves here the rows of records whose addresses the previous
+  release swapped, where every one of them shows a share image (B.3, step 5).
 - `~<row id>` — every row taken out of use (`detachSeoRow`, and the deploy's
   set-asides).
 
 Each form belongs to one row only: `#<id>` to that record's own row, `~<n>` to
 row n. A row that is not bound and holds one anyway can only have been written
-by hand, through the previous release's form (A.9). The deploy sets every such
-row aside first (B.3, step 0), and a write about to use a reserved key moves
-whatever else holds it to its own `~<row id>` first (`claimSeoKey`,
-`detachSeoRow`), so parking a record's row or setting one aside never meets a
-duplicate key (C.3, D3 and V2²).
+by hand, through the previous release's form (A.9). No reader of this release
+uses it — the pages, the screen, the media guard and every writer's own lock
+pass it by (`indexSeoRows`, `lockOwnSeoRows`) — and the deploy sets it aside
+first (B.3, step 0), so the two agree on it (W2³). A write about to use a
+reserved key — a record created at an address too long for the column
+included (`freeSeoAddress`) — moves whatever else holds it to its own
+`~<row id>` first (`claimSeoKey`, `detachSeoRow`), so parking a record's row or
+setting one aside never meets a duplicate key, and a new record never starts
+with such a row (C.3, D3, V2², W2³ and X3³).
 
 ### B.3 Migration `0007` and reconciliation
 
@@ -518,12 +525,16 @@ what this release shows.
 The transaction is `REPEATABLE READ` and first takes `LOCK TABLE seo_metadata
 IN EXCLUSIVE MODE`:
 
-- **The lock.** Every write to the table waits the few milliseconds the run
-  takes — the previous release's saves, and this release's, including one that
-  has already locked its rows `FOR UPDATE` and has yet to write them (a weaker
-  lock let the run past that row lock, and the two then waited for each other:
-  C.3, L1²). A write already under way is waited for, then settled by the same
-  run. Reads, and so every public page, go on.
+- **The lock.** A write that has not touched the table yet waits the few
+  milliseconds the run takes — the previous release's saves and this
+  release's alike. A write already under way is waited for instead, and then
+  settled by the same run: that includes a save of this release that has
+  locked its rows `FOR UPDATE` and has yet to write them, whose own later
+  statements go ahead of the queued lock (PostgreSQL grants a lock at once to
+  a transaction that already holds one the queued request conflicts with), so
+  the two never wait on each other — a weaker lock let the run past that row
+  lock, and the two then waited for each other (C.3, L1² and X6³). Reads, and
+  so every public page, go on.
 - **The snapshot.** Taken when the first statement after the lock runs, it
   holds for every statement after it: each reads the records as they were then.
   Without it, a record the previous release moved between two statements — its
@@ -531,12 +542,23 @@ IN EXCLUSIVE MODE`:
   be re-keyed onto a key another row held, and stop the deploy (C.3, C2 and
   L2²). A record moved after the snapshot is settled where it was, and is the
   next run's to settle.
+- **One update per row, where it shows a picture.** A second update of a row in
+  one transaction makes PostgreSQL check its `og_image_id` against `media`
+  again — a `FOR KEY SHARE` on the picture, taken after the run holds the SEO
+  table. A media delete takes them the other way round: it holds the picture,
+  then its `ON DELETE SET NULL` waits for the table — and the two would wait on
+  each other (C.3, D1³). So the run never touches a picture: rows move once
+  each, straight to where they belong, in as many passes as it takes; only rows
+  that hold one another's addresses need a key on the way, and only a row with
+  no picture — whose check has nothing to look up — is moved through one.
 
-Then, in order:
+Then, type by type, in order:
 
 0. a row that is not bound but holds a key in a reserved form (B.2) is **set
-   aside**, through a temporary key nobody can have written, so no two of them
-   meet on the way;
+   aside** to its own `~<row id>` as soon as nothing holds that; rows that hold
+   each other's are set aside under a key nobody can have written instead
+   (`~<row id>~<nonce>`), where they stay — as out of use as their own, and
+   left alone by every later run;
 1. a row bound to a record that no longer exists is **set aside**: its record
    is gone (the previous release deleted it and left the row), and no reader
    of this release uses it (C.3, R3²);
@@ -544,25 +566,38 @@ Then, in order:
    one (the previous release moved it, then saved its SEO by address), is
    **set aside**: the newer row is the one in use (B.2);
 3. an unbound row at a record's present address is **bound** to that record;
-4. a bound row at an address its record no longer has goes to `#<id>`;
-5. every detached row not yet at its own `~<row id>` is **set aside** there,
-   freeing any address it held;
-6. every bound row is **re-keyed** to its record's present address (through
-   steps 4–5, so two records whose rows swapped addresses swap back);
-7. any other unbound row names no record: it is **set aside**. The overviews'
+4. a detached row still at an address is **set aside** to its own `~<row id>`,
+   so the address is free;
+5. a bound row at an address its record no longer has is **moved** to the
+   present one as soon as that is free — a pass at a time, so a chain of them
+   unwinds. What is left holds one another's addresses: records the previous
+   release swapped. Their rows with no picture step aside to their record's own
+   `#<id>`, the rest move into the addresses that frees, and then they come back
+   — so two records whose rows swapped addresses swap back. Where every row of
+   such a ring shows a picture, each **waits** at its record's `#<id>`: bound,
+   found by id and in use exactly as before, and moved to its address at the
+   next run or its record's next save or move;
+6. any other unbound row names no record: it is **set aside**. The overviews'
    two keys are left alone.
 
 It logs `SEO records: N bound, N moved to their record's address, N set
-aside.` — every statement that changed a row is counted (C.3, T4 and T5²) — or
-`SEO records: nothing to reconcile.`; a second run writes nothing
-(`tests/seo-reconcile.test.ts` compares a data dump).
+aside.` — every statement that changed a row is counted (C.3, T4 and T5²) —
+followed, when step 5 left a ring waiting, by `N left at their record's own
+key for the next deploy: …`; or `SEO records: nothing to reconcile.`. A second
+run writes nothing, except to finish such a ring (`tests/seo-reconcile.test.ts`
+compares a data dump).
 
 So a deploy changes nothing this release shows, and, against what the previous
 release showed, only two things: a record's own row goes back to it, and a
-dead row — the row of a record deleted meanwhile, or one naming no record — is
-no longer applied to whatever took its address (B.16). Rows the previous
-release writes after the run, while it still serves, are unbound until the
-next save or deploy binds them, and are used by address meanwhile (B.2).
+dead row — one bound to a record deleted meanwhile, or one naming no record —
+is no longer applied to whatever took its address (B.16). A row the previous
+release wrote **by address** for a record it then deleted is not one of them:
+it is unbound, and nothing tells it from a row written for whatever record
+holds that address now, so it is that record's — at runtime, and bound to it
+by the deploy (steps 2–3; C.3, D2³). Rows the previous release writes after the
+run, while it still serves, are unbound until the next save or deploy binds
+them — or sets them aside, if no record has their address — and are used by
+address meanwhile (B.2).
 
 The retired-address maps of the 2026 restructure (`taxonomy-moves.ts`) are
 **not** used to rescue rows keyed by an address the restructure retired:
@@ -606,9 +641,9 @@ picture is under 300×157. `robots.txt` still disallows the renditions
 
 A picture is **in use for SEO** when it is
 
-1. the share image of a record some existing target **uses** under B.2 — a
-   bound row whose record exists, or an unbound row at an existing target's
-   present address (the overviews' included), or
+1. the share image of the row some existing target **uses** under B.2 — its
+   bound row, unless a newer unbound row at its present address shadows it;
+   else the unbound row at its present address (the overviews' included) — or
 2. the site default share image.
 
 Applied to the categories the brief names (§3):
@@ -621,7 +656,7 @@ Applied to the categories the brief names (§3):
 | Route-specific record | yes, while its target exists | B.2 |
 | Unpublished record (its page or record is unpublished) | **yes** | publishing it makes the record live at once, and the record's own picture column is protected on the same terms |
 | Historical / version-only | n/a | SEO has no history. Route history is B.6 |
-| A detached row, a row bound to a deleted record, a dead row at an address nothing has | no | nothing can show it; deleting the picture empties the column (`ON DELETE SET NULL`) |
+| A detached row, a row bound to a deleted record, a dead row at an address nothing has, a record's own row shadowed by a newer row at its present address (B.2), a row by address at a reserved key | no | nothing can show it; deleting the picture empties the column (`ON DELETE SET NULL`) |
 
 `seoMediaUsage()` (`seo-targets.ts`) returns every such use with a label
 ("Egypt — search and sharing image", "Site default share image") and a link
@@ -632,7 +667,11 @@ disagree. There is no separate SEO rule (brief §4).
 
 The delete is atomic (F5c): `deleteMedia` locks the media row `FOR UPDATE`,
 recounts every use **inside that transaction, on that connection**, deletes
-only if there is none, and unlinks the files after the commit. An SEO save
+only if there is none, and unlinks the files after the commit. The SEO rows
+and the records' present addresses are read in **one statement**, so at one
+moment: which row a record uses depends on both, and read in two, a move
+committed in between could hide a use that every moment before and after it
+had (C.3, W5³). An SEO save
 that chooses a picture locks it `FOR KEY SHARE` before it writes (B.11), so
 whichever of the two comes second sees the other: the delete is refused, or
 the save is told the picture is gone. A record's own picture column is held
@@ -666,10 +705,10 @@ SEO row in the same transaction, after the record's own row (`moveSeoRow`,
 
 | Writer | What happens to the SEO row |
 |---|---|
-| Destinations form changes the slug | the destination's row moves to the new address, still bound to the same id; an unbound twin at the old address is set aside; whatever held the new address is moved aside (`claimSeoKey`): to `#<id>` if it is bound to another live record, to `~<row id>` otherwise |
+| Destinations form changes the slug | the row the destination uses (B.2) moves to the new address, bound to its id: its own row — or, where that sits at another address beside a newer unbound row at the old one, the newer row, and its own is set aside to `~<row id>` (W3³, X4³); whatever held the new address is moved aside (`claimSeoKey`): to `#<id>` if it is bound to another live record, to `~<row id>` otherwise |
 | Services form moves a service to another category | the same, with the new `<category>/<slug>` |
 | Create a page, category, service, destination or package | whatever row holds the new address is moved aside (`freeSeoAddress`, through `claimSeoKey`), in the create's own transaction: to `#<id>` if it is bound to another live record — still that record's, still used for it — and to `~<row id>` otherwise (a row the previous release wrote for a record gone since, a row bound to a deleted record). The new record starts with nothing of either, under this release and under the previous one after a rollback, which reads by address (C.3, D1 and T8²) |
-| Delete a destination, package, service or custom page | its bound row, and an unbound row at its address, are deleted with it |
+| Delete a destination, package, service or custom page | its bound row, and an unbound row at its address, are deleted with it — never a row by address at a reserved key, which is nobody's (B.2) |
 | Delete a category (which deletes its services) | the category's rows and its services' rows are deleted with it. Its services are locked as they are listed: a service being moved out meanwhile is waited for and left out — the cascade does not take it either — so only records that really go take their rows (C.3, C1) |
 
 Every one of them drops the `seo` cache tag after committing — the creates
@@ -732,7 +771,9 @@ own unit. `saveSeo`:
    the target from its own table** by id (refused if it no longer exists:
    "That page no longer exists…"), locks and checks the picture it is about to
    name (exists, not an SVG), locks the target's own rows, and decides unit by
-   unit — an untouched field is never written; a changed one is written while
+   unit — an untouched field is never written (the stored row is read through
+   the posted form's own reader, so a canonical the previous release kept as
+   `/about/` is untouched while it is left alone: X1³); a changed one is written while
    the stored value is still the base, counts as done when it already equals
    the submission, and is a conflict otherwise; any conflict refuses the whole
    save with the fields named;
@@ -768,15 +809,18 @@ of its own. The editor's drafts never reach metadata.
 
 | Transaction | Takes, in order |
 |---|---|
-| SEO save / remove | the target's advisory lock (`pg_advisory_xact_lock`, one per reference — it also covers a target with no row yet, and the overviews, which have no record row) → the record's own row `FOR KEY SHARE`, **locked by itself**; its category or destination read after it, in a statement of its own → the picture `FOR KEY SHARE` (a save choosing one) → the target's SEO rows `FOR UPDATE` |
-| Destination slug change, service move | the record row `FOR UPDATE` (as before) → its SEO rows `FOR UPDATE` |
+| SEO save / remove | the target's advisory lock (`pg_advisory_xact_lock`, one per reference — it also covers a target with no row yet, and the overviews, which have no record row) → the record's own row `FOR KEY SHARE`, **locked by itself**; its category or destination read after it, in a statement of its own → the picture `FOR KEY SHARE` (a save choosing one) → the target's SEO rows and the row holding the address the save takes, `FOR UPDATE` in one statement, in the order of their ids |
+| Destination slug change, service move | the record row `FOR UPDATE` (as before) → its SEO rows and the row holding its new address, `FOR UPDATE` in one statement, in the order of their ids |
 | Record create | the new record's row (its insert) → the row holding its address `FOR UPDATE` (`freeSeoAddress`) |
 | Record delete | the record row (by the delete; a category `FOR UPDATE` first, then its services `FOR UPDATE` as they are listed) → its SEO rows |
-| Media delete | the media row `FOR UPDATE` → reads only → the referring rows by the foreign key's `SET NULL` |
-| Deploy reconciliation | `seo_metadata` `EXCLUSIVE` — every write waits, one that has locked its rows and not yet written them included; reads go on → reads of the record tables at one `REPEATABLE READ` snapshot, no row locks (B.3) |
+| Media delete | the media row `FOR UPDATE` → reads only (the SEO rows and the records' addresses in one statement, B.5) → the referring rows by the foreign key's `SET NULL` |
+| Deploy reconciliation | `seo_metadata` `EXCLUSIVE` — a write that has not touched the table waits for it; one under way is waited for, its own later statements going ahead of the queued lock; reads go on → reads of the record tables at one `REPEATABLE READ` snapshot, no row locks, and no picture: no row is updated twice where it shows one (B.3) |
 
-Record before SEO row everywhere, and the picture before the SEO row, so no two
-of these can wait on each other in a cycle. A `FOR KEY SHARE` on a record lets
+Record before SEO row everywhere, and the picture before the SEO row; two
+writers that each take a row the other holds — records whose rows hold each
+other's addresses — lock every SEO row they need in one statement, in id
+order, so one waits for the other (C.3, W1³); and the deploy's run never locks
+a picture. So no two of these can wait on each other in a cycle. A `FOR KEY SHARE` on a record lets
 nothing that locks it `FOR UPDATE` — the edit forms, a delete — proceed until
 the SEO save has committed, and the save waits for them likewise.
 
@@ -860,7 +904,9 @@ page's never does.
 The previous release, against this schema: ignores `entity_id`, `og_title_ar`
 and `og_description_ar`; finds every record by its key — which this release
 keeps current — so every override still applies, including the destination
-and overview ones only this release can create; shows the English share text
+and overview ones only this release can create, except a record whose row a
+deploy left waiting at its `#<id>` (B.3 step 5), which shows its own content
+until the next deploy puts the row back (C.4); shows the English share text
 on `/ar`, and an English-only override's title on an Arabic page, as before
 this release. A canonical stored by this release is a path without a language
 prefix, so the previous release emits the English address for it. Its writes
@@ -882,8 +928,13 @@ deploy. The corners, each needing a rollback and a specific edit during it:
 - a record the older release deletes, after which it creates or moves another
   record onto the deleted one's address: during the rollback the newcomer
   shows the deleted record's row (by key), and an SEO save there edits that
-  row; the next deploy sets it aside, as every reader of this release treats a
-  deleted record's row (B.3 step 1, C.4).
+  row. What the next deploy does depends on the row: one bound to the deleted
+  record — this release had bound it — is set aside, as every reader of this
+  release treats a deleted record's row (B.3 step 1), and the newcomer shows
+  its own content; one the older release wrote itself, by address, is unbound,
+  nothing tells it from a row written for the newcomer, and it is bound to the
+  newcomer — setting aside the newcomer's own row if the newcomer was moved
+  there — exactly as both releases already show it (B.3 steps 2–3; C.4, D2³).
 
 Rows this release has taken out of use are keyed `~<row id>`, so the older
 release finds none of them at any address: a record it creates where one used
@@ -916,11 +967,11 @@ saving without its region base values, as it always could (DEPLOYMENT.md,
 
 | Where | What it proves |
 |---|---|
-| `tests/seo-model.test.ts` (25) | references; which row a target uses, the newer row by address included; each language on its own; canonical acceptance, storage and drawing — what a page would emit is what is checked (S1), empty segments refused and trailing slashes dropped (V1²) |
-| `tests/seo-admin.test.ts` (39) | the 93 targets in order, the badges and `?target=`; saving every kind by reference, logged by reference; share-image and canonical validation; a legacy row bound in place; a service's move and a destination's new address carrying the record, dead rows moved aside and never inherited; a stale-keyed live row parked at `#id` by a create — past a key made by hand to look like it (V2²) — and put back, and parked by a first save (T4²); a newer row by address used by the page and the screen, a save and a removal setting aside the row it shadowed, `#id` given up on the way (D2, T6²); deletes taking records with them, a service moved out while its category is deleted keeping its record (C1); all five creates moving a dead row aside, the public page drawn without it at once (D1, R6²); a form drawn before its record was deleted; permissions, CSRF, strict references, a browser-sent type or key ignored, bases replayed across records and kinds or altered, the previous release's form exactly as it posts (T1); two forms on one record (different fields, the same field, both orders, the same change, first inserts at once, a stale removal, a removal twice); a save that waited for a move (N2); the Visual Editor's link; the screen's exported actions |
-| `tests/seo-metadata.test.ts` (24) | every route class in both languages; precedence; canonicals, alternates, robots, `/home`, `/en` redirect; share-image renditions, dimensions, card size, skipped SVG and missing default; TouristTrip and breadcrumb unchanged by a record; unpublished pages and previews; the sitemap and `robots.txt`; no Arabic alternate or share locale while Arabic is off (F6n); a change live at the next request |
-| `tests/seo-media.test.ts` (13) | the brief §4 lifecycle on the real delete: a record's share image, the site default, a shared picture, an unpublished page's record, a legacy row; records no page uses protect nothing, a row shadowed by a newer one included (T3); a deleted record releases its picture; authority; the delete/save race in each forced order and left free |
-| `tests/seo-reconcile.test.ts` (22) | every row state the previous release can leave, through the real migrate script, settled to what this release shows, with the exact counts logged (T4, T5²); dead rows — a deleted record's, one naming no record, one at the address of a record with none — set aside, never bound (R1², R3²); `#<id>` keys given up, and the record's row parked there on its next move (D3); an open save of the previous release waited for (C2), and an open save of this release that has locked its row waited for without a deadlock (L1²); a record moved mid-run settled at the run's snapshot (L2²); hand-made reserved keys set aside first (V2²); a row set aside out of the previous release's sight, its next save starting a new row (R2²); nothing deleted; a second run changes nothing |
+| `tests/seo-model.test.ts` (26) | references; which row a target uses, the newer row by address included, and a row by address at a reserved key nobody's (W2³); each language on its own; canonical acceptance, storage and drawing — what a page would emit is what is checked (S1), empty segments refused and trailing slashes dropped (V1²) |
+| `tests/seo-admin.test.ts` (45) | the 93 targets in order, the badges and `?target=`; saving every kind by reference, logged by reference; share-image and canonical validation; an untouched legacy canonical no edit, alone or beside another person's change (X1³); a legacy row bound in place; a service's move and a destination's new address carrying the record, dead rows moved aside and never inherited; a stale-keyed live row parked at `#id` by a create — past a key made by hand to look like it (V2²) — and put back, and parked by a first save (T4²); a save and a rename each taking an address the other's row holds, neither refused, in both id orders, each held by a gate the test opens (W1³, T2⁴, T3⁴); a hand-made row at a long-address service's `#<id>` passed by and set aside, by a save and by a create (W2³); a hand-made holder of a `~<id>` moved aside first, in a create and in a save (X3³); a newer row by address used by the page and the screen, a save and a removal setting aside the row it shadowed, `#id` given up on the way (D2, T6²); deletes taking records with them, a service moved out while its category is deleted keeping its record (C1); all five creates moving a dead row aside — an unbound one, with the cached rows already holding it, and a page published through its own form — the public page drawn without it at once (D1, R6², W4³); a form drawn before its record was deleted; permissions, CSRF, strict references, a browser-sent type or key ignored, bases replayed across records and kinds or altered, the previous release's form exactly as it posts (T1); two forms on one record (different fields, the same field, both orders, the same change, first inserts at once, a stale removal, a removal twice); a save that waited for a move (N2); the Visual Editor's link; the screen's exported actions |
+| `tests/seo-metadata.test.ts` (24) | every route class in both languages; precedence; canonicals, alternates, robots, `/home`, `/en` redirect; share-image renditions, dimensions, card size, skipped SVG and missing default; TouristTrip and breadcrumb unchanged by a record; unpublished pages and previews; the sitemap and `robots.txt` — its sitemap at its own origin, and that origin the pages' whenever the build was given one (a build given none, CI's, leaves the pages naming the server's runtime address, which a prerendered file cannot know); no Arabic alternate or share locale while Arabic is off (F6n); a change live at the next request |
+| `tests/seo-media.test.ts` (14) | the brief §4 lifecycle on the real delete: a record's share image, the site default, a shared picture, an unpublished page's record, a legacy row; records no page uses protect nothing, a row shadowed by a newer one included (T3); a deleted record releases its picture; authority; the delete/save race in each forced order and left free; a move committed while the delete counts hides no use (W5³) |
+| `tests/seo-reconcile.test.ts` (26) | every row state the previous release can leave, through the real migrate script, settled to what this release shows, with the exact counts logged (T4, T5²); dead rows — a deleted record's, one naming no record, one at the address of a record with none — set aside, never bound (R1², R3²); `#<id>` keys given up, and the record's row following it on its next move (D3); an open save of the previous release waited for (C2), and an open save of this release that has locked its row waited for without a deadlock (L1²); a record moved mid-run settled at the run's snapshot (L2²); hand-made reserved keys set aside first (V2²) — a row by address at a long-keyed record's own `#<id>` among them, never bound, the record's own row moving there (T1⁴) — and rows made by hand to hold each other's `~<id>` set aside once, under the run's own key, and left there by the next run (R1⁴); a row set aside out of the previous release's sight, its next save starting a new row (R2²); a delete holding the pictures of rows the run moves and sets aside does not hold it up, and rows that swapped addresses swap back in one run — or, all showing pictures, wait at `#<id>` for the next (D1³); nothing deleted; a second run changes nothing |
 | `tests/media-pipeline.test.ts` | an EXIF-rotated upload stored, sized and rendered at its upright size (M2) |
 | `tests/schema-compat.test.ts` | the previous release's own SEO upsert and delete against this schema |
 | `tests/mutation-audit.test.ts` | `clearSeo` by reference, held to the base |
@@ -1011,6 +1062,18 @@ next request after any save.
 | V2² | fixed — a reserved key written by hand through the previous release's form could stop the deploy or fail a create: such rows are set aside first (B.2, B.3 step 0); a chain of them can still fail one write until the next deploy (C.4) |
 | T4², T5², T6² | fixed — tests that could not fail: a first save's own claim of a held address, a move that only parks, and the runtime set-aside of a `#<id>` key each have one now |
 | T7², T8² | fixed — documentation: old tabs and per-build action ids (B.16, DEPLOYMENT.md, `services-form-concurrency.md` §11); what a create does with another live record's row (B.7) |
+| D1³ | found by a third review, of the corrections above, and fixed — the deploy's run updated a row twice in one transaction, so PostgreSQL checked its share image again, locking the picture after the SEO table, the opposite order to a media delete: no row that shows a picture is updated twice, and rows that swapped addresses and all show pictures wait at `#<id>` for the next run (B.3, B.11) |
+| W1³ | fixed — a save and a move each taking an address the other's row held could deadlock: the row holding the address a write takes is locked with the writer's own, in one statement in id order (B.11) |
+| W2³, X5³ | fixed — a row by address at a reserved key was used at runtime and adopted by a save, while the deploy set it aside: it is nobody's everywhere, and a create at a long address clears its `#<id>` (B.2) |
+| W5³ | fixed — the media guard read the SEO rows and the records' addresses in two statements, so a move between them could hide a use: one statement (B.5) |
+| X1³ | fixed — a canonical the previous release kept as `/about/` read as an edit on every save: the stored value goes through the posted value's reader (B.9) |
+| W4³, X2³, X3³ | fixed — tests that could not fail: three of the five creates against a primed cache, and a hand-made holder of a `~<id>` at a set-aside, each have one now (B.18) |
+| D2³, W3³, X4³, X6³ | fixed — documentation: a row the previous release wrote by address for a record it deleted is bound to whatever holds the address (B.3, B.16, C.4, DEPLOYMENT.md); a move carries the row the record uses, and a shadowed row protects no picture (B.5, B.7); who waits for whom under the deploy's lock (B.3, B.11) |
+| R1⁴ | found by a fourth review, of the final diff, and fixed — rows made by hand to hold each other's `~<id>` were set aside under the run's own key, then moved again and logged again by the next deploy: that key is final (B.3 step 0) |
+| B1⁴ | fixed — documentation: a record whose row waits at its `#<id>` shows its own content during a rollback, which B.16 and DEPLOYMENT.md said no override would (B.16) |
+| T1⁴ | fixed — a test that could not fail: step 0's `#<id>` arm, which keeps the deploy from binding a hand-made row at a long-keyed record's own key, has one now (B.18) |
+| T2⁴, T3⁴ | fixed — tests: W1³'s save-side half is held by a test with the claimed row first in id order, and both W1³ tests hold the rename by a gate the test opens rather than a two-second sleep (B.18) |
+| T4⁴ | fixed — documentation: B.18 described a move parking a row at `#<id>`, which only a ring now does (B.3 step 5) |
 | X1–X8 | recorded, unchanged (A.14) |
 
 ### C.4 Known limitations, recorded
@@ -1041,11 +1104,22 @@ next request after any save.
 - **Rollback edits that land in a row this release does not give the page**
   (B.16) — during a rollback the previous release reads and writes rows by
   address only. An SEO save there, on a record it created or moved onto a
-  deleted record's address, edits the deleted record's row in place: the next
-  deploy sets that row aside, and the record shows its own content until its
-  SEO is saved again (the edit is kept in the table, not shown) (R3²). A save
-  on a record it moved onto an address another record's own row still holds
-  edits that row, which stays with its own record (R2²).
+  deleted record's address, edits the deleted record's row in place. If this
+  release had bound that row to the deleted record, the next deploy sets it
+  aside, and the record shows its own content until its SEO is saved again
+  (the edit is kept in the table, not shown) (R3²). If the older release wrote
+  that row itself, by address, the next deploy binds it to the record — the
+  deleted record's title, description and noindex included, as both releases
+  showed them — setting aside the record's own row if it was moved there
+  (D2³). A save on a record it moved onto an address another record's own row
+  still holds edits that row, which stays with its own record (R2²).
+- **Rows that swapped addresses, each with a share image** — the deploy leaves
+  them at their records' own `#<id>` keys (B.3 step 5): this release finds them
+  by id, so nothing it shows changes, and the next deploy, or the record's next
+  save or move, puts them at their addresses. Until then the previous release,
+  after a rollback, reads by address and shows those records their own content.
+  Only records the previous release swapped, in the deploy window or a
+  rollback, can form such a ring (D1³).
 - **Reserved keys made by hand, in a chain** — a write that is about to use a
   reserved key moves one row that holds it by hand aside; if that row's own
   `~<row id>` is also held by hand, the write fails with a generic error and

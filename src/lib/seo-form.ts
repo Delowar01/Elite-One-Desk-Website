@@ -98,7 +98,11 @@ export function seoRowValues(row: typeof seoMetadata.$inferSelect | null): SeoFo
     ogTitleAr: row.ogTitleAr,
     ogDescription: row.ogDescription,
     ogDescriptionAr: row.ogDescriptionAr,
-    canonicalUrl: row.canonicalUrl,
+    // Through the reader the posted form goes through (`readSeoForm`), so a
+    // stored value in a form that is accepted but not final — `/about/`, a
+    // language prefix, a full address, as the previous release kept them —
+    // reads the same on both sides, and an untouched field is never an edit (X1³).
+    canonicalUrl: storedCanonical(row.canonicalUrl, siteUrl),
     ogImageId: row.ogImageId,
     noindex: row.noindex,
   };

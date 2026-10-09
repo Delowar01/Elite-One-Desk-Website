@@ -100,7 +100,9 @@ export async function saveSeo(_prev: ActionState, form: FormData): Promise<Actio
           const problem = await lockShareImage(tx, submitted.ogImageId);
           if (problem) return { kind: "invalid", state: fail(problem, { ogImageId: problem }) };
         }
-        const { own, rows } = await lockOwnSeoRows(tx, target.storage);
+        // The present key is what the save ends at: whatever holds it is locked with
+        // the target's own rows, in one order (`lockOwnSeoRows`, W1³).
+        const { own, rows } = await lockOwnSeoRows(tx, target.storage, target.storage.entityKey);
         const decision = spec.decide(base, mine, spec.printsOf(seoRowValues(own)), posted);
         if (decision.conflicts.length) return { kind: "conflict", units: decision.conflicts };
         const done = { kind: "done" as const, writes: decision.writes, label: target.label, address: target.path };

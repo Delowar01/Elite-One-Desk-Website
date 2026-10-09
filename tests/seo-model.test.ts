@@ -126,6 +126,17 @@ describe("25 · which stored row a target uses (B.2)", () => {
     const index = indexSeoRows([row("service", "#12", 12, "long")]);
     assert.equal(seoRowFor(index, recordStorage("service", long, 12))?.title, "long");
   });
+
+  test("a row by address at a key in a reserved form names nothing — no address is one — and is never used, as the deploy sets it aside (W2³)", () => {
+    // Only a hand-made request to the previous release's form writes one (A.9).
+    const long = `${"c".repeat(120)}/${"s".repeat(120)}`;
+    const index = indexSeoRows([row("service", "#12", null, "made by hand"), row("service", "~40", null, "made by hand too")]);
+    assert.equal(seoRowFor(index, recordStorage("service", long, 12)), null);
+    assert.equal(index.unbound.size, 0);
+    // The record's own row there is still its own.
+    const own = indexSeoRows([row("service", "#12", 12, "its own")]);
+    assert.equal(seoRowFor(own, recordStorage("service", long, 12))?.title, "its own");
+  });
 });
 
 describe("25 · each language on its own (B.4, brief §10)", () => {

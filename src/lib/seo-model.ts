@@ -120,19 +120,29 @@ export type SeoRowLike = { entityType: string; entityKey: string; entityId: numb
  *     record's address goes;
  *   · unbound (`entity_id` null) — only its address names it: the two
  *     overviews always, and a row the previous release wrote that has not
- *     been bound yet;
+ *     been bound yet. Unless its key is in a reserved form, which no address
+ *     is: only a hand-made request to that release's form writes one (A.9),
+ *     it names nothing, and it is as dead as the next one (W2³);
  *   · detached (`entity_id = 0`) — dead: it named no record when it was
  *     last examined, its record was deleted, or a newer row replaced it. It is
  *     kept, never used, and keyed `~<row id>`.
  */
 export type SeoRowIndex<R extends SeoRowLike> = { bound: Map<string, R>; unbound: Map<string, R> };
 
+/**
+ * A key in one of the forms only this release writes: `#<id>`, a record's own
+ * row's when its address is too long for the column or while it is parked, and
+ * `~<n>`, row n's once it is set aside.
+ */
+export const isReservedSeoKey = (key: string): boolean => key.startsWith("#") || key.startsWith("~");
+
 export function indexSeoRows<R extends SeoRowLike>(rows: readonly R[]): SeoRowIndex<R> {
   const bound = new Map<string, R>();
   const unbound = new Map<string, R>();
   for (const row of rows) {
-    if (row.entityId === null) unbound.set(`${row.entityType}:${row.entityKey}`, row);
-    else if (row.entityId > 0) bound.set(`${row.entityType}#${row.entityId}`, row);
+    if (row.entityId === null) {
+      if (!isReservedSeoKey(row.entityKey)) unbound.set(`${row.entityType}:${row.entityKey}`, row);
+    } else if (row.entityId > 0) bound.set(`${row.entityType}#${row.entityId}`, row);
   }
   return { bound, unbound };
 }
@@ -358,15 +368,27 @@ const RECORDS: Record<SeoEntityType, SQL> = {
 const keyed = (type: SeoEntityType) =>
   sql`(select id, case when length(address) <= ${SEO_KEY_MAX} then address else '#' || id end as k from (${RECORDS[type]}) x)`;
 
+/**
+ * Every record of every type with the key its row should carry — `type`, `id`
+ * and `k` — as one subquery, so a reader can take the records and the rows in
+ * one statement, at one moment (`seoMediaUsage`, W5³).
+ */
+export const seoRecordKeys = (): SQL =>
+  sql.join(
+    RECORD_ENTITY_TYPES.map((type) => sql`select ${type}::text as type, id, k from ${keyed(type)} r`),
+    sql` union all `,
+  );
+
 /** The overview keys are pages' rows that are never bound. */
 const notOverview = (type: SeoEntityType) => (type === "page" ? sql`and entity_key not in ('services', 'packages')` : sql``);
 
-export type SeoReconcileCounts = { bound: number; rekeyed: number; setAside: number };
+export type SeoReconcileCounts = { bound: number; rekeyed: number; setAside: number; parked: number };
 
 /**
  * Brings every stored SEO row into line with the records it belongs to
  * (docs/admin/seo-and-share-images.md B.3). Run by `scripts/migrate.ts` after
- * the migrations, on every deploy; a second run changes nothing. Nothing is
+ * the migrations, on every deploy; a second run changes nothing, except to
+ * finish moving rows the first had to leave at `#<id>` (step 5). Nothing is
  * deleted.
  *
  * The previous release reads and writes rows by address only, and it keeps
@@ -379,56 +401,102 @@ export type SeoReconcileCounts = { bound: number; rekeyed: number; setAside: num
  * row of its own left at an old address; any other row is dead — kept, never
  * used, and keyed `~<row id>`, which no address and no record can reach.
  *
- * The table is locked `EXCLUSIVE` first: every write waits the moment this
- * takes — the previous release's saves and this release's alike, including one
- * that has already locked its rows and has yet to write them, which a weaker
- * lock would deadlock against — while every read goes on. The transaction is
- * `REPEATABLE READ`, so every statement below reads the records as they were
- * when the first one ran: a record the previous release moves meanwhile is
- * settled where it was, and is the next run's to settle. Then, type by type:
+ * The table is locked `EXCLUSIVE` first. A write that has not touched the
+ * table yet waits for the run — the previous release's saves and this
+ * release's alike — while every read goes on. A write already under way is
+ * waited for instead, including one of this release's that has locked its rows
+ * `FOR UPDATE` and has yet to write them: its own later statements go ahead of
+ * the queued lock, so the two never wait on each other, where a weaker lock
+ * would have deadlocked. The transaction is `REPEATABLE READ`, so every
+ * statement below reads the records as they were when the first one ran: a
+ * record the previous release moves meanwhile is settled where it was, and is
+ * the next run's to settle.
+ *
+ * No row is updated twice where it shows a picture. A second update of a row
+ * in one transaction makes PostgreSQL check its `og_image_id` against `media`
+ * again, which would lock the picture after the SEO table — the opposite of a
+ * media delete, which holds the picture and then clears the rows that show it,
+ * and the two could wait on each other (D1³). So rows move once each, straight
+ * to where they belong, in as many passes as it takes; only rows that hold one
+ * another's addresses need a key on the way, and only a row with no picture is
+ * moved through one. Then, type by type:
  *
  *   0. a row that is not bound but holds a key in one of the reserved forms —
  *      `#<id>` is a record's own row's, `~<n>` row n's, and only a hand-made
  *      request to the previous release's form can write one (A.9) — is set
- *      aside, through a key nobody can have written, so no two of them meet;
+ *      aside to its own `~<id>` once nothing holds that; rows that hold each
+ *      other's are set aside under a key nobody can have written instead;
  *   1. a row bound to a record that no longer exists is set aside: its record
  *      is gone (the previous release deleted it and left the row);
  *   2. a record's own row at an old address, beside a row written by address
  *      at its present one — the previous release moved the record, then saved
  *      its SEO — is set aside: the newer row is the one in use;
  *   3. a row written by address at a record's present address is bound to it;
- *   4–6. a bound row at an address its record no longer has is moved to the
- *      present one (through `#<id>` first, so two records whose rows swapped
- *      addresses swap back), after any detached row there is set aside;
- *   7. any other row written by address names no record: it is set aside.
+ *   4. a detached row at an address is set aside, so the address is free;
+ *   5. a bound row at an address its record no longer has is moved to the
+ *      present one as soon as that is free. Rows that hold each other's
+ *      addresses — two records the previous release swapped — move through
+ *      their record's own `#<id>`, those with no picture first; where every
+ *      one of them shows a picture they stay at `#<id>`, bound and in use as
+ *      before, and reach their address at the next run or their record's next
+ *      save or move;
+ *   6. any other row written by address names no record: it is set aside.
  *      The overviews' two keys are left alone.
  */
 export async function reconcileSeoRows<S extends Record<string, unknown>>(
   db: PostgresJsDatabase<S>,
 ): Promise<SeoReconcileCounts> {
-  // Step 0 moves rows through a key with this in it: one nobody can have posted.
+  // Step 0 sets a ring of hand-made keys aside under a key with this in it: one nobody can have posted.
   const nonce = globalThis.crypto.randomUUID();
   return db.transaction(
     async (tx) => {
       await tx.execute(sql`lock table seo_metadata in exclusive mode`);
-      const counts: SeoReconcileCounts = { bound: 0, rekeyed: 0, setAside: 0 };
+      const counts: SeoReconcileCounts = { bound: 0, rekeyed: 0, setAside: 0, parked: 0 };
       const ids = async (statement: SQL) => (await tx.execute<{ id: number }>(statement)).map((row) => Number(row.id));
+      /**
+       * The same statement again until it changes nothing: each pass moves the
+       * rows whose destination is free, which frees the next ones'. Every row
+       * it changes, it changes once — the statement only matches a row that is
+       * not where it belongs, and puts it there.
+       */
+      const passes = async (statement: () => SQL) => {
+        const changed: number[] = [];
+        for (;;) {
+          const pass = await ids(statement());
+          if (!pass.length) return changed;
+          changed.push(...pass);
+        }
+      };
 
       for (const type of RECORD_ENTITY_TYPES) {
         const records = keyed(type);
         const all = sql`(${RECORDS[type]})`;
+        /**
+         * A row not bound to a record, holding a key in one of the reserved
+         * forms that is not its own — nor the one a run gave it below
+         * (`~<id>~<nonce>`), which is as out of use and as final as its own.
+         */
+        const handMade = sql`entity_type = ${type}
+                             and (entity_id is null or (entity_id = 0 and entity_key not like '~' || id || '~%'))
+                             and (entity_key like '#%' or entity_key like '~%') and entity_key <> '~' || id`;
 
-        const reserved = await ids(sql`
-          update seo_metadata set entity_key = '~' || id || '~' || ${nonce}
-           where entity_type = ${type} and (entity_id is null or entity_id = 0)
-             and (entity_key like '#%' or entity_key like '~%') and entity_key <> '~' || id
-          returning id`);
-        if (reserved.length) {
-          await tx.execute(sql`
-            update seo_metadata set entity_id = 0, entity_key = '~' || id
-             where entity_type = ${type} and entity_key = '~' || id || '~' || ${nonce}`);
-        }
-        counts.setAside += reserved.length;
+        counts.setAside += (
+          await passes(
+            () => sql`
+              update seo_metadata x set entity_id = 0, entity_key = '~' || x.id
+               where ${handMade}
+                 and not exists (select 1 from seo_metadata o where o.entity_type = ${type} and o.entity_key = '~' || x.id)
+              returning x.id`,
+          )
+        ).length;
+        // What is left holds the `~<id>` of another row left, all the way round:
+        // set aside under a key nobody can have written, where it stays.
+        counts.setAside += (
+          await ids(sql`
+            update seo_metadata set entity_id = 0, entity_key = '~' || id || '~' || ${nonce}
+             where ${handMade}
+            returning id`)
+        ).length;
 
         counts.setAside += (
           await ids(sql`
@@ -456,26 +524,42 @@ export async function reconcileSeoRows<S extends Record<string, unknown>>(
             returning u.id`)
         ).length;
 
-        const parked = await ids(sql`
+        // Step 0 left every detached row with a reserved key at its own `~<id>`,
+        // or at the key it had to take instead; what is left is at an address.
+        counts.setAside += (
+          await ids(sql`
+            update seo_metadata d set entity_key = '~' || d.id
+             where d.entity_type = ${type} and d.entity_id = 0
+               and d.entity_key not like '~%' and d.entity_key not like '#%'
+            returning d.id`)
+        ).length;
+
+        /** A bound row moved to its record's present address, once nothing holds that. */
+        const settle = () => sql`
+          update seo_metadata s set entity_key = r.k
+            from ${records} r
+           where s.entity_type = ${type} and s.entity_id = r.id and s.entity_key <> r.k
+             and not exists (select 1 from seo_metadata o where o.entity_type = ${type} and o.entity_key = r.k)
+          returning s.id`;
+        /** A bound row still not at its address — each holds another's — moved to its record's own key. */
+        const park = (pictured: boolean) => sql`
           update seo_metadata s set entity_key = '#' || s.entity_id
             from ${records} r
            where s.entity_type = ${type} and s.entity_id = r.id
              and s.entity_key <> r.k and s.entity_key <> '#' || s.entity_id
-          returning s.id`);
-
-        counts.setAside += (
-          await ids(sql`
-            update seo_metadata d set entity_key = '~' || d.id
-             where d.entity_type = ${type} and d.entity_id = 0 and d.entity_key <> '~' || d.id
-            returning d.id`)
-        ).length;
-
-        const moved = await ids(sql`
-          update seo_metadata s set entity_key = r.k
-            from ${records} r
-           where s.entity_type = ${type} and s.entity_id = r.id and s.entity_key <> r.k
-          returning s.id`);
-        counts.rekeyed += new Set([...parked, ...moved]).size;
+             and s.og_image_id is ${pictured ? sql`not null` : sql`null`}
+          returning s.id`;
+        const moved = await passes(settle);
+        // A ring: rows with no picture step aside to `#<id>`, so the rest move
+        // once each, and then they move again — a second update with no picture
+        // to check.
+        const through = await ids(park(false));
+        moved.push(...(await passes(settle)));
+        // A ring every row of which shows a picture waits at `#<id>`, in use as
+        // before, for the next run or its record's next save or move.
+        const waiting = await ids(park(true));
+        counts.rekeyed += new Set([...moved, ...through]).size;
+        counts.parked += waiting.length;
 
         counts.setAside += (
           await ids(sql`
