@@ -55,9 +55,9 @@ const NUDGE_FOR_MS = 15_000;
  * 26: a package created, its row stored, and the screen left on "Saving…" at
  * /admin/packages/new — on a warm server 4 creates in 26 and 1 delete in 25,
  * and 2 creates in 25 on Batch 25, so not new; the root in the state above
- * every time, released at once by a keystroke). So a throw is nudged too,
- * until the form has gone — which is the next screen arriving — and is then
- * handed on to Next.js exactly as it came.
+ * every time, and each create a keystroke was tried on landed at once). So a
+ * throw is nudged too, until the form has gone — which is the next screen
+ * arriving — and is then handed on to Next.js exactly as it came.
  *
  * Until the form has hydrated, the hook hands React the Server Action itself,
  * not the wrapper: React writes a server reference into the server-rendered

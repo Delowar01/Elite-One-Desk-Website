@@ -829,10 +829,11 @@ insert itself waits — sees it as it was a moment before; that is recorded,
 not changed.
 
 **`route-packages`, once it waited: two pre-existing defects, one of them the
-application's.** With those waits in place `route-packages` failed in 5 of 22
-runs on this branch, at one of three checks — the create's redirect never
-arriving, or a direct edit of a package card's or a service card's title never
-beginning — and in none of 8 on Batch 25's build. That looked like a
+application's.** With those waits in place `route-packages` failed in 10 of
+28 runs on this branch, at one of three checks — a direct edit of a service
+card's title never beginning (6), the create's redirect never arriving (4),
+a direct edit of a package card's title never beginning (1) — and in none of
+8 on Batch 25's build. That looked like a
 regression until the steps were repeated on their own, on both builds, with
 every request, bridge message, focus change and pointer event and React's root
 lanes recorded (scratch harness, not tracked), 25 times each on a warm server
@@ -847,14 +848,16 @@ with nothing touched while waiting:
 
 Neither is this branch's, and both are now closed:
 
-- *A redirect left uncommitted — an application defect, fixed.* Every stalled
-  create was answered by the server with its 303 and the new package's screen
-  in under 100 ms and its row was stored, while the browser stayed on
-  `/admin/packages/new` with the button on "Saving…": React's root pending =
-  suspended (two transition lanes), pinged 0, nothing scheduled — the
-  React 19.2-canary dropped ping that 19B and 19C recorded
+- *A redirect left uncommitted — an application defect, fixed.* In every
+  stall the action's request had finished within 100 ms of being sent — a
+  303, or a response the browser stopped reading — and the row was stored,
+  while the browser stayed where it was (`/admin/packages/new` with the button
+  on "Saving…", or the package's own screen after a delete): React's root
+  pending = suspended (two or three transition lanes), pinged 0, nothing
+  scheduled — the React 19.2-canary dropped ping that 19B and 19C recorded
   (`docs/release/visual-editor-v1-acceptance.md`, defects 6 and 9). A Shift
-  key changed nothing; one keystroke in a field landed it at once. 19C's
+  key changed nothing; one keystroke in a field landed each create it was
+  tried on at once. 19C's
   `useSettledActionState` nudges once an action has *answered*, and an action
   that ends in `redirect()` does not answer — it throws — so the ten create and
   delete actions of the Pages, Services, Categories, Packages and Destinations
