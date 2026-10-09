@@ -7,6 +7,16 @@ verified before this release takes any administrative traffic.** A new runtime
 serving against a database that has not been upgraded would refuse legitimate
 editors.
 
+**Since Batch 20.** This document was written for the release that introduced
+the split over `b807663`. That release was `902a0e6`, which Batch 20 deployed,
+so production's database has been through the upgrade below. The next release
+introduces no permission key over `902a0e6`: its seed grants nothing, its
+check passes, and a rollback deploy to `902a0e6` moves no key and no grant
+(`tests/permissions-migration.test.ts`, *the release in production today*;
+Batch 26, Correction 1). The `--strict` check and the rollback review below
+apply again only to a rollback as far back as `b807663`, the historical
+runtime Batch 20 kept on the server.
+
 ## Deployment order
 
 `deploy/deploy.sh` enforces this order; nothing here has to be remembered. The
@@ -48,7 +58,8 @@ existing role already held**:
 
 The owner role receives every introduced key. A role created by the run (a
 fresh installation) receives its defaults. `content.manage` itself is kept on
-every role that had it — the previous release still authorizes with it.
+every role that had it — the release before the split, `b807663`, still
+authorizes with it.
 
 It is idempotent: a key already in the catalogue is never granted again, so a
 grant removed after the upgrade stays removed through every later deploy, and a
@@ -71,29 +82,37 @@ deliberate narrowing and is reported, not failed.
 ## Rehearsal
 
 `tests/permissions-migration.test.ts` rehearses the upgrade on isolated
-databases built by the previous release's own migrate and seed from its own
-checkout (`deploy/previous-release`): customised grants, `content.manage`
-removed from one role and given to another, the upgrade, exact derived grants,
-a re-run that grants nothing, a granular key removed and kept removed through
-another seed, a fresh installation, all four roles, the previous release's own
-seed run against the upgraded database (a rollback), and a re-upgrade after it.
-`scripts/check-permissions.ts` is exercised there too.
+databases built by the last release before the split — `b807663`, pinned —
+with its own migrate and seed from its own checkout: customised grants,
+`content.manage` removed from one role and given to another, the upgrade,
+exact derived grants, a re-run that grants nothing, a granular key removed and
+kept removed through another seed, a fresh installation, all four roles, that
+release's own seed run against the upgraded database (a rollback), and a
+re-upgrade after it. A second rehearsal starts from the release
+`deploy/previous-release` names — `902a0e6`, production since Batch 20 — and
+proves the next deploy and a rollback deploy move no key and no grant, with
+the check passing on each side. `scripts/check-permissions.ts` is exercised
+there too.
 
-## Rollback is NOT permission-equivalent — an authorization review is required
+## Rollback to a release before the split is NOT permission-equivalent — an authorization review is required
 
-The previous release knows only `content.manage`: whoever holds it may edit,
+This is a rollback to a release before the split — `b807663` today, the
+historical copy. A rollback to `902a0e6`, the runtime the next release
+displaces, is permission-equivalent (above).
+
+A pre-split release knows only `content.manage`: whoever holds it may edit,
 style, animate, restructure and publish every page. It cannot enforce the
 granular split. Rolling back the runtime therefore changes who may do what:
 
 - **A role narrowed through the granular keys but still holding
   `content.manage` regains everything.** An editor limited to `content.edit`
-  can publish again under the previous release.
+  can publish again under the pre-split release.
 - **A role given only granular keys loses page editing entirely.**
-- **Saving a role on the previous release's Roles screen drops its granular
+- **Saving a role on the pre-split release's Roles screen drops its granular
   keys** (that screen replaces a role's grants with its own, older catalogue),
   and re-deploying this release does **not** give them back — they are no
   longer new to the catalogue. The owner re-grants them on the Roles screen.
-- Reusable components are not editable under the previous release; linked
+- Reusable components are not editable under the pre-split release; linked
   sections render the fallback copy they keep in their own fields.
 
 So a rollback needs an explicit review by the owner, before or immediately
@@ -102,11 +121,11 @@ after it:
 1. Run `npm run db:check-permissions` and keep its matrix: that is the
    granular configuration being set aside.
 2. For every role that holds `content.manage`, decide whether it should have
-   full page editing and publishing while the previous release runs. If not,
+   full page editing and publishing while the pre-split release runs. If not,
    remove `content.manage` from it — understanding that saving the role on the
-   previous release's screen also drops its granular keys.
+   pre-split release's screen also drops its granular keys.
 3. After re-upgrading, compare against the matrix from step 1 and re-grant any
-   granular key the previous release's screen dropped.
+   granular key the pre-split release's screen dropped.
 
 ## Role types
 

@@ -370,6 +370,11 @@ The migration only creates `route_nodes`, `route_versions` and the
 `cta_href` column (with a default). `902a0e6` selects and inserts its own
 column lists, so it runs against the upgraded database unchanged
 (`COMPAT_REF=902a0e6 node --import tsx --test tests/schema-compat.test.ts`).
+(Batch 26, Correction 1: that run's probe wrote to `page_sections` only, so
+`902a0e6`'s own category insert under `0006`'s `cta_href` was not run then. It
+is now, on a fresh install and on `902a0e6`'s own upgraded database, with
+`902a0e6` as `deploy/previous-release` —
+`docs/release/release-hardening-batch-26.md` §12.3.)
 After a rollback, content published through the Visual Editor stays live (it
 is in the domain tables); presentation, template copy and `cta_href` are
 ignored, so those regions render the pre-Batch-21 defaults; drafts stay

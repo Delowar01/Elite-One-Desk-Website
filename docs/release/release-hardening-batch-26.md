@@ -2,14 +2,16 @@
 
 **Status: development record, not a release approval.** Production deployment
 is not authorized by this document. Batch 26 did not access the VPS or the
-production database, did not create a tag, and did not change
-`deploy/previous-release`.
+production database and did not create a tag. Its Correction 1 (§12) changed
+`deploy/previous-release` from `b807663` to `902a0e6` — the runtime Batch 20
+deployed, taken from the owner-approved release record, not from the server —
+and requalified compatibility against it.
 
 | | |
 |---|---|
 | Base | `7c3a00d` — Batch 25, fast-forwarded onto `main` in Phase 0 (`da96625` → `7c3a00d`, ten commits, none rewritten) |
 | Branch | `batch-26-final-release-readiness` |
-| Migrations | none added; `0007` byte-identical to `7c3a00d` |
+| Migrations | none added; `0007` byte-identical to `7c3a00d`. Over production (`902a0e6`, `0000`–`0005`) the release applies `0006`–`0007` — no `0008`, and `0000`–`0005` byte-identical to `902a0e6`'s (§12.5) |
 | Dependencies | none changed |
 
 The batch closes what Batch 25 left recorded rather than fixed and puts the
@@ -17,7 +19,7 @@ release decision on evidence: §1 the media delete against pictures named
 outside a foreign key, §2 the sitemap and `noindex`, §3 the share image and
 `robots.txt`, §4 the site's SEO defaults, §5–§7 the open browser incidents,
 §8–§10 regression, tabs left open and the deployment process, §11 what stays
-limited.
+limited, §12 the production baseline Correction 1 put right.
 
 ## 1. Pictures named outside a foreign key (brief §1–§5)
 
@@ -81,7 +83,7 @@ stores (§1.3).
 | Visual Editor route publication | `publishRoute` | the record's `image_id` (foreign key) | records and regions `FOR UPDATE` → pictures (before the records are written, so a deleted picture is a refusal by name, not a foreign-key error) |
 | Visual Editor route restore | `restoreRouteVersion` | `route_nodes` drafts | records and regions → pictures by the region specs' `media` keys only (it used to collect every number, group ids included); a picture gone since is skipped and named |
 | The deploy's seed: shipped artwork | `seedImagery` (`npm run db:seed`, deploy step 10) | `published.image` of empty featured-service, travel-feature, destination-feature and image-text sections; category and package `image_id` | per row, a transaction: the section `FOR NO KEY UPDATE`, re-read → the artwork `FOR KEY SHARE` → update; an artwork deleted meanwhile is left unattached (and never fails a foreign key, which would stop the deploy) |
-| The deploy's row-id backfill | `backfillRowIds` (`npm run db:migrate`, deploy step 10) | every section's `published`/`draft`, rewritten with item ids stamped — on the next deploy, every section with a list, since no release in production has stamped one | per section, a transaction: the row `FOR NO KEY UPDATE`, re-read, stamped from what it holds then. It used to stamp the copy it had read ahead in pages of 500, so a save by the release still serving in between was overwritten — the edit lost and a picture it had removed brought back. It introduces no id the row does not hold at that moment, so it holds no picture |
+| The deploy's row-id backfill | `backfillRowIds` (`npm run db:migrate`, deploy step 10) | every section's `published`/`draft`, rewritten with item ids stamped — on the next deploy only sections whose list rows still lack an id: Batch 20's deploy of `902a0e6` already ran this backfill, and `902a0e6` keeps the ids its saves stamp, so few or none are expected (its log line says how many) | per section, a transaction: the row `FOR NO KEY UPDATE`, re-read, stamped from what it holds then. It used to stamp the copy it had read ahead in pages of 500, so a save by the release still serving in between was overwritten — the edit lost and a picture it had removed brought back. It introduces no id the row does not hold at that moment, so it holds no picture |
 
 **B — history only.** Not counted by the delete and not pinned (brief §5,
 decision B); read back only by the restores above, which handle a missing
@@ -297,14 +299,18 @@ Two A writers run outside the application, at deploy step 10, while the
 previous release still serves.
 
 The **row-id backfill** (`npm run db:migrate`) gives every section's list rows
-the stable ids new saves get. No release in production has stamped one, so the
-next deploy rewrites every section with a list. It read sections ahead in
-pages of 500 and wrote each back from that copy, so a save the serving release
-made in between was overwritten: the edit lost, and a picture the save removed
-brought back — after which the serving release's delete could remove the
-picture. It now stamps each section from what it holds under its own row lock,
-read again just before the write; the release still serving has no revision
-column to compare against, so the lock is the comparison.
+the stable ids new saves get. Batch 20's deploy of `902a0e6` already ran it,
+and `902a0e6` keeps the ids its saves stamp, so the next deploy rewrites only
+sections whose list rows still lack one — few or none are expected (Correction
+1; this record first said every section with a list, which was true of
+`b807663`). It read sections ahead in pages of 500 and wrote each back from
+that copy, so a save the serving release made in between was overwritten: the
+edit lost, and a picture the save removed brought back — after which the
+serving release's delete could remove the picture. It now stamps each section
+from what it holds under its own row lock, read again just before the write.
+The backfill is not an editor's edit and neither reads nor moves the
+`revision` the serving release guards its own saves with, so the lock is the
+comparison.
 
 `seedImagery` attaches the shipped artwork wherever one of four section types
 has an empty picture. It now keeps the protocol (§1.2). Two of its behaviours
@@ -431,20 +437,24 @@ then caught.
 
 ### 1.9 What the protocol does not cover
 
-- **The previous release.** The release production runs today
-  (`deploy/previous-release`, `b807663`) deletes media with a plain select,
-  count and `DELETE`, outside any transaction, and its count reads neither
-  Quick Links cards, reusable components, route drafts nor SEO. While it serves
-  — the deploy window between migrate and the switch, and after a runtime
-  rollback — a hold delays its `DELETE` but cannot make it recount, so the
-  race and X1 exist exactly as they do in production now. Its writers hold
-  nothing either — its section saves, publications and duplicates (it has no
-  reusable components, route drafts or page versions at all) — and it still
-  exports `saveSeoDefaults`, which stores
+- **The previous release.** The release production runs since Batch 20
+  (`deploy/previous-release`, `902a0e6`; corrected from `b807663` in §12, to
+  be confirmed on the server at preflight) deletes media with a plain select,
+  count and `DELETE`, outside any transaction, and its count reads only the
+  top level of section values and of reusable components' published and draft
+  values — not Quick Links cards, not route drafts (it has no route tables),
+  not SEO (whose share image a delete clears through `ON DELETE SET NULL`).
+  While it serves — the deploy window between migrate and the switch, and
+  after a runtime rollback — a hold delays its `DELETE` but cannot make it
+  recount, so the race and X1 exist exactly as they do in production now. Its
+  writers hold nothing either — its section saves, publications, duplicates,
+  page-version restores and reusable-component writes (it has no route drafts
+  at all) — and it still exports `saveSeoDefaults`, which stores
   `site_settings.seo.ogImageId` from any positive number posted
   (`optionalId`) with no existence check and no lock: no screen of that
   release calls it, so at most a hand-made request reaches it. The protection
-  is a property of the release that is serving.
+  is a property of the release that is serving. (`b807663`, the historical
+  rollback, counted less still: no reusable components either.)
 - **Pictures already dangling.** Ids a delete or a restore left dangling
   before Batch 26 stay where they are (carried, §1.6); the renderer draws
   nothing for a missing picture.
@@ -457,10 +467,11 @@ then caught.
 - **The seed's refill** (§1.7).
 - **A linked section's own copy of its component's picture.** If that copy
   names a picture deleted before Batch 26, a publication carries it live as it
-  is (§1.6): the page draws the component's picture there, and only an older
-  build after a rollback — which cannot read the link — draws the copy, as no
-  picture. Only an id left dangling before this batch can reach it — the
-  delete counts a draft's fallback copy like any other value.
+  is (§1.6): the page draws the component's picture there, and only a build
+  too old to read the link draws the copy, as no picture — `b807663`, the
+  historical rollback, not `902a0e6`, which reads it. Only an id left
+  dangling before this batch can reach it — the delete counts a draft's
+  fallback copy like any other value.
 - **A picture referenced by its address.** A link field — a section's or a
   card's link, a rich-text anchor, a reusable call to action, a route's
   call-to-action address, a navigation item — may hold `/media/<file>` (or a
@@ -718,30 +729,41 @@ brief's rule names. React 19.3.0 resets the cursor; Next.js 15.5.25 vendors a
 Which Next.js 16 release does, and what moves with it, is that batch's first
 question — a hardening batch is not the place for the upgrade.
 
-**The release production serves today shows it too.** b807663 — the runtime
-`deploy/previous-release` names — was built from its own commit with the same
-`next` 15.5.25 and the same vendored React chunk (`1255-7316b50163a428e6.js`),
-served against a copy of the same catalogue, and given the same public visits
-on the same profiles, counted the same way (React's own recoverable-error
-report):
+**A baseline build of `b807663` shows it too — a scratch reconstruction, not a
+measurement of production.** `b807663` — the runtime production served before
+Batch 20; production has run `902a0e6` since then, and this record first called
+`b807663` production only because `deploy/previous-release` still named it
+(§12) — was checked out into a scratch worktree and built from its own commit
+(its standalone build, with the same `next` 15.5.25 and the same vendored React
+chunk, `1255-7316b50163a428e6.js`), served by a scratch server against a copy
+of the test catalogue, and given the same public visits on the same profiles,
+counted the same way (React's own recoverable-error report). No request went to
+the live website or its server; Batch 26 did not access them.
 
-| Release | Network | Visits | #418 | Where |
+| Build | Network | Visits | #418 | Where |
 |---|---|---|---|---|
-| this branch | slow | 120 | **7** | services lists and the footer, as above |
-| b807663 (production) | slow | 80 | **1** | `/services/iqama-services` — `ul ← div ← (list) ← div ← div ← div ← section`, the same services list compiled into that release's page chunk |
-| this branch | mobile | 80 | **0** | — |
-| b807663 (production) | mobile | 40 | **0** | — |
+| this branch (candidate) | slow | 120 | **7** | services lists and the footer, as above |
+| `b807663` baseline build (scratch reconstruction) | slow | 80 | **1** | `/services/iqama-services` — `ul ← div ← (list) ← div ← div ← div ← section`, the same services list compiled into that build's page chunk |
+| this branch (candidate) | mobile | 80 | **0** | — |
+| `b807663` baseline build (scratch reconstruction) | mobile | 40 | **0** | — |
 
-So #418 is not something this branch brings: visitors on slow connections can
-meet it on the live site today. The two rates (7 in 120, 1 in 80) are too
-small to tell apart (Fisher's exact test, two-sided p ≈ 0.15). This does not
-change the rule's verdict — the rule asks whether it appears under
-production-like conditions, not which release introduced it — but it does
-mean that holding this release back does not keep #418 away from visitors,
-and that the Next.js 16 batch is worth running for production as it stands,
-not only for this release. The scratch harness for this comparison (a
-worktree of b807663, its standalone build, a server on a copy of the test
-catalogue, the visits) is not tracked; the matrix's own visits mode is.
+So #418 is not something this branch brings: the symptom predates Batch 26 —
+the `b807663` baseline build shows it on the same visits. On the slow profile
+the two rates (7 in 120, 1 in 80) are too small to tell apart (Fisher's exact
+test, two-sided p ≈ 0.15). The reconstruction does **not** establish whether
+visitors to the live production server — `902a0e6` since Batch 20 — meet it,
+or how often: `902a0e6` was neither built nor measured here, and the live site
+was not visited. (`902a0e6` locks the same `next` 15.5.25 and so vendors the
+same React canary — a reason to expect the symptom there, not a measurement of
+it.) None of this changes the verdict: `PRODUCTION BLOCKED` rests on the
+candidate's own reproduction under the brief's conditions — the moderate class
+(2 in 722) and signed-out public visits on the slow profile (7 in 120), §5.4 —
+and the rule asks whether #418 appears under production-like conditions, not
+which release introduced it. What the baseline adds is that the Next.js 16
+qualification batch addresses a defect this release inherits rather than one it
+introduces. The scratch harness for this baseline reconstruction (a worktree of
+`b807663`, its standalone build, a server on a copy of the test catalogue, the
+visits) is not tracked; the matrix's own visits mode is.
 
 ## 6. The route-services timeline incident (brief §11)
 
@@ -1088,15 +1110,26 @@ address read existing columns). Held, on the final commit, by:
   image and its `noindex`, the two new Arabic columns empty; each record's row
   is bound to its record at its own address; the overview stays unbound; the
   dead row is set aside to `~<id>`; `0007` is the eighth migration; and a
-  second run reports "nothing to reconcile" and leaves a byte-identical dump;
+  second run reports "nothing to reconcile" and leaves a byte-identical dump.
+  Production upgrades from `902a0e6`, at `0000`–`0005`, applying `0006` and
+  `0007` in one run: that exact path, with `902a0e6`'s own SEO rows on four
+  record types, is `schema-compat`'s deploy path (§12.3) — this test, from
+  Batch 24, is the closer look at the row states;
 - **every row state and the re-run** — `seo-reconcile`: every state the
   previous release can leave, moved, renamed and deleted records, rows showing
   share images moved or parked (their keys; by construction no reconcile
   statement writes `og_image_id`), no row deleted, a second run changing
   nothing;
-- **the previous runtime** — `schema-compat`: `b807663`'s own table
-  definitions, reads and writes, its SEO upsert and delete included, against
-  the schema this release produces.
+- **the previous runtime** — `schema-compat`, against `902a0e6` since
+  Correction 1 (§12): its own table definitions read every one of its 27
+  tables, and its own writes — sections and page structure under its revision
+  guard, page history, reusable components, its category screen (`0006`'s
+  `cta_href`) and its eleven-column SEO save (`0007`'s table) — land, on this
+  release's fresh install and on a database `902a0e6` built itself and this
+  release then upgraded, after which `902a0e6`'s own migrate, seed and
+  permission check run again as a rollback deploy would. Batch 26 had run it
+  against `b807663`, which `deploy/previous-release` still named; `b807663` is
+  still proved, as a historical rollback (24 tables).
 
 ### 8.4 Dependencies (§15)
 
@@ -1125,63 +1158,111 @@ Audited from source; nothing deployed, nothing on the server touched.
 
 | Requirement | Finding |
 |---|---|
-| Exact `RELEASE_SHA` pinning | Works as designed: the format is checked before anything else runs, the commit must exist after the fetch and be a commit, the target is read-only once decided and drives the build, the marker, the checkout, the rollback names and the report (`tests/deploy-target.test.ts`, in `npm test`). **But not for the next release** — see the bootstrap below |
+| Exact `RELEASE_SHA` pinning | Works as designed: the format is checked before anything else runs, the commit must exist after the fetch and be a commit, the target is read-only once decided and drives the build, the marker, the checkout, the rollback names and the report (`tests/deploy-target.test.ts`, in `npm test`). For the next release as well: production's own copy, at `902a0e6`, is byte-identical to this one (git blob `a8590ac4073355848c167033f5892198f6cd93b0` at both; §12) — provided the preflight finds the production checkout at `902a0e6` |
 | The approved SHA must be an ancestor of `origin/main` | Yes: `merge-base --is-ancestor` against the fetched tip, before anything is built |
-| The runtime marker is the exact SHA | Yes: written from the target in the build, checked before anything changes, re-read on the runtime straight after the switch (before the checkout and the start — `DEPLOYMENT.md` now says so). Nothing reads what the *started* process serves: the health checks look at HTTP status only, and no route exposes the marker |
-| Migrations before the runtime switch | Yes: build → stamp → backup → `db:migrate` (migrations, row-id backfill, SEO reconcile) → `db:seed` → `db:check-permissions` → stage → stop → switch — all database work while the previous release serves; a failure there stops the release with that release still serving |
+| The runtime marker is the exact SHA | Yes: written from the target in the build, checked before anything changes, re-read on the runtime straight after the switch (before the checkout and the start — `DEPLOYMENT.md` now says so). Nothing reads what the *started* process serves: the health checks look at HTTP status only, and no route exposes the marker. The checkout and the marker are compared with the target only, never with the release that should be serving — a checkout at any other commit is an ordinary deployment — so proving both are `902a0e6` is the operator's stop before the script (§10.2 step 1) |
+| Migrations before the runtime switch | Yes: build → stamp → backup → `db:migrate` (migrations, row-id backfill, SEO reconcile) → `db:seed` → `db:check-permissions` → stage → stop → switch — all database work while the previous release serves; a failure there stops the release with that release still serving. Nothing inspects the journal first: `db:migrate` reads only the newest `created_at` and applies every later migration, so the journal check is the operator's stop before the script (§10.2 step 1) |
 | Rollback runtime | The live runtime becomes `standalone.rollback-<old-sha>-<stamp>` (0700); a failure after the stop restores it, resets the checkout and health-checks it. Migrations are never rolled back, which is why each must be readable by the release before it. Not covered: a failing `systemctl stop` exits before the rollback is armed and nothing starts the unit again; the artwork files `db:seed` writes to the upload directory are not removed; the rollback directory is named after the checkout, not the marker, so in the drift case it reports a mismatch and the run ends INCOMPLETE; and none of the rollback paths has a test |
-| `0007` against the deployed runtime | `tests/schema-compat.test.ts` checks out `deploy/previous-release` (`b807663`) and runs its own reads and writes against this schema |
+| `0006`–`0007` against the deployed runtime | `tests/schema-compat.test.ts` checks out `deploy/previous-release` — `902a0e6` since Correction 1 — and runs its own reads and writes against this schema, on the fresh install and on a `902a0e6` database upgraded by this release, then its own scripts again as a rollback deploy: COMPATIBLE, 27 tables. `b807663`, as a historical rollback: COMPATIBLE, 24 tables (§12) |
 | Backup and restore | `DEPLOYMENT.md` §8: `deploy/backup.sh` dumps the database and the uploads before any migration; restore is `gunzip … | psql` and a `tar` of the uploads |
-| `deploy/previous-release` | `b807663610982d32d84301852fff77fd7f36f9e8`, unchanged; read only by the tests; updated by hand in a later commit once a release is live and verified |
+| `deploy/previous-release` | `902a0e6dc07963ec3a9df5855d685bcf03063d84` since Correction 1 — it had been left at `b807663…` after Batch 20 by mistake; read only by the tests; set to the next runtime by hand, in a commit of its own, once that release is live and verified |
 
-**The bootstrap gap — the most important deployment finding.** The documented
-command runs the `deploy.sh` in the production checkout, which is
-`b807663`'s copy: it predates `RELEASE_SHA`, the `db:check-permissions` gate
-and the checkout read-back, ignores `RELEASE_SHA` and releases the tip of
-`origin/main`. The next release must run the approved commit's own script,
-taken from git; `DEPLOYMENT.md` now says so and how (*The first release over
-`b807663`*). Several step numbers and descriptions in `DEPLOYMENT.md` that had
-drifted from the script (the forced checkout, the marker re-read, the
-permission check, what a failure leaves) were corrected; the script itself is
-unchanged. The Batch 20 runbook's production gates (`visual-editor-v1-rc.md`)
-put the CTA and password-flag audits between the seed and the switch, which
-`deploy.sh` runs as one uninterrupted step: those audits belong against a
-restored copy of the pre-release dump, before the script starts, and the
-`--strict` permission preflight can only run after the switch (the script runs
-it non-strict).
+**No bootstrap gap (corrected in Correction 1).** Batch 26 first recorded,
+as its most important deployment finding, that the production checkout's
+`deploy.sh` was `b807663`'s copy — no `RELEASE_SHA`, no `db:check-permissions`
+gate, no checkout read-back — so that the next release would have to run the
+approved commit's own script, taken from git. That described production before
+Batch 20. Production runs `902a0e6` since Batch 20, and `902a0e6`'s
+`deploy/deploy.sh` is byte-identical to this candidate's (git blob
+`a8590ac4073355848c167033f5892198f6cd93b0` at both; `b807663`'s was
+`6e5a2af9364e483aae5c8c9deef122f7d1e8ee87`): it validates the full
+`RELEASE_SHA`, requires it on `origin/main`, builds and checks out exactly that
+commit, writes and re-reads the marker, keeps the displaced runtime for
+rollback and reads the checkout back. So the next release runs the documented
+command (`DEPLOYMENT.md` §9) — provided the preflight finds the checkout, the
+runtime marker and that script blob as expected; anything else is a stop, not a
+reason to run a different script (§10.2 step 1). No new deployment mechanism
+was introduced. Several step numbers and descriptions in `DEPLOYMENT.md` that
+had drifted from the script (the forced checkout, the marker re-read, the
+permission check, what a failure leaves) were corrected in Batch 26; the script
+itself is unchanged. The Batch 20 runbook's production gates
+(`visual-editor-v1-rc.md`) put the CTA and password-flag audits between the
+seed and the switch, which `deploy.sh` runs as one uninterrupted step: those
+audits belonged against a restored copy of the pre-release dump, before the
+script starts. They guarded the first Visual Editor release — `902a0e6`, which
+first enforced the flag and stopped the CTA loss — and over it they are
+read-only reports, not gates.
 
 ### 10.1 The next deployment's baseline
 
+Corrected in Correction 1 (§12). Every value here is the owner-approved
+release record or the repository's; none was read from the server, which no
+batch since Batch 20 has accessed.
+
 | | |
 |---|---|
-| Expected production runtime before it | `b807663610982d32d84301852fff77fd7f36f9e8` — the repository's record (`deploy/previous-release`); not verified on the server (no access in this batch). Confirm there first: `git -C /var/www/elite-one-desk/app rev-parse HEAD` and `.next/standalone/.eod-release-sha` |
-| Expected rollback runtime | `b807663`'s, moved by the release to `/var/www/elite-one-desk/standalone.rollback-b807663-<stamp>`; with it, the backup the release takes before migrating |
-| Database | recorded at migrations `0000`–`0001` (`docs/release/visual-editor-v1-rc.md`); the next release applies `0002`–`0007`, the row-id backfill and the first SEO reconcile, all additive and readable by `b807663` |
-| `deploy/previous-release` | `b807663…`, unchanged in Batch 26; to be updated in a commit of its own once a new release is live and verified |
+| Expected production runtime before it | `902a0e6dc07963ec3a9df5855d685bcf03063d84` — deployed in Batch 20 (tag `visual-editor-v1-rc`), recorded in `deploy/previous-release`. **Not verified in Batch 26.** The preflight must find **both** the checkout (`git -C /var/www/elite-one-desk/app rev-parse HEAD`) **and** the runtime marker (`/var/www/elite-one-desk/app/.next/standalone/.eod-release-sha`) at it; a mismatch is a stop |
+| Expected production database | migrations `0000`–`0005`, applied by Batch 20's deploy of `902a0e6` (six rows in `drizzle.__drizzle_migrations`; `DEPLOYMENT.md` lists their `created_at`). Inspected read-only before anything changes; a mismatch is a stop before any migration |
+| Release migrations | `0006`–`0007` only — no `0008`, no existing migration edited — with the row-id backfill (already run by Batch 20; few or none expected) and the first SEO reconcile, all additive and read and written by `902a0e6` in the compatibility proof (§12) |
+| Immediate rollback runtime | `902a0e6`'s — the runtime the release displaces — moved by the release to `/var/www/elite-one-desk/standalone.rollback-902a0e6-<stamp>`; with it, the database and uploads backups the release takes before migrating. A runtime rollback does not reverse `0006`–`0007`, which is why `902a0e6` has to read and write them |
+| Older rollback copy | `standalone.rollback-b807663-<stamp>`, kept from Batch 20 if it is still there: historical, secondary recovery evidence only — two releases back, and not permission-equivalent (it knows only `content.manage`) |
+| Compatibility reference | `902a0e6` (`deploy/previous-release`) — the gate; `b807663` additionally, as the historical rollback |
+| Production deploy script | `902a0e6`'s `deploy/deploy.sh`, git blob `a8590ac4073355848c167033f5892198f6cd93b0` — byte-identical to the candidate's; the preflight checks the blob in the production checkout |
+| `deploy/previous-release` | `902a0e6…` after Correction 1; set to the new runtime, in a commit of its own, once the next release is live and verified |
 
 ### 10.2 Checklist for the eventual, separately authorized deployment
 
-1. Confirm the running runtime and checkout are `b807663` (above); stop if not.
+Deployment is not authorized by this record. When it is:
+
+1. **Preflight, read-only** (`DEPLOYMENT.md` §9, *Before a release: confirm
+   what production runs*): the checkout and the runtime marker are both
+   `902a0e6dc07963ec3a9df5855d685bcf03063d84`; the checkout's `deploy/deploy.sh`
+   is blob `a8590ac4073355848c167033f5892198f6cd93b0`; the working tree is
+   clean; the migration journal is exactly the six rows of `0000`–`0005`, by
+   `created_at` and by hash (`DEPLOYMENT.md` lists them). **Any mismatch — a
+   missing or empty marker, the checkout and the marker disagreeing, `0006`
+   already applied — stop the deployment and investigate**: do not adapt, do
+   not run another copy of the script, do not migrate. The script makes
+   neither check itself (§10). Batch 26 verified none of this.
 2. Before the script starts: prove the latest dump restores into a scratch
-   database, and run the CTA and password-flag audits against that copy
-   (`visual-editor-v1-rc.md`, gates 2, 6–8) — the script runs migrate, seed,
-   the permission check and the switch as one step.
+   database (`visual-editor-v1-rc.md`, gate 2). The CTA and password-flag
+   audits (gates 6–8) guarded the first Visual Editor release, `902a0e6`; over
+   it they are read-only reports, the owner's call.
 3. Tell every editor before the switch that they will reload any open admin
-   page and Visual Editor tab once the release is live (§9).
-4. Run the approved commit's own `deploy.sh`, with `RELEASE_SHA` set to it
-   (`DEPLOYMENT.md`, *The first release over `b807663`*).
-5. Keep the dumps the release names; the database is not rolled back. Check
-   the log for the `SEO records: …` reconcile line and the permission check;
-   once live, run the strict permission preflight
-   (`docs/release/permission-upgrade.md`).
+   page and any Visual Editor tab once the release is live (§9) — `902a0e6` has
+   the Visual Editor, so its tabs are included.
+4. Run the documented command — production's own `deploy.sh`, `902a0e6`'s
+   copy, byte-identical to the candidate's — with `RELEASE_SHA` set to the
+   approved commit (`DEPLOYMENT.md` §9). The script refuses a commit that is not
+   on `origin/main`, so `main` is fast-forwarded first, after the independent
+   approval. Its first lines name the checkout, the runtime and the target:
+   `902a0e6`, `902a0e6` and the approved commit `(RELEASE_SHA)`. If they do not,
+   interrupt it before `Backing up the database and uploads` — until then it
+   has only built in a worktree of its own — and investigate.
+5. Keep the database and uploads backups the script takes before migrating,
+   and copy them off the machine — the nightly backup deletes dumps older than
+   30 days; the database is not rolled back. Check the log for `Row ids: …`
+   (few or none expected), the `SEO records: …` reconcile line and the
+   permission check passing, and that the report names the previous checkout
+   and runtime `902a0e6` and the displaced runtime kept as
+   `standalone.rollback-902a0e6-<stamp>`. This release introduces no permission
+   key over `902a0e6` (tested, §12), so the `--strict` preflight — meant for
+   straight after the first upgrade, Batch 20's — is not part of it; a NOTE the
+   check prints is an owner's narrowing since then, to record, not to re-grant.
 6. **Have every editor reload any open admin page and Visual Editor tab** now
    that the release is live (§9).
 7. By hand, beyond the script's health checks: `/robots.txt` shows
    `Allow: /media/share/`; `/sitemap.xml` answers and leaves out a page marked
    `noindex`; a page's `og:image`, fetched as `Twitterbot` through nginx,
-   answers 200 `image/webp`; `.next/standalone/.eod-release-sha` names the
-   approved commit.
-8. Then record the new runtime in `deploy/previous-release`, in its own commit.
+   answers 200 `image/webp`; `.next/standalone/.eod-release-sha` and the
+   checkout both name the approved commit; the journal holds eight rows — the
+   six of step 1, then `0006` and `0007`, each hash the SHA-256 of its file —
+   and no `0008`.
+8. Then record the new runtime in `deploy/previous-release`, in its own commit;
+   until then it stays `902a0e6`. Keep `standalone.rollback-902a0e6-<stamp>`
+   and the copied dumps until the release has proved itself. The older
+   `standalone.rollback-b807663-*` copy stays a historical fallback only;
+   removing it is the owner's decision, not part of the release.
 
 ## 11. Known limitations
 
@@ -1189,13 +1270,26 @@ it non-strict).
   loss, and reproduces under the brief's moderate class and on public pages
   under a slow mobile network. Blocks production by the brief's rule; fixed
   only by the newer vendored React (Next.js 16).
-- **The first release over `b807663` must run the approved commit's own
-  `deploy.sh`** (§10) — the production checkout's copy ignores `RELEASE_SHA`.
-- **While the previous release serves** — the deploy window and after a
-  runtime rollback — its media delete takes no lock and counts neither Quick
-  Links cards, reusable components, route drafts nor SEO, so the jsonb race and
-  X1 are as they are in production today (§1.9). Its sitemap lists `noindex`
-  addresses and its `robots.txt` keeps the share rendition out.
+- **The production baseline is a record, not a reading** (§10.1, §12). That
+  production runs `902a0e6` — checkout and runtime marker — on migrations
+  `0000`–`0005`, with a `deploy.sh` byte-identical to this one's, is the
+  owner-approved record of Batch 20. No batch since has read the server, and
+  Correction 1 did not either; the deployment's read-only preflight confirms
+  it before anything changes, and a mismatch stops the deployment.
+- **The compatibility proof is the schema's, not every query's** (§12.3).
+  `schema-compat` runs `902a0e6`'s own schema module, migrate, seed and
+  permission check, and its writes as the probe restates them — not its
+  application code path by path — on this checkout's `node_modules`
+  (`drizzle-orm` 0.45.2, where `902a0e6` locks 0.44.7). A scratch run on
+  `902a0e6`'s own `npm ci` gave the same result; it is not tracked. Semantic
+  compatibility — a column that keeps its name and changes its meaning — stays
+  policy and review (`DEPLOYMENT.md`, *Migrations must be backward-compatible*).
+- **While the previous release serves** — `902a0e6`, in the deploy window
+  and after a runtime rollback — its media delete takes no lock and counts
+  neither Quick Links cards, route drafts nor SEO (it counts reusable
+  components, at their top level), so the jsonb race and X1 are as they are in
+  production today (§1.9). Its sitemap lists addresses its own SEO records mark
+  `noindex`, and its `robots.txt` (`/media/*@*`) keeps its share rendition out.
 - **Pictures already dangling** stay as they are, carried, until an editor
   replaces them; a publication refuses one that would newly go live (§1.6).
 - **The seed refills a picture an owner cleared** in four section types at
@@ -1210,14 +1304,15 @@ it non-strict).
   target pinning (the rollback paths, the migrate → seed → permission-check →
   switch order) — as before; the seed race and the backfill race are forced
   through the scripts themselves, not through `deploy.sh`, and against this
-  release's delete, not `b807663`'s.
+  release's delete, not the serving release's (`902a0e6`'s).
 - **A pre-existing SEO finding of the review, not changed here**: the sitemap
   lists an address whose SEO record names a different canonical — two signals
   that disagree. Leaving such an entry out, as the `noindex` rule does, would
   not; it changes which addresses are offered, so it waits for its own
   decision.
 - **Rich text is escaped again every time it is saved again** (pre-existing —
-  the sanitizer is unchanged since the first commit and `b807663` has it —
+  the sanitizer is unchanged since the first commit, so `902a0e6`, production
+  since Batch 20, has it, as `b807663` did —
   found by the review, measured, not changed here). `sanitizeRichText`
   escapes the `&` of a character reference it wrote itself, so it is not
   idempotent, and an editor's rich-text box is a plain textarea holding the
@@ -1263,3 +1358,155 @@ it non-strict).
 - Everything Batch 25 recorded in `docs/admin/seo-and-share-images.md` C.4 that
   Batch 26 did not close (F6k, Arabic where a page has none, the rollback
   corners, sizes stored before Batch 25, preview JSON-LD).
+
+## 12. Correction 1 — the production baseline
+
+**What was wrong.** After Batch 20 deployed `902a0e6`, `deploy/previous-release`
+was left at `b807663` by mistake, and this record took the file at its word: it
+called `b807663` production, proved compatibility against it, and wrote a
+deployment baseline and a "bootstrap gap" that described production as it was
+before Batch 20. Correction 1 puts the baseline right and requalifies what
+depends on it. The application hardening (§1–§9) does not depend on which
+release came before, and no application code changed. Nothing here was read
+from the server or the production database: the facts are the owner-approved
+Batch 20 record and the repository's.
+
+### 12.1 The release history
+
+| Release | |
+|---|---|
+| `aa1dbf5`, `5999109`, `bae53b2`, `91ec445` | the earlier runtimes `deploy/previous-release` records, oldest first |
+| `b807663610982d32d84301852fff77fd7f36f9e8` | production until Batch 20, which kept its runtime on the server as the rollback copy `standalone.rollback-b807663-<stamp>` — historical now |
+| `902a0e6dc07963ec3a9df5855d685bcf03063d84` | deployed by Batch 20 (tag `visual-editor-v1-rc`): checkout and runtime marker `902a0e6`, the service healthy, migrations `0000`–`0005` applied. Production since, by the record; the next deployment's preflight confirms it |
+| this branch | the candidate: adds `0006`–`0007`; not authorized for deployment |
+
+### 12.2 `deploy/previous-release`
+
+| | First non-comment line |
+|---|---|
+| Before | `b807663610982d32d84301852fff77fd7f36f9e8` |
+| After | `902a0e6dc07963ec3a9df5855d685bcf03063d84` |
+
+Its comments now carry the chain through `902a0e6`, the Batch 20 deployment as
+recorded, where the correction came from (the owner-approved record, not the
+server), and `b807663`'s standing as a historical rollback copy; `b807663`'s
+place in the history is kept. Only the tests read the file (`compatRef`); no
+deploy script does. It stays `902a0e6` until the next release is live and
+verified (§10.2 step 8).
+
+### 12.3 Compatibility, requalified
+
+| Check | Release | Result |
+|---|---|---|
+| `schema-compat`, fresh install: every table its own schema defines, read; its own writes made | `902a0e6` | COMPATIBLE, 27 tables |
+| `schema-compat`, the deploy path: its own migrate and seed (`0000`–`0005`) and SEO overrides of four types; this release's migrate (`0006`–`0007`, the row-id backfill, the SEO reconcile), seed and permission check; its probe again, with the overrides read and saved by address | `902a0e6` | COMPATIBLE, 27 tables; every override bound to its record, its words and share image kept |
+| `schema-compat`, a rollback deploy: its own migrate (applies nothing), seed and permission check on the upgraded database, then its probe again | `902a0e6` | COMPATIBLE; still eight migrations |
+| `schema-compat`, the historical rollback, fresh install | `b807663` | COMPATIBLE, 24 tables — in addition to `902a0e6`, never instead |
+| `permissions-migration`, new: the next deploy and a rollback deploy | `902a0e6` | no key introduced; every key and grant as it was, both ways; the preflight passing on each side |
+| `permissions-migration`, the pre-split upgrade (34–35) | `b807663`, pinned now | as before |
+| `cta-audit`, on the release in production's own schema | `902a0e6` | reads everything there is, writes nothing |
+| `cta-audit`, new: on a schema from before the Visual Editor | `b807663`, pinned | runs, skips the component and history tables and the draft-only column, writes nothing — the case the previous reference used to cover, kept rather than lost with it; a mutant that always reads the component table fails it, and only it |
+| Scratch, not tracked: the fresh-install and deploy-path checks with `902a0e6` exported by `git archive` and installed by its own `npm ci` — `drizzle-orm` 0.44.7, not this checkout's 0.45.2 | `902a0e6` | 2 of 2 pass, 27 tables |
+
+No assertion was weakened: the probe still has to read exactly the tables that
+release's schema defines and land every write group expected of it, and the
+deploy path adds groups rather than relaxing one. To show the extended test
+fails when it should, a scratch copy of it took one hook — SQL run after the
+upgrade or on the fresh install, or a table the probe leaves out — and failed
+on each of seven mutants, at the group named, while the unmutated copy passed:
+
+| Mutant | Fails at |
+|---|---|
+| a NOT NULL column with no default added to `service_categories` after the upgrade | its category screen's insert |
+| the same on `seo_metadata` | its three SEO writes: its own column list, its screen's save, the save by address |
+| `pages.draft_structure` dropped | its read of `pages` — `column "draft_structure" does not exist` |
+| a category's SEO override moved off its address | "`category:travel-tourism` is no longer where it looks for it" |
+| the `(entity_type, entity_key)` unique index dropped | its three SEO upserts, whose `ON CONFLICT` has nothing to match |
+| the probe skipping `page_versions` | "the probe did not read exactly the tables that release defines" |
+| the first mutant, on the fresh install | its category screen's insert |
+
+So `902a0e6` is compatible with the final schema on the evidence above, and
+nothing rests on `b807663`'s result.
+
+### 12.4 The deploy script
+
+`deploy/deploy.sh` is git blob `a8590ac4073355848c167033f5892198f6cd93b0` at
+`902a0e6` and at this branch: byte-identical. The whole `deploy/` directory at
+`3c6c14c` is `902a0e6`'s, and Correction 1 changes only `deploy/previous-release`
+in it, which no script reads. `b807663`'s `deploy.sh` was blob
+`6e5a2af9364e483aae5c8c9deef122f7d1e8ee87` — the copy the bootstrap gap
+described. There is no gap (§10), and no deployment mechanism was added.
+
+### 12.5 The database and rollback baselines
+
+Production's database is expected at `0000`–`0005`: six rows in
+`drizzle.__drizzle_migrations`, each `created_at` its migration's `when` in the
+journal (`DEPLOYMENT.md` §9 lists them). The release adds `0006`–`0007` and
+nothing else — no `0008`, and `0000`–`0005` byte-identical to `902a0e6`'s (the
+deploy-path check fails otherwise). The journal is read before anything
+changes, and a mismatch is a stop (§10.2 step 1). The immediate rollback is
+`902a0e6`'s runtime, kept by the release as
+`standalone.rollback-902a0e6-<stamp>`, with the database and uploads backups
+taken before migrating. A runtime rollback does not reverse `0006`–`0007`,
+which is why §12.3 has `902a0e6` read and write them. `b807663`'s copy, if
+still on the server, is historical, secondary evidence — two releases back and
+not permission-equivalent.
+
+While `db:migrate` runs, `902a0e6` keeps serving but waits on the tables the
+migrations alter: drizzle applies `0006` and `0007` in one transaction, so
+their `ALTER TABLE`s hold `service_categories` and `seo_metadata` exclusively
+until it commits — every query on them, page renders included, queues for that
+long — and the SEO reconcile then locks `seo_metadata` against writes
+(`EXCLUSIVE`), so a `902a0e6` SEO save waits while reads go on. On tables this
+size both are short, and a request waits rather than fails; neither was
+measured against production's data.
+
+### 12.6 React #418
+
+§5.5 now calls the comparison a `b807663` baseline build — a scratch
+reconstruction: built from that commit in a scratch worktree and served
+against a copy of the test catalogue. It shows the symptom predates Batch 26;
+it does not establish whether, or how often, visitors to the live `902a0e6`
+meet #418; and it does not change the verdict.
+
+### 12.7 Not verified
+
+None of the baseline was verified on the server — the checkout, the runtime
+marker, the migration journal, the script in the production checkout, the
+rollback copies. The eventual, separately authorized deployment confirms them
+read-only before anything changes and stops on any mismatch (`DEPLOYMENT.md`
+§9, §10.2 step 1).
+
+### 12.8 Wording left as it was
+
+- Records of their own time keep `b807663` as the production they described:
+  `visual-editor-v1-rc.md` and `visual-editor-v1-acceptance.md` (Batches
+  19B–20). They are history, not this release's baseline.
+- Application text written while the previous release was `b807663`, and
+  unchanged since — production shows the same words: the Roles screen's
+  Legacy group ("Grants nothing in this release. It is what the previous
+  release checks for every page edit…") and the `content.manage` label
+  ("Previous release only: edit and publish pages if the site is rolled
+  back"), with comments in the same sense in `src/lib/auth/permissions.ts`
+  (the key "the release recorded in `deploy/previous-release` checks … for
+  every page write"), `src/lib/auth/authority.ts` and
+  `src/lib/cms/motion-write.ts`. They describe a release before the split —
+  `b807663` — and `902a0e6` grants nothing for `content.manage` either.
+- Script comments in the same sense: `scripts/audit/cta.ts` ("the release in
+  production … still carries that registry" — `902a0e6` has the fix) and two
+  in `scripts/migrate.ts`'s row-id backfill: "its validator does not know
+  `_id`" (`902a0e6`'s keeps it) and, written in Batch 26, "the release still
+  serving has no revision column to compare against" (`902a0e6` has one and
+  guards its saves with it). The backfill's design is unaffected — it must not
+  move a revision the serving release guards its saves with, so the row lock
+  is still the comparison (§1.7) — but the stated reason was `b807663`'s.
+- Comments that justify a design by "the release in `deploy/previous-release`"
+  and were written while that file named `b807663`: the motion columns
+  (`src/lib/db/schema.ts`, `src/lib/cms/motion-doc.ts`, `motion-write.ts`,
+  `publish-service.ts`) say that release understands only the five legacy
+  presets, and `src/lib/cms/snapshot.ts` reasons about its snapshot reader.
+  `902a0e6` already reads the motion document, so for the next rollback they
+  understate it; the designs stay right, since they still keep `b807663` — the
+  historical rollback — working.
+- Correcting any of these is a code change, outside a correction that touches
+  no application code; recorded for a later batch.

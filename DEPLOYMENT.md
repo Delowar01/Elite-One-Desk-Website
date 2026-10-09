@@ -208,6 +208,12 @@ A production release names the exact commit that was approved — see *Which
 commit is released* below. Without `RELEASE_SHA` the script releases whatever
 `origin/main` holds when it fetches, which is the last push, approved or not.
 
+Run it only after the read-only preflight in *Before a release: confirm what
+production runs* has passed. The script compares the checkout and the live
+runtime with the target only — never with the release that should be serving —
+and never reads the migration journal, so a production that is not what the
+record says would simply be released over. A mismatch is a stop.
+
 Run it as root, or through `sudo`. Every git, npm and build command is dropped
 to `eliteonedesk`, so nothing under the application becomes root-owned; only
 `systemctl`, the backup, and the moves inside `app/` use privilege. Running it
@@ -305,28 +311,60 @@ fixtures to hold each of those rules. `RELEASE_SHA` empty keeps the old
 behaviour (the tip of `origin/main`) for development servers; a production
 release should never rely on it.
 
-#### The first release over `b807663` — run the approved commit's own script
+#### Before a release: confirm what production runs — and stop on any mismatch
 
 The command above runs the `deploy.sh` **in the production checkout**, which is
-the copy of the release that is serving. The release production runs today
-(`deploy/previous-release`, `b807663`) predates `RELEASE_SHA`, the
-`db:check-permissions` gate and the checkout read-back (Batches 19A and 19C):
-its script ignores `RELEASE_SHA`, releases whatever the tip of `origin/main` is,
-and switches straight after the seed. So the next release — and only that one —
-must run the approved commit's own script, taken from git (Batch 26 deploy
-audit, `docs/release/release-hardening-batch-26.md` §10 — with the checklist
-for that release in §10.2). The script copies itself to a private temporary file before it does
-anything and finds the application by `APP_ROOT`/`APP_DIR` alone, never by its
-own location, so it runs the same from anywhere:
+the copy of the release that is serving. Production is expected to run
+`902a0e6dc07963ec3a9df5855d685bcf03063d84` (Visual Editor V1, tag
+`visual-editor-v1-rc`), deployed in Batch 20 with migrations `0000`–`0005` and
+recorded in `deploy/previous-release`. Its `deploy/deploy.sh` is byte-identical
+to the one in this tree — git blob `a8590ac4073355848c167033f5892198f6cd93b0`
+at both — so it already accepts `RELEASE_SHA` only as a full 40-character
+commit, requires that commit to be on `origin/main`, builds and checks out
+exactly that commit, writes and re-reads the runtime marker and keeps the
+runtime it displaces for a rollback. The command at the top of this section is
+the one to run.
+
+That expectation is the owner-approved release record, not a reading of the
+server: no batch since Batch 20 has looked. So before anything changes, an
+authorised operator confirms it, read-only:
 
 ```bash
-sudo -u eliteonedesk git -C /var/www/elite-one-desk/app fetch origin main
-sudo -u eliteonedesk git -C /var/www/elite-one-desk/app show <approved sha>:deploy/deploy.sh > /tmp/deploy-approved.sh
-sudo RELEASE_SHA=<approved sha> bash /tmp/deploy-approved.sh
+sudo -u eliteonedesk git -C /var/www/elite-one-desk/app rev-parse HEAD              # 902a0e6dc07963ec3a9df5855d685bcf03063d84
+sudo cat /var/www/elite-one-desk/app/.next/standalone/.eod-release-sha               # 902a0e6dc07963ec3a9df5855d685bcf03063d84
+sudo -u eliteonedesk git -C /var/www/elite-one-desk/app rev-parse HEAD:deploy/deploy.sh  # a8590ac4073355848c167033f5892198f6cd93b0
+sudo -u eliteonedesk git -C /var/www/elite-one-desk/app status --porcelain           # nothing
+sudo -u postgres psql -d elite_one_desk -At \
+  -c "select created_at, hash from drizzle.__drizzle_migrations order by created_at"
+# 1789100863576|7426f1dd039e2e512783f59988fc2a8dd62d91fd7b5fc6d883104fb3977abec8   0000
+# 1789244994556|1b2f1107ecb5a83b4df03a3100eede33c22a5466c88ac2ac07ccd0523cf7affd   0001
+# 1789384159943|d66d8dd51ddc11c2592978ede6b8f01c1b97d8dea97e82a170f04a1bcf2adc79   0002
+# 1789398536174|45245ab90f48b5d79af1cbdc50bad2f261aae0f38e8fe682a25b761dc12bb9f1   0003
+# 1790341373279|3c392f03c98758a5ddedda7f2264665a904dc1ca5164340767156a9aff65f10e   0004
+# 1790548938474|18575d13a7be254373168ce81f6047c52fa89c1f55cd5e591a18ef3d0f78d674   0005
 ```
 
-From then on the checkout's own copy is the approved release's, and the
-command at the top of this section is right again.
+The journal must be exactly those six rows — migrations `0000`–`0005`, each
+`created_at` that migration's `when` in `drizzle/meta/_journal.json` and each
+`hash` the SHA-256 of its file, which is how `db:migrate` records them. The
+release adds `0006` (`1790955896689`) and `0007` (`1791477950531`) and nothing
+else. **If any answer differs — another commit, a missing or empty marker, the
+checkout and the marker disagreeing, a script with another blob, a dirty tree,
+a row more or a row fewer, `0006` or `0007` already there, another hash — stop
+before the script runs and investigate.** Neither check is one the script makes
+for you: it compares the checkout and the marker with the target only, so a
+checkout at any other commit is an ordinary deployment (*The release marker*),
+and `db:migrate` reads only the newest `created_at` and applies every later
+migration, so a database in any other state would be migrated without a word.
+Do not adapt: do not run a different copy of the script, do not release over a
+runtime nobody expected, do not migrate a database whose journal is not the one
+above. A mismatch is a question for the owner, not a step to work around.
+
+(Before Batch 20 the production checkout was `b807663`, whose script predates
+`RELEASE_SHA`, the `db:check-permissions` gate and the checkout read-back.
+Batch 20 released `902a0e6` over it; that case is closed, and `b807663`'s
+runtime is only a historical fallback now. A checkout found at `b807663` today
+is a mismatch like any other: stop.)
 
 ### Admin pages and editor tabs left open across a release
 
@@ -345,9 +383,10 @@ a page or tab drawn by the previous build posts ids the new build does not
 know: every save, load and publish from it is answered as an unknown action
 before any of this release's code runs, and writes nothing — an admin form
 fails to save, and a Visual Editor tab says "The save could not be sent. Try
-again." One reload fixes it. (The release production runs today, recorded in
-`deploy/previous-release`, has no Visual Editor, so for the next deploy this is
-its admin forms and SEO screen only.)
+again." One reload fixes it. (The release production runs since Batch 20,
+`902a0e6`, recorded in `deploy/previous-release`, has the Visual Editor, so for
+the next deploy this covers its Visual Editor tabs as well as its admin forms
+and SEO screen.)
 
 The guards below are what an old page meets where its post *does* reach an
 action — with a pinned `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`, ids survive a
@@ -537,9 +576,10 @@ two-step plan of its own, like the service restructure had.
 
 #### Migrations must be backward-compatible
 
-A migration runs at step 10 and the runtime switches at step 14. For the minutes
-in between, **the previous release is serving against the new schema**. So a
-routine migration may only expand:
+A migration runs at step 10 and the runtime is stopped and switched only at
+steps 12–13. For the minutes in between, **the previous release is serving
+against the new schema** — and after a runtime rollback it serves against it
+for good. So a routine migration may only expand:
 
 | Allowed in a routine release | Not allowed in the same release |
 |---|---|
@@ -568,7 +608,15 @@ Two automated guards, in `tests/schema-compat.test.ts`:
 
 1. The previous release's own table definitions — checked out from
    `deploy/previous-release` — are run against the schema and data this release
-   produces. A dropped, renamed or retyped column fails here.
+   produces: every table they define is read, and that release's own writes
+   are made (its sections, page structure and history, reusable components,
+   categories and SEO saves). It runs on this release's fresh install and on a
+   database the previous release built with its own migrate and seed and this
+   release then upgraded, as a deploy upgrades production — and then that
+   release's own scripts run again, as a rollback deploy runs them. A dropped,
+   renamed or retyped column, or a new required column an old insert does not
+   fill, fails here. `b807663`, the runtime before Batch 20, is proved the same
+   way as a historical rollback — in addition, never instead.
 2. New migration SQL is refused if it contains `DROP COLUMN`, `DROP TABLE`,
    `RENAME`, `SET NOT NULL`, a type change or a dropped constraint or default,
    unless the file carries `-- contract: approved <reason>`.
@@ -631,6 +679,12 @@ A runtime from before this marker existed reads as unmarked. That counts as
 drift on the way in (one redeployment stamps it), and during a rollback it is
 reported as `legacy/unmarked` rather than treated as a failure.
 
+None of these paths compares anything with the release that *should* be
+running. For a production release that is the preflight's job (*Before a
+release*): drift, an unmarked runtime or a checkout at any commit but the one
+in `deploy/previous-release` is a stop there, not something for this table to
+repair.
+
 **A failure before step 10 leaves production byte-identical** — everything up to
 that point happens in the worktree, and the old release keeps serving. A
 failure in step 10 or 11 — a migration, the seed, the permission check, the
@@ -683,6 +737,15 @@ sudo -u eliteonedesk git -C /var/www/elite-one-desk/app worktree remove \
   /var/www/elite-one-desk/build-<sha>-<timestamp>
 ```
 
+For the next release that rollback runtime is
+`standalone.rollback-902a0e6-<timestamp>`; keep it, with the pre-migration
+dumps the release names, until the release has proved itself — and copy those
+dumps off the machine, because the nightly backup deletes every `*.gz` in
+`/var/backups/elite-one-desk` older than 30 days (`deploy/backup.sh`). Batch
+20's `standalone.rollback-b807663-<timestamp>`, if it is still there, is a
+historical fallback; removing it is the owner's decision, not part of a
+release.
+
 ### Database migrations are **not** rolled back
 
 The automatic rollback restores the runtime and the git tree. It does **not**
@@ -718,6 +781,11 @@ disappears. Saving such a section in the older release drops the key, as its
 validator drops every key it does not declare: the section then becomes a
 detached copy of what it showed. Nothing else depends on the new tables, and a
 later forward deploy finds them as they were left.
+
+(Written for the release over `b807663`. The next release's rollback target,
+`902a0e6`, introduced `0005` itself and reads `_reuse` and both tables; all of
+this applies again only to a rollback as far back as `b807663`, which is a
+historical fallback, not the runtime the next release displaces.)
 
 ### SEO records and rollback (migration `0007`, Batch 25)
 
@@ -814,7 +882,9 @@ Earlier releases stored the flag and never read it, so production may already
 hold accounts that carry it. They are honoured as they are — nothing clears the
 flag silently. Before the first release that enforces it, an authorised
 operator finds out how many accounts that is, and tells those people what will
-happen at their next sign-in. The check is part of the release, not of the one
+happen at their next sign-in. (That first release was Batch 20's `902a0e6`,
+which production has run since; for the release over it the check below is a
+read-only report, not a gate.) The check is part of the release, not of the one
 running now, so it runs from the release's own checkout — against the restored
 copy of the pre-deploy backup, the same scratch database the CTA audit reads
 (`docs/release/cta-audit.md`):
@@ -865,7 +935,10 @@ hand, do it by hand.
 `openssl rand -base64 48`. Changing it signs everyone out, which is harmless.
 
 **Migrations fail** — check `DATABASE_URL` and that the role owns the database.
-`npm run db:migrate` is safe to re-run; it applies only what is pending.
+`npm run db:migrate` is safe to re-run; it applies every migration newer than
+the newest one recorded in `drizzle.__drizzle_migrations` — it does not compare
+the recorded set with the files, which is why a release checks the journal
+first (*Before a release*).
 
 **An editor cannot see a screen** — that is the permission model working. Users &
 roles → the permission matrix.

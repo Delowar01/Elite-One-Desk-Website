@@ -6,8 +6,9 @@
  * pre-15b registry defect (`CtaLabel`/`CtaHref` declared, `ctaLabel`/`ctaHref`
  * stored and drawn) can have left a section, or one way a section can look
  * wrong without being lost. The command itself is run against real databases —
- * this release's and the previous release's schema — and the whole database is
- * fingerprinted before and after, table by table and sequence by sequence.
+ * this release's schema, the release in production's, and one from before the
+ * Visual Editor — and the whole database is fingerprinted before and after,
+ * table by table and sequence by sequence.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -17,13 +18,21 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 
 import { REPO_ROOT, dbUrl, scriptEnv, uniqueName } from "./helpers/env";
-import { compatTree, giveFresh } from "./helpers/fixtures";
+import { WORK, compatTree, giveFresh, removeWorktree, worktreeAt } from "./helpers/fixtures";
 import { connect, dropDatabase, recreateDatabase, type Sql } from "./helpers/pg";
 import { runScript } from "./helpers/run";
 
 import { auditSections, formatReport, storedCta, type SectionInput } from "../scripts/audit/cta";
 
 type Values = Record<string, unknown>;
+
+/**
+ * Production before Batch 20, kept on the server as a historical rollback: a
+ * schema without the component and history tables or the draft-only column,
+ * which the audit has to skip. Pinned, because `deploy/previous-release` now
+ * names a release that has all three (Batch 26, Correction 1).
+ */
+const BEFORE_THE_EDITOR = "b807663610982d32d84301852fff77fd7f36f9e8";
 
 const section = (id: number, blockType: string, published: Values | null, extra: Partial<SectionInput> = {}): SectionInput => ({
   id,
@@ -143,7 +152,7 @@ describe("what the audit classifies — no database", () => {
 
 describe("the command writes nothing — real databases, whole-database fingerprints", () => {
   let fresh = "";
-  let previous = "";
+  const others: string[] = [];
   let sql: Sql;
   let work = "";
 
@@ -184,7 +193,7 @@ describe("the command writes nothing — real databases, whole-database fingerpr
   after(async () => {
     await sql?.end({ timeout: 5 });
     if (fresh) dropDatabase(fresh);
-    if (previous) dropDatabase(previous);
+    for (const name of others) dropDatabase(name);
     if (work) rmSync(work, { recursive: true, force: true });
   });
 
@@ -207,25 +216,51 @@ describe("the command writes nothing — real databases, whole-database fingerpr
     assert.equal(report.rows.length, n);
   });
 
-  test("on the previous release's own schema (the production shape): it runs, skips what is not there, writes nothing", async () => {
-    const tree = compatTree();
-    previous = uniqueName("cta_audit_prev");
-    recreateDatabase(previous);
+  /** What the audit looks for before it reads: the component and history tables and the draft-only column. */
+  async function shapeOf(db: Sql) {
+    const [shape] = await db<{ components: string | null; versions: string | null; draftOnly: boolean }[]>`
+      select to_regclass('public.reusable_components')::text as components,
+             to_regclass('public.page_versions')::text as versions,
+             exists (select 1 from information_schema.columns
+                      where table_schema = 'public' and table_name = 'page_sections'
+                        and column_name = 'is_draft_only') as "draftOnly"`;
+    return shape;
+  }
+
+  /** A release's own migrate and seed, from its own checkout; then the audit over it, which must write nothing. */
+  async function auditOwnSchema(tree: string, label: string, shape: Awaited<ReturnType<typeof shapeOf>>) {
+    const database = uniqueName(label);
+    recreateDatabase(database);
+    others.push(database);
     for (const script of ["scripts/migrate.ts", "scripts/seed.ts"]) {
-      const made = spawnSync("npx", ["tsx", script], { cwd: tree, encoding: "utf8", env: scriptEnv(dbUrl(previous)), maxBuffer: 32 * 1024 * 1024 });
-      assert.equal(made.status, 0, `the previous release's ${script} failed: ${made.stderr || made.stdout}`);
+      const made = spawnSync("npx", ["tsx", script], { cwd: tree, encoding: "utf8", env: scriptEnv(dbUrl(database)), maxBuffer: 32 * 1024 * 1024 });
+      assert.equal(made.status, 0, `that release's ${script} failed: ${made.stderr || made.stdout}`);
     }
-    const prev = connect(previous);
+    const db = connect(database);
     try {
-      const beforeAudit = await fingerprint(prev);
-      const json = path.join(work, "previous.json");
-      const result = runScript("scripts/audit-cta.ts", previous, ["--json", json]);
+      assert.deepEqual(await shapeOf(db), shape, "that release's schema is not the shape this case is about");
+      const beforeAudit = await fingerprint(db);
+      const json = path.join(work, `${label}.json`);
+      const result = runScript("scripts/audit-cta.ts", database, ["--json", json]);
       assert.equal(result.code, 0, result.output);
-      assert.equal(await fingerprint(prev), beforeAudit, "the audit changed the previous release's database");
+      assert.equal(await fingerprint(db), beforeAudit, "the audit changed that release's database");
       const report = JSON.parse(readFileSync(json, "utf8")) as { rows: unknown[] };
-      assert.ok(report.rows.length > 0, "the previous release's seeded sections are audited");
+      assert.ok(report.rows.length > 0, "that release's seeded sections are audited");
     } finally {
-      await prev.end({ timeout: 5 });
+      await db.end({ timeout: 5 });
+    }
+  }
+
+  test("on the release in production's own schema (`deploy/previous-release`): it reads everything there is, and writes nothing", async () => {
+    await auditOwnSchema(compatTree(), "cta_audit_prev", { components: "reusable_components", versions: "page_versions", draftOnly: true });
+  });
+
+  test("on a schema from before the Visual Editor (b807663): it runs, skips what is not there, writes nothing", async () => {
+    const dir = path.join(WORK, `cta-before-editor-${process.pid}`);
+    try {
+      await auditOwnSchema(worktreeAt(BEFORE_THE_EDITOR, dir), "cta_audit_old", { components: null, versions: null, draftOnly: false });
+    } finally {
+      removeWorktree(dir);
     }
   });
 

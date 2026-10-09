@@ -1,19 +1,34 @@
 # The release currently RUNNING in production — the runtime a new release's
 # migrations must stay backward-compatible with.
 #
-# A migration is applied at deploy step 10 and the runtime switches at step 14,
-# so for the minutes in between THIS commit's code is reading the new schema.
+# A migration is applied at deploy step 10 and the runtime is stopped and
+# switched only at steps 12–13, so for the minutes in between THIS commit's
+# code is reading and writing the new schema — and after a runtime rollback it
+# does so for good, because a rollback never reverses a migration.
 # `tests/schema-compat.test.ts` checks out this commit and runs its own table
-# definitions against the schema the candidate release produces.
+# definitions, reads and writes against the schema the candidate release
+# produces.
 #
 # This is the deployed RUNTIME, not the newest commit that has been used for
 # anything. The chain so far is aa1dbf5 from the Phase A deployment, then
-# 5999109, then bae53b2, then 91ec445, then b807663 — each written here only
-# once it was live and verified. 93ec735 was never a runtime at all: it added
-# the TGA cutover repair and the service restructure was run from an isolated
-# 93ec735 worktree, but the web runtime was never switched to it. Recording a
-# commit that merely ran a script would check compatibility against code nobody
-# is serving.
+# 5999109, then bae53b2, then 91ec445, then b807663, then 902a0e6 — each
+# written here once it was live and verified. 93ec735 was never a runtime at
+# all: it added the TGA cutover repair and the service restructure was run
+# from an isolated 93ec735 worktree, but the web runtime was never switched to
+# it. Recording a commit that merely ran a script would check compatibility
+# against code nobody is serving.
+#
+# 902a0e6 (Visual Editor V1, tag visual-editor-v1-rc) was deployed in Batch 20
+# with migrations 0000–0005: production checkout and runtime marker both
+# 902a0e6, service healthy. This file was left at b807663 after that
+# deployment by mistake, and was corrected in Batch 26 (Correction 1) from the
+# owner-approved release record — not from the server, which Batch 26 did not
+# access. The next release's preflight checks it there before anything changes.
+#
+# b807663 is no longer the previous release. Batch 20 kept its runtime on the
+# server as a rollback copy (standalone.rollback-b807663-<stamp>): a historical
+# fallback, not the runtime the next release displaces, and not this file's
+# value. The next release keeps 902a0e6's runtime as its own rollback.
 #
 # Update it as part of each release, after that release's runtime is live. Git
 # cannot infer it: `HEAD~1` is the previous commit, not the previous release, a
@@ -25,4 +40,4 @@
 #
 # First non-comment line is the commit. Override for a one-off run with
 # COMPAT_REF=<ref> npm test.
-b807663610982d32d84301852fff77fd7f36f9e8
+902a0e6dc07963ec3a9df5855d685bcf03063d84

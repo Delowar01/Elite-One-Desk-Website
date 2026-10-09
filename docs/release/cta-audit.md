@@ -1,7 +1,10 @@
 # Call-to-action content audit — production release gate
 
-**Status: prepared, not run against production.** This document and
-`npm run audit:cta` are for a later, authorized release gate.
+**Status: prepared; no run against production is recorded in this
+repository.** This document and `npm run audit:cta` were written for the gate
+of the first release carrying the fix — `902a0e6`, which Batch 20 deployed.
+Over `902a0e6` the audit is a read-only report for the owner, not a release
+gate (Batch 26, Correction 1).
 
 ## Why
 
@@ -12,20 +15,22 @@ four blocks — **one-desk, featured-service, travel-feature, image-text** — a
 its button (the validator keeps only declared fields), and the admin form
 showed two empty, differently named boxes whose contents no page ever drew.
 
-The release currently in production (`deploy/previous-release`, `b807663`)
-still has that registry, so any save of those blocks in production since then
-may have removed a button. The fix (Batch 15b) stops further loss; it cannot
-put back what was dropped. **No missing value may be invented** — the audit
-finds; people decide.
+Production ran `b807663` until Batch 20, and `b807663` still had that
+registry, so any save of those blocks in production before then may have
+removed a button. Batch 20 deployed `902a0e6`, which carries the fix (Batch
+15b): it stops further loss; it cannot put back what was dropped. **No missing
+value may be invented** — the audit finds; people decide.
 
 ## The audit — `npm run audit:cta`
 
 `scripts/audit-cta.ts` (analysis in `scripts/audit/cta.ts`). It connects with
 `DATABASE_URL` and runs every statement in **one `BEGIN READ ONLY`
 transaction**: SELECT only, and PostgreSQL refuses any write inside it. It
-works on a database before or after this release's migrations (tables the
-previous release lacks are skipped). `tests/cta-audit.test.ts` proves it
-changes nothing in a whole-database comparison.
+works on a database before or after this release's migrations, and on one
+from before the Visual Editor (`b807663`'s, which lacks the component and
+history tables and the draft-only column: those are skipped).
+`tests/cta-audit.test.ts` runs it on all three and proves it changes nothing in
+a whole-database comparison.
 
 ```sh
 npm run audit:cta                          # the sections that need a look
@@ -43,7 +48,7 @@ For each section of the four block types it reports:
 | legacy keys | `CtaLabel` / `CtaHref` written by the pre-15b form — never displayed; may hold what an admin typed |
 | links | reusable-component references (slot, component id, overrides, linked / unavailable) |
 | visitors see | the published content with any component link resolved — what the page draws; a button needs both a label and a link |
-| history | non-empty values earlier published versions recorded for this section (none exist before this release: production's release has no page history) |
+| history | non-empty values earlier published versions recorded for this section (none from before `902a0e6`, the first release with page history: `b807663` had none) |
 | seed reference | the wording a fresh installation seeds for this block on this page — **reference only, never a proposed value** |
 | findings | classified, below |
 
@@ -71,6 +76,12 @@ only record of what an admin typed into the defective form. Therefore:
   restore it into a scratch database and audit that copy;
 - audit production **right after the deploy, before editors work on these
   sections**, and keep the JSON output.
+
+(Written for `902a0e6`'s deploy in Batch 20, the first release whose validator
+discards the legacy keys: the backup taken before that deploy is the evidence
+of record. Whether the audit was run then is not recorded in this repository.
+Any save of an affected section since Batch 20 may already have discarded
+them in production; the next release changes nothing here.)
 
 ## Remediation plan (later, authorized)
 
