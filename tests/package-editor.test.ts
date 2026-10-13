@@ -22,6 +22,7 @@ import { giveFresh } from "./helpers/fixtures";
 import { formContaining, get, submitForm } from "./helpers/http";
 import { openDestinationForm, openPackageForm, withChanges, type FormFields } from "./helpers/package-form";
 import { connect, dropDatabase, type Sql } from "./helpers/pg";
+import { rscRequest } from "./helpers/rsc";
 import { BUILD_HINT, isBuilt, startServer, type Server } from "./helpers/server";
 import { signIn, type TestSession } from "./helpers/session";
 
@@ -192,8 +193,9 @@ const inHtml = (text: string) =>
 
 /** The page's React Server Components payload, as the client router asks for it. */
 async function rsc(path: string, session?: TestSession) {
-  const response = await fetch(`${server.origin}${path}`, {
-    headers: { RSC: "1", ...(session ? { cookie: session.cookie } : {}) },
+  const request = await rscRequest(`${server.origin}${path}`);
+  const response = await fetch(request.url, {
+    headers: { ...request.headers, ...(session ? { cookie: session.cookie } : {}) },
     redirect: "manual",
   });
   return { status: response.status, type: response.headers.get("content-type") ?? "", body: await response.text() };

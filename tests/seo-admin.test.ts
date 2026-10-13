@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import { callAction } from "./helpers/action";
+import { builtActions, callAction } from "./helpers/action";
 import { REPO_ROOT } from "./helpers/env";
 import { giveFresh } from "./helpers/fixtures";
 import { fetchHead } from "./helpers/head";
@@ -1485,10 +1485,7 @@ describe("25 · the Visual Editor opens the SEO screen; it does not edit SEO (§
 
 describe("25 · the SEO screen's writes, by name", () => {
   test("saveSeo and clearSeo — and the site-defaults action that nothing could reach is gone", () => {
-    const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, ".next", "server", "server-reference-manifest.json"), "utf8")) as {
-      node: Record<string, { filename: string; exportedName: string }>;
-    };
-    const entries = Object.values(manifest.node);
+    const entries = builtActions();
     assert.deepEqual(entries.filter((entry) => entry.filename === SEO_ACTIONS).map((entry) => entry.exportedName).sort(), ["clearSeo", "saveSeo"]);
     assert.ok(!entries.some((entry) => entry.exportedName === "saveSeoDefaults"));
     const settings = readFileSync(path.join(REPO_ROOT, "src", "app", "(backoffice)", "admin", "(shell)", "settings", "actions.ts"), "utf8");

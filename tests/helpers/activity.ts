@@ -28,6 +28,7 @@ import type { Sql } from "postgres";
 
 import { callAction } from "./action";
 import { isNavigationDigest, payloadErrors, type Flavour } from "./diagnostics";
+import { rscRequest } from "./rsc";
 
 import { documentEditorKey, editorKeyOf } from "@/lib/routes/owners";
 
@@ -117,7 +118,8 @@ export function startActivity(options: {
 
   const page = async (at: string, path: string, rsc: boolean) => {
     const url = `${at}${path}`;
-    const response = await fetch(url, { headers: { cookie: options.cookie, ...(rsc ? { RSC: "1" } : {}) }, redirect: "manual" });
+    const request = rsc ? await rscRequest(url) : { url, headers: {} };
+    const response = await fetch(request.url, { headers: { cookie: options.cookie, ...request.headers }, redirect: "manual" });
     const body = await response.text();
     count(inspect("GET", url, rsc ? "rsc" : "document", response.status, body) ? `${rsc ? "rsc" : "document"} ${response.status}` : "failed");
   };

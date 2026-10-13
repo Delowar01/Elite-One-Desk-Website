@@ -310,7 +310,9 @@ describe("25 · canonical, alternates and robots (§15, §16)", () => {
     }
     const redirected = await fetch(`${server.origin}/en/about`, { redirect: "manual" });
     assert.equal(redirected.status, 301);
-    assert.equal(new URL(redirected.headers.get("location") ?? "").pathname, "/about");
+    // Read against the address asked for: Next 16 writes a same-origin
+    // redirect as a path (`/about`), where Next 15 wrote the whole URL.
+    assert.equal(new URL(redirected.headers.get("location") ?? "", server.origin).pathname, "/about");
   });
 
   test("noindex where a record or the route says so — a record's page and search results — and indexable everywhere else", async () => {

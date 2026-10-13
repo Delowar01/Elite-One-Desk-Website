@@ -22,8 +22,10 @@ export const viewport: Viewport = {
  * always English, whichever language edition the visitor was last looking at.
  */
 export default function BackofficeLayout({ children }: { children: React.ReactNode }) {
+  // The same smooth-scrolling stylesheet as the public site, so the same
+  // attribute: see the public layout.
   return (
-    <html lang="en" dir="ltr">
+    <html lang="en" dir="ltr" data-scroll-behavior="smooth">
       <body className="admin min-h-dvh">{children}</body>
     </html>
   );

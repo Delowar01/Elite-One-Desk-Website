@@ -104,6 +104,17 @@ produced by React's own `encodeReply`, and the `Next-Action` header, cookie and
 origin alongside it. The answer comes back as a flight stream and is read by
 row, in bytes rather than lines, because a long string is hoisted into a row of
 its own. No test-only endpoint exists and nothing in between is mocked.
+`builtActions()` is that manifest read once, with every file named from `src/`
+— webpack wrote it that way and Turbopack, Next 16's builder, writes it from the
+project root — so a test that asks which actions a file exports asks it the
+same way under either.
+
+A page's React Server Components payload is fetched the way the client router
+fetches it (`helpers/rsc.ts`): Next 16 answers an RSC request only at the
+address carrying `_rsc`, a digest of the router's own headers, and redirects
+anything else before it renders. The helper sends `Next-Url` as the router does
+and sets `_rsc` with Next's own function, so a test reads the page rather than
+the redirect.
 
 ## Server-only modules
 
@@ -122,7 +133,9 @@ two files on one port is not a style point: whichever starts second fails to
 bind, or worse, answers the first one's questions. `build-isolation.test.ts`
 starts no server: it copies the working tree — tracked files with their
 uncommitted edits, plus untracked files that are not gitignored — to a directory
-under the OS temp dir, symlinks `node_modules` and builds there. Outside the
+under the OS temp dir, hard-links `node_modules` into it (Turbopack, Next 16's
+builder, refuses a `node_modules` symlink that points out of the project) and
+builds there. Outside the
 repository on purpose: built inside it, Next decides the outer checkout is the
 workspace root and nests the standalone output somewhere it cannot be checked.
 Building elsewhere also leaves the real `.next` the other tests need alone, and

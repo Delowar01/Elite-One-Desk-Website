@@ -25,6 +25,15 @@
  *       — an action that answers with `redirect()`, whose next screen stalls
  *       the same way (Batch 26) — stored exactly once
  *   F6  every package deleted from its screen lands on the list, and is gone
+ *   F7  every category created on the Categories screen lands on its own
+ *       screen, stored exactly once, and F8 every one deleted from its screen
+ *       lands on the list, gone (Batch 27)
+ *   F9  every service created on the Services screen does the same, and F10
+ *       every one deleted (Batch 27)
+ *
+ * Packages, categories and services are the three screens whose create and
+ * delete answer with a redirect; Batch 27 (the Next.js 16 qualification) added
+ * the other two, so every one of them settles from cold, untouched.
  *
  *   STRESS_LOOPS=12 (saves per screen per server)
  */
@@ -45,16 +54,26 @@ const SETTLE_MS = 8_000;
 const say = (label: string, ok: boolean, detail = "") =>
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? ` — ${detail}` : ""}`);
 
+/** The screens whose create sends the browser to the new record and whose delete sends it to the list. */
+type Screen = "package" | "category" | "service";
+const SCREENS: Record<Screen, { list: string; create: string; remove: string }> = {
+  package: { list: "/admin/packages", create: "Create package", remove: "Delete package" },
+  category: { list: "/admin/categories", create: "Create category", remove: "Delete category" },
+  service: { list: "/admin/services", create: "Create service", remove: "Delete service" },
+};
+const perScreen = (): Record<Screen, number> => ({ package: 0, category: 0, service: 0 });
+
 type Outcome = {
   users: number;
   faqs: number;
   stored: number;
   duplicates: number;
-  creates: number;
-  deletes: number;
+  /** Creates and deletes that landed, screen by screen (F5–F10). */
+  creates: Record<Screen, number>;
+  deletes: Record<Screen, number>;
   errors: string[];
   misses: string[];
-  /** F5 and F6's own, so F1's detail stays about the forms that answer. */
+  /** F5–F10's own, so F1's detail stays about the forms that answer. */
   unlanded: string[];
 };
 
@@ -75,7 +94,7 @@ async function lands(page: Page, where: (path: string) => boolean): Promise<bool
 }
 
 async function worker(index: number): Promise<Outcome> {
-  const out: Outcome = { users: 0, faqs: 0, stored: 0, duplicates: 0, creates: 0, deletes: 0, errors: [], misses: [], unlanded: [] };
+  const out: Outcome = { users: 0, faqs: 0, stored: 0, duplicates: 0, creates: perScreen(), deletes: perScreen(), errors: [], misses: [], unlanded: [] };
   const browser: Browser = await launchChromium();
   const database = giveFresh(`form_settle_${index}`);
   const sql = connect(database);
@@ -96,6 +115,64 @@ async function worker(index: number): Promise<Outcome> {
       // "Delete …? This cannot be undone." — answered yes, as the editor would.
       page.on("dialog", (dialog) => void dialog.accept());
       return { context, page };
+    };
+
+    const [category] = await sql<{ id: number }[]>`select id from service_categories where is_published order by id limit 1`;
+    const idsBySlug = (screen: Screen, slug: string) =>
+      screen === "package"
+        ? sql<{ id: number }[]>`select id from travel_packages where slug = ${slug}`
+        : screen === "category"
+          ? sql<{ id: number }[]>`select id from service_categories where slug = ${slug}`
+          : sql<{ id: number }[]>`select id from services where slug = ${slug}`;
+    const countById = async (screen: Screen, id: number) => {
+      const [left] =
+        screen === "package"
+          ? await sql<{ n: number }[]>`select count(*)::int as n from travel_packages where id = ${id}`
+          : screen === "category"
+            ? await sql<{ n: number }[]>`select count(*)::int as n from service_categories where id = ${id}`
+            : await sql<{ n: number }[]>`select count(*)::int as n from services where id = ${id}`;
+      return left!.n;
+    };
+
+    /**
+     * A create that redirects to the new record's screen, from cold; then, from
+     * cold again, its delete, which redirects to the list.
+     */
+    const createAndDelete = async (screen: Screen, round: number) => {
+      const { list, create, remove } = SCREENS[screen];
+      const slug = `settle-${index}-${round}`;
+      let origin = await cold();
+      let { context, page } = await open();
+      try {
+        await page.goto(`${origin}${list}/new`, { waitUntil: "load" });
+        await page.locator("#titleEn").fill(`Settle ${index}-${round}`);
+        await page.locator("#slug").fill(slug);
+        if (screen === "service") {
+          await page.locator("#introEn").fill("A service made to see its screen arrive.");
+          await page.locator("#categoryId").selectOption(String(category!.id));
+        }
+        await page.getByRole("button", { name: create }).click();
+        const landed = await lands(page, (path) => path.startsWith(`${list}/`) && /^\d+$/.test(path.slice(list.length + 1)));
+        const made = await idsBySlug(screen, slug);
+        if (landed && made.length === 1) out.creates[screen] += 1;
+        else out.unlanded.push(`server ${index} round ${round}: the new ${screen}'s screen never arrived (rows ${made.length})`);
+      } finally {
+        await context.close();
+      }
+      const [row] = await idsBySlug(screen, slug);
+      if (!row) return;
+      origin = await cold();
+      ({ context, page } = await open());
+      try {
+        await page.goto(`${origin}${list}/${row.id}`, { waitUntil: "load" });
+        await page.getByRole("button", { name: remove }).click();
+        const landed = await lands(page, (path) => path === list);
+        const left = await countById(screen, row.id);
+        if (landed && left === 0) out.deletes[screen] += 1;
+        else out.unlanded.push(`server ${index} round ${round}: the ${screen} list never arrived after the delete (rows ${left})`);
+      } finally {
+        await context.close();
+      }
     };
 
     for (let round = 1; round <= LOOPS; round += 1) {
@@ -130,38 +207,7 @@ async function worker(index: number): Promise<Outcome> {
         await context.close();
       }
 
-      // A create that redirects to the new package's screen, from cold; then,
-      // from cold again, its delete, which redirects to the list.
-      const slug = `settle-${index}-${round}`;
-      origin = await cold();
-      ({ context, page } = await open());
-      try {
-        await page.goto(`${origin}/admin/packages/new`, { waitUntil: "load" });
-        await page.locator("#titleEn").fill(`Settle ${index}-${round}`);
-        await page.locator("#slug").fill(slug);
-        await page.getByRole("button", { name: "Create package" }).click();
-        const landed = await lands(page, (path) => /^\/admin\/packages\/\d+$/.test(path));
-        const [made] = await sql<{ n: number }[]>`select count(*)::int as n from travel_packages where slug = ${slug}`;
-        if (landed && made!.n === 1) out.creates += 1;
-        else out.unlanded.push(`server ${index} round ${round}: the new package's screen never arrived (rows ${made!.n})`);
-      } finally {
-        await context.close();
-      }
-      const [row] = await sql<{ id: number }[]>`select id from travel_packages where slug = ${slug}`;
-      if (row) {
-        origin = await cold();
-        ({ context, page } = await open());
-        try {
-          await page.goto(`${origin}/admin/packages/${row.id}`, { waitUntil: "load" });
-          await page.getByRole("button", { name: "Delete package" }).click();
-          const landed = await lands(page, (path) => path === "/admin/packages");
-          const [left] = await sql<{ n: number }[]>`select count(*)::int as n from travel_packages where id = ${row.id}`;
-          if (landed && left!.n === 0) out.deletes += 1;
-          else out.unlanded.push(`server ${index} round ${round}: the list never arrived after the delete (rows ${left!.n})`);
-        } finally {
-          await context.close();
-        }
-      }
+      for (const screen of ["package", "category", "service"] as const) await createAndDelete(screen, round);
 
       const [users] = await sql<{ n: number }[]>`select count(*)::int as n from users where email = ${email}`;
       const [faqs] = await sql<{ n: number }[]>`select count(*)::int as n from faqs where question_en = ${question}`;
@@ -178,8 +224,8 @@ async function worker(index: number): Promise<Outcome> {
 }
 
 const outcomes = await Promise.all(Array.from({ length: WORKERS }, (_, index) => worker(index)));
-const total = (key: "users" | "faqs" | "stored" | "duplicates" | "creates" | "deletes") =>
-  outcomes.reduce((sum, outcome) => sum + outcome[key], 0);
+const total = (key: "users" | "faqs" | "stored" | "duplicates") => outcomes.reduce((sum, outcome) => sum + outcome[key], 0);
+const landed = (key: "creates" | "deletes", screen: Screen) => outcomes.reduce((sum, outcome) => sum + outcome[key][screen], 0);
 const misses = outcomes.flatMap((outcome) => outcome.misses);
 const errors = outcomes.flatMap((outcome) => outcome.errors);
 const unlanded = (what: string) => {
@@ -198,11 +244,31 @@ say("F3. the database holds every account and question, exactly once", total("st
 say("F4. no page errors", errors.length === 0, errors.slice(0, 3).join(" | "));
 say(
   "F5. every package created on the Packages screen lands on its own screen, untouched, each from cold — an action that redirects (Batch 26)",
-  total("creates") === runs,
-  `${total("creates")}/${runs}${unlanded("new package")}`,
+  landed("creates", "package") === runs,
+  `${landed("creates", "package")}/${runs}${unlanded("new package")}`,
 );
 say(
   "F6. every package deleted from its screen lands on the list, untouched, and is gone",
-  total("deletes") === runs,
-  `${total("deletes")}/${runs}${unlanded("after the delete")}`,
+  landed("deletes", "package") === runs,
+  `${landed("deletes", "package")}/${runs}${unlanded("package list never arrived")}`,
+);
+say(
+  "F7. every category created on the Categories screen lands on its own screen, untouched, each from cold (Batch 27)",
+  landed("creates", "category") === runs,
+  `${landed("creates", "category")}/${runs}${unlanded("new category")}`,
+);
+say(
+  "F8. every category deleted from its screen lands on the list, untouched, and is gone",
+  landed("deletes", "category") === runs,
+  `${landed("deletes", "category")}/${runs}${unlanded("category list never arrived")}`,
+);
+say(
+  "F9. every service created on the Services screen lands on its own screen, untouched, each from cold (Batch 27)",
+  landed("creates", "service") === runs,
+  `${landed("creates", "service")}/${runs}${unlanded("new service")}`,
+);
+say(
+  "F10. every service deleted from its screen lands on the list, untouched, and is gone",
+  landed("deletes", "service") === runs,
+  `${landed("deletes", "service")}/${runs}${unlanded("service list never arrived")}`,
 );

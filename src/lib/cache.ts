@@ -24,8 +24,15 @@ export const TAGS = {
 
 export type CacheTag = (typeof TAGS)[keyof typeof TAGS];
 
+/**
+ * `{ expire: 0 }` is what the one-argument `revalidateTag(tag)` always did, and
+ * Next 16 now asks for it by name: the tag expires at once and the next request
+ * renders from the database. The profile Next suggests instead, `"max"`, serves
+ * the previous version once more while it refetches in the background — a
+ * visitor would see the page from before Publish was pressed.
+ */
 export function revalidate(...tags: CacheTag[]): void {
-  for (const tag of tags) revalidateTag(tag);
+  for (const tag of tags) revalidateTag(tag, { expire: 0 });
 }
 
 /** Anything that can change what a public page shows. */

@@ -18,6 +18,7 @@
   "motion": 37,
   "motion-15b": 65,
   "motion-render": 74,
+  "navigation-scroll": 3,
   "password-change": 14,
   "permissions": 79,
   "publish": 20,

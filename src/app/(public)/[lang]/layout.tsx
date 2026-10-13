@@ -73,8 +73,12 @@ export default async function PublicLayout({
   const nonce = headerList.get("x-nonce") ?? undefined;
   const whatsapp = settings.whatsapp.floatingEnabled ? whatsappLink(settings, lang) : null;
 
+  // `data-scroll-behavior="smooth"`: globals.css scrolls in-page anchors
+  // smoothly, and Next 15 switched that off by itself while it put a new page
+  // in place. Next 16 does so only when this attribute says smooth scrolling is
+  // on; without it, every navigation would glide to its scroll position.
   return (
-    <html lang={lang} dir={dirOf(lang)} suppressHydrationWarning>
+    <html lang={lang} dir={dirOf(lang)} data-scroll-behavior="smooth" suppressHydrationWarning>
       <body className="flex min-h-dvh flex-col">
         <a
           href="#main"

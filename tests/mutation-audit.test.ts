@@ -29,12 +29,9 @@
  * preview it asks for, the server already did so, and no test said it.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import { after, before, describe, test } from "node:test";
 
-import { callAction, type ActionResponse } from "./helpers/action";
-import { REPO_ROOT } from "./helpers/env";
+import { builtActions, callAction, type ActionResponse } from "./helpers/action";
 import { giveFresh } from "./helpers/fixtures";
 import { get } from "./helpers/http";
 import { connect, dropDatabase, type Sql } from "./helpers/pg";
@@ -442,10 +439,7 @@ describe("19B · every change leaves one accurate activity entry, and a non-chan
   });
 
   test("the enquiry read-marker that wrote under the view permission is gone from the build", () => {
-    const manifest = JSON.parse(
-      readFileSync(path.join(REPO_ROOT, ".next", "server", "server-reference-manifest.json"), "utf8"),
-    ) as { node: Record<string, { filename: string; exportedName: string }> };
-    const fromEnquiries = Object.values(manifest.node)
+    const fromEnquiries = builtActions()
       .filter((entry) => entry.filename === ENQUIRIES)
       .map((entry) => entry.exportedName)
       .sort();

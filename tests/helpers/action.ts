@@ -30,19 +30,38 @@ type Reference = { filename: string; exportedName: string };
 
 const MANIFEST = path.join(REPO_ROOT, ".next", "server", "server-reference-manifest.json");
 
+/** A Server Action in the build: its id, its file (named from `src/`) and its export. */
+export type BuiltAction = { id: string; filename: string; exportedName: string };
+
+let built: BuiltAction[] | null = null;
+
+/**
+ * Every Server Action in the build the tests are running, from its manifest.
+ *
+ * webpack named the file from `src/` (`app/…/actions.ts`); Turbopack, Next 16's
+ * builder, names it from the project root (`src/app/…/actions.ts`). It is the
+ * same file either way, so it is handed back the first way, which is how every
+ * caller names it.
+ */
+export function builtActions(): BuiltAction[] {
+  if (!built) {
+    const manifest = JSON.parse(readFileSync(MANIFEST, "utf8")) as {
+      node: Record<string, Reference>;
+    };
+    built = Object.entries(manifest.node).map(([id, entry]) => ({
+      id,
+      filename: entry.filename.replace(/^src\//, ""),
+      exportedName: entry.exportedName,
+    }));
+  }
+  return built;
+}
+
 let ids: Map<string, string> | null = null;
 
 /** `<file>#<export>` → action id, from the build the tests are running. */
 function actionId(file: string, exported: string): string {
-  if (!ids) {
-    const manifest = JSON.parse(readFileSync(MANIFEST, "utf8")) as {
-      node: Record<string, Reference>;
-    };
-    ids = new Map();
-    for (const [id, entry] of Object.entries(manifest.node)) {
-      ids.set(`${entry.filename}#${entry.exportedName}`, id);
-    }
-  }
+  ids ??= new Map(builtActions().map((entry) => [`${entry.filename}#${entry.exportedName}`, entry.id]));
   const id = ids.get(`${file}#${exported}`);
   if (!id) throw new Error(`no server action ${exported} in ${file} — was it renamed?`);
   return id;

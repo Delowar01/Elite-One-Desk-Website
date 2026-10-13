@@ -19,7 +19,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -78,8 +78,19 @@ before(() => {
   });
   assert.equal(copy.status, 0, copy.stderr);
 
-  // Dependencies are shared; nothing here writes to them.
-  symlinkSync(path.join(REPO_ROOT, "node_modules"), path.join(SANDBOX, "node_modules"));
+  // Dependencies are shared; nothing here writes to them. Hard links, not a
+  // symlink: Turbopack, Next 16's builder, refuses a node_modules that points
+  // outside the project it builds ("Symlink [project]/node_modules is invalid,
+  // it points out of the filesystem root"), and a tree of links is the
+  // sandbox's own directory at no cost. A copy is the fallback for a temporary
+  // directory on another filesystem, which links cannot cross.
+  const modules = path.join(SANDBOX, "node_modules");
+  const linked = spawnSync("cp", ["-al", path.join(REPO_ROOT, "node_modules"), modules], { encoding: "utf8" });
+  if (linked.status !== 0) {
+    rmSync(modules, { recursive: true, force: true });
+    const copied = spawnSync("cp", ["-a", path.join(REPO_ROOT, "node_modules"), modules], { encoding: "utf8" });
+    assert.equal(copied.status, 0, copied.stderr);
+  }
 
   // `.env` is gitignored, so the copy has none — and the build needs one to
   // prove what happens to it. A throwaway with a recognisable marker: no secret
@@ -127,9 +138,11 @@ describe("the build does not need a database", () => {
       readFileSync(path.join(SANDBOX, ".next", "prerender-manifest.json"), "utf8"),
     ) as { routes?: Record<string, unknown> };
     const prerendered = Object.keys(manifest.routes ?? {}).sort();
-    // `/robots.txt` reads only env; `/_not-found` reads nothing. `/sitemap.xml`
-    // used to be here, and its absence is the point of this test.
-    assert.deepEqual(prerendered, ["/_not-found", "/robots.txt"]);
+    // `/robots.txt` reads only env; `/_not-found` reads nothing, and neither
+    // does `/_global-error`, the error page Next 16 prerenders for every app
+    // that has no `global-error.tsx` of its own. `/sitemap.xml` used to be
+    // here, and its absence is the point of this test.
+    assert.deepEqual(prerendered, ["/_global-error", "/_not-found", "/robots.txt"]);
   });
 
   test("the sitemap is a runtime route", () => {

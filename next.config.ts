@@ -9,7 +9,6 @@ const nextConfig: NextConfig = {
   // (see src/lib/media/process.ts) and served with srcset, so the built-in
   // optimiser would only add a second, slower cache in front of our own.
   images: { unoptimized: true },
-  eslint: { dirs: ["src", "scripts"] },
   experimental: {
     // Server Actions receive uploads; the media validator enforces the real cap.
     serverActions: { bodySizeLimit: "12mb" },
