@@ -12,6 +12,13 @@ const nextConfig: NextConfig = {
   experimental: {
     // Server Actions receive uploads; the media validator enforces the real cap.
     serverActions: { bodySizeLimit: "12mb" },
+    // Next 16.3 turned optimistic routing on by default, and with these routes
+    // — `[lang]` beside a catch-all, every English address rewritten onto
+    // `/en/…` — the router never settled on an Arabic page: it prefetched the
+    // language switch's English twin, cancelled and asked again, ~100 times a
+    // second for as long as the page was open (vercel/next.js#97135; 16.4.0 no
+    // longer does). Off is how 16.2 routed. tests/browser/probes/prefetch-bounded.
+    optimisticRouting: false,
   },
   async headers() {
     return [

@@ -10,7 +10,7 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the thirty-nine probes, one file each |
+| `probes/*.probe.mts` | the forty probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
@@ -46,7 +46,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the thirty-nine probes, once each
+npm run test:browser              # the forty probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -94,8 +94,8 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,547 `PASS`
-across the thirty-nine as of Batch 27 (1,544 across thirty-eight at Batch 25,
+Every probe clean, with the counts in `probes/expected.json` — 1,549 `PASS`
+across the forty as of Batch 27 (1,544 across thirty-eight at Batch 25,
 1,527 across thirty-seven at Batch 24,
 1,425 across thirty-six at Batch 23,
 1,377 across thirty-four at Batch 22,
@@ -287,13 +287,18 @@ JSON-LD or page, and the editor's own preview keeps the published title in its
 metadata; and a preview answers `noindex` and is never stored, with no query in
 its canonical. The last check is that neither window met a page error.
 
-Batch 27 added one probe with the Next.js 16 upgrade. `navigation-scroll`
+Batch 27 added two probes with the Next.js 16 upgrade. `navigation-scroll`
 (3 checks, port 3740) holds what `data-scroll-behavior="smooth"` on `<html>`
 is for: both root layouts carry it; a link followed from the foot of a long
 page opens the next page at its top without gliding, counted frame by frame
 (Next 16 stops overriding the stylesheet's smooth scrolling during navigation
 without that attribute); and the smooth scrolling is back once the page is in
-place.
+place. `prefetch-bounded` (2 checks, port 3741) holds `optimisticRouting:
+false` in `next.config.ts`: on the Arabic pages whose language switch leads
+to a rewritten English address, and on their English twins, the router asks
+for each link a few times in the seconds after the page loads and then stops
+— with 16.3's default it asked for the English twin about a hundred times a
+second, without end.
 
 ## Known issue — React #418 when hydration overtakes the page's data (Batch 25)
 

@@ -21,6 +21,7 @@
   "navigation-scroll": 3,
   "password-change": 14,
   "permissions": 79,
+  "prefetch-bounded": 2,
   "publish": 20,
   "recovery": 36,
   "regression4": 8,
