@@ -806,13 +806,33 @@ try {
     if (request.method() === "POST" && request.headers()["next-action"]) posts.push(request.url());
   });
 
+  const frame = () => page.frames().find((f) => f.url().includes("editor=1"))!;
+  /**
+   * The editor's "Ready" — or, when it does not come, what the editor showed
+   * instead (Batch 27). A bare timeout cannot tell a canvas that never loaded
+   * from a bridge that never answered or an editor that never drew, and the
+   * one time it happened, on CI's Chromium, it could not be repeated here.
+   */
+  const editorReady = async () => {
+    try {
+      await page.getByText("Ready", { exact: true }).waitFor({ timeout: 60_000 });
+    } catch {
+      const status = await page.locator('p[aria-live="polite"]').allInnerTexts().catch(() => []);
+      const canvas = page.frames().find((f) => f.url().includes("editor=1"));
+      const inside = canvas
+        ? `${canvas.url()}: ${await canvas
+            .evaluate(() => `${document.readyState}, ${document.querySelectorAll("[data-eod-address]").length} addressed nodes`)
+            .catch((error) => String(error).slice(0, 120))}`
+        : `none among ${JSON.stringify(page.frames().filter((f) => f !== page.mainFrame()).map((f) => f.url().slice(0, 120)))}`;
+      throw new Error(`the editor was not Ready within 60 s: it showed ${JSON.stringify(status)}; canvas ${inside}`);
+    }
+  };
   const open = async (query: string) => {
     await page.goto(`${origin}/admin/visual-editor${query}`, { waitUntil: "load" });
-    await page.getByText("Ready", { exact: true }).waitFor({ timeout: 60_000 });
+    await editorReady();
   };
-  const frame = () => page.frames().find((f) => f.url().includes("editor=1"))!;
   const settledEditor = async () => {
-    await page.getByText("Ready", { exact: true }).waitFor({ timeout: 60_000 });
+    await editorReady();
     await page.waitForTimeout(900);
   };
   const motionTab = () => page.getByRole("tab", { name: /Motion/ });
