@@ -420,3 +420,20 @@ helper gave up on it (CI 37952610450). It now waits first and checks again
 after every scroll, `Unreachable` says where the node was, and the
 `layers-glide-click` stress script holds a Layers glide at its start to
 click through it every round.
+
+## Known issue — the editor's "Ready" that did not come (Batch 27)
+
+On Next.js 16, twice, a probe's Visual Editor never showed "Ready" within
+60 s: `motion-15b` on CI (`c53e09b`) and `advanced-motion` in a local full
+run (`aa86b17`), both in full runs of the suite and never when the probe was
+repeated on its own — not in 30 targeted runs, eight of them under heavy CPU
+load, nor in three full runs with every page instrumented. In about thirty
+full runs on Next.js 15.5.25 it never happened. Its cause is not established;
+the investigation is `docs/release/next16-qualification-batch-27.md` §6.3.
+
+Both probes now wait through `editorReady` (`canvas.ts`). If it happens
+again, the runner's tail carries one line naming what the editor's status
+said ("Loading canvas…", "Connecting…", "Unable to connect"), the canvas
+frame, and whether that frame's document loaded as an editor canvas — the
+server writes the editor's addresses only into one. Copy that line into the
+record before re-running anything.

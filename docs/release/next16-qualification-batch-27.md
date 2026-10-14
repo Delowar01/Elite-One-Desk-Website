@@ -12,6 +12,7 @@ production database, ran no production migration, did not change
 | Production baseline | `902a0e6` (`deploy/previous-release`, unchanged), database `0000`–`0005` |
 | Migrations | none added; the release still applies `0006`–`0007` over production — no `0008` |
 | Dependencies | `next` and `eslint-config-next` 15.5.25 → 16.3.8, and what npm moved with them (§1.4); nothing else |
+| Outcome | #418: **none** in 2,173 documents across the agreed classes (§4). **Not ready**: the Visual Editor's "Ready" timed out twice on Next 16, never on 15.5.25, and the cause is not established (§6.3, §11) |
 
 Batch 26 left React #418 `PRODUCTION BLOCKED`: the React that Next.js 15.5.25
 vendors replays a host element that suspended during hydration without moving
@@ -210,7 +211,7 @@ asks.
 | `tests/dependency-advisories.test.ts` | the `source-map-js` test asserts that the server neither ships nor names the package | It used to require that something in the server still required it, and said, if nothing did, "has the advisory gone? Then this test and the note go too". The Next 16 server carries neither `source-map-js` nor Next's nested `postcss`; the advisory stays in `npm audit` for the build's own copies (§8). The new test reads every file in the standalone runtime — Turbopack bundles packages into chunks, so it looks for the name, not a `require` — and checks it read more than 500 |
 | `tests/browser/probes/navigation-scroll.probe.mts` (new), `probes/expected.json`, `tests/browser-suite.test.ts` | a probe for the scroll attribute (N1–N3, port 3740); the suite's pinned probe count 38 → 39 | Regression coverage for `data-scroll-behavior` (§3.1): both layouts carry it, a link followed from the foot of a long page opens the next one at its top without gliding, and the stylesheet's smooth scrolling is back afterwards. Shown to fail with the attribute removed (§6.2) |
 | `tests/browser/probes/prefetch-bounded.probe.mts` (new, second commit), `probes/expected.json`, `tests/browser-suite.test.ts` | a probe for the prefetch loop (B1–B2, port 3741); the pinned probe count 39 → 40 | Regression coverage for §3.3: on the four Arabic pages and their English twins, no address is asked for more than 8 times in the 6 s after the page loads. On `43216ec`'s build B1 failed at 580–780 requests to one address; with the flag off it passes at 2 |
-| `tests/browser/probes/motion-15b.probe.mts` (third commit) | when the Visual Editor does not reach "Ready" within 60 s, the probe's error says what the editor's status line showed, which frame the canvas was, whether its document had loaded and how many nodes carry the editor's addresses | The one CI failure on `c53e09b` (§6.3) was this wait timing out, and a bare timeout cannot say which of three things failed; it did not happen again here, so the next one has to explain itself. The wait, its 60 s and every check are unchanged; with the canvas blocked on purpose the probe stops at the same check as on CI and prints the line (§6.3) |
+| `tests/browser/probes/motion-15b.probe.mts` (third commit); `tests/browser/canvas.ts`, `probes/advanced-motion.probe.mts`, `tests/browser/README.md` (fifth commit) | when the Visual Editor does not reach "Ready" within 60 s, the error says what the editor's status line showed, which frame the canvas was, whether its document had loaded and how many nodes carry the editor's addresses — first in `motion-15b`, then as `editorReady` in `canvas.ts`, used by both probes it happened in | The wait timed out twice on Next 16 (§6.3) — on CI at `c53e09b` and in the final local gate — and a bare timeout cannot say which of three things failed; it could not be made to happen again here, so the next one has to explain itself. The wait, its 60 s and every check are unchanged; with the canvas blocked on purpose each probe stops at the check where it failed and prints the line (§6.2) |
 | `tests/stress/admin-form-settle.stress.mts`, `tests/stress/expected.json` | F7–F10: a category and a service, created and deleted on their screens from cold, untouched, like F5–F6's package; 6 → 10 checks | The brief names category and service create/delete. No browser test drove the Categories screen's create and delete; the Services screen's were driven once per `route-services` run. F5–F6 are unchanged in what they assert |
 | `tests/README.md`, `tests/browser/README.md`, `tests/stress/README.md` | the harness changes, the new probe and the new checks described; probe totals 1,544 / 38 → 1,549 / 40 | — |
 
@@ -545,64 +546,76 @@ would miss is not called covered:
 With each change in place, every one of them passes.
 
 And the probe change of §6.3, the other way round — the canvas broken on
-purpose in a scratch copy of the probe, just before it opens the editor on
-Home, to see what the new message says:
+purpose in a scratch copy of a probe, just before the step that timed out,
+to see what the new message says:
 
 | Broken on purpose | Probe | What it printed |
 |---|---|---|
 | the canvas document's request aborted | stops after 43 of 65 checks, as on CI | `the editor was not Ready within 60 s: it showed ["Unable to connect"]; canvas none among ["chrome-error://chromewebdata/"]` |
 | the canvas's scripts aborted — the document loads, nothing runs | stops after 43 of 65 | `… it showed ["Unable to connect"]; canvas http://127.0.0.1:3717/?preview=1&editor=1&bridge=…&r=0: complete, 147 addressed nodes` |
+| `advanced-motion`: the reader's canvas request aborted (A43) | stops after 42 of 100, as in the gate | `… it showed ["Unable to connect"]; canvas none among ["chrome-error://chromewebdata/"]`, from `editorReady` in `canvas.ts` |
 
-### 6.3 One CI failure on `c53e09b`: `motion-15b` waited 60 s for "Ready"
+### 6.3 The editor's "Ready" that did not come — twice, not explained
 
-CI run 38469728627 (`c53e09b`) passed every job but Browser QA, where 39 of
-the 40 probes were clean and `motion-15b` stopped after 43 of its 65 checks:
-the Visual Editor, opened on Home (check 24b, after checks 9 and 34 on
-About), did not show "Ready" within 60 s — `locator.waitFor: Timeout
-60000ms exceeded`. Nothing failed before it. The same probe was clean on CI
-at `43216ec` (run 38461224029, 65 checks, 141 s), and the only difference
-between the two commits is `optimisticRouting: false` and the new probe.
+**What happened.** Twice the Visual Editor, opened in a probe, did not show
+"Ready" within 60 s, and the probe stopped there. Nothing failed before it
+either time.
 
-It did not happen again here:
+| Where | Commit | Probe, step | Before it |
+|---|---|---|---|
+| CI run 38469728627, Browser QA, Chromium 153 | `c53e09b` | `motion-15b`, check 24b: the editor reopened on Home after checks 9 and 34 on About — 43 of 65 checks done | the same probe clean on CI at `43216ec` (run 38461224029) |
+| this batch's final local gate, Chromium 141 | `aa86b17` | `advanced-motion`, A43: a reader's first editor load, in a new browser context, while the owner's editor stood on Arabic About — 42 of 100 checks done | 39 of the other 40 probes clean in the same run |
 
-| What | Where | Result |
-|---|---|---|
-| `motion-15b`, six times in a row, with a scratch diagnostic that would print the editor's state, the canvas frame and every request in flight at a timeout | `c53e09b`'s build | **6 of 6 clean**, 65 checks each, no timeout |
-| The failing step alone — the editor on About, a heading selected on the canvas, then the editor on Home — timed to "Ready", 50 opens | same | **0 misses**; median 483 ms, slowest 1.0 s |
-| The same, the browser's CPU slowed fourfold | same | **0 misses**; median 2.0 s, slowest 2.3 s |
+Both times the error was only `locator.waitFor: Timeout 60000ms exceeded`,
+so neither says whether the canvas never loaded, its bridge never answered
+or the editor never drew.
 
-What the step needs, read from the code: the canvas iframe loads, the
-editor's handshake starts on its `load`, and the canvas's bridge answers the
-editor's ping (every 500 ms; it re-announces on every ping, so an
-announcement sent before the editor was listening is recovered). A 60-s miss
-therefore needs the canvas document never to finish loading, its bridge
-never to mount, or the editor to reject what the canvas says — and none of
-those showed in the 100 timed opens or the six full runs. Nothing on the
-server side can hold one render behind another: the application keeps no
-in-process lock or shared in-flight promise.
+**What the step needs**, read from the code: the canvas iframe loads; the
+editor's handshake starts on its `load`; the canvas's bridge answers the
+editor's ping every 500 ms and re-announces itself on every ping, so an
+announcement made before the editor listened is recovered; and the canvas is
+an editor canvas only for a request whose session holds `content.view` —
+otherwise it renders as an ordinary page, with no bridge, and the editor
+waits for ever. So a 60-s miss needs the canvas document never to finish
+loading, the bridge never to mount, or the canvas to be rendered without the
+editor's session.
 
-What could not be compared: CI runs Playwright 1.63's own Chromium 153
-(headless shell); this sandbox has only the preinstalled Chromium 141, and
-installing another is outside what this environment allows. The run's log
-artifact could not be fetched either — its storage host is outside this
-sandbox's network policy — but it would not have said more: the runner
-prints the end of the probe's output, which is the stack above, and the rest
-of that file is the 43 PASS lines.
+**What was tried, and none of it reproduced it** (all on `c53e09b`'s
+application):
 
-So the cause is **not established**. Two things follow from it:
+| What | Result |
+|---|---|
+| `motion-15b` ×6, then `advanced-motion` and `motion-15b` ×8 each | 22 runs, all clean |
+| the same two ×4 each under four busy loops on four CPUs | 8 runs, all clean |
+| `motion-15b`'s failing step alone, timed: 50 opens, then 50 with the browser's CPU slowed fourfold | 0 misses; slowest 1.0 s and 2.3 s |
+| the whole browser suite ×3 with a scratch instrument on every page of every probe — requests in flight, every frame navigation, console and page errors, and at any "Ready" timeout the editor's status, each frame's load state and timings, the server's last lines and PostgreSQL's connections | 120 probe runs, all clean; no dump |
+| PostgreSQL sampled every 5 s through those runs for a transaction open longer than 10 s (a leaked one would hold a pool connection) | none, ever |
+| any build file a server wrote after the build (the test servers share the build by hard links) | none |
+| the matrix (§4): 340 editor loads, and 529 saves each redrawing the canvas | every load selected; no wait timed out |
 
-- `motion-15b` now says what it saw. When "Ready" does not come in 60 s,
-  the probe's error names what the editor's status line showed ("Loading
-  canvas…", "Connecting…", "Unable to connect"), the canvas frame's address,
-  whether its document had loaded, and how many nodes carry the editor's
-  addresses — which the server writes only into an editor canvas, so a
-  loaded canvas with its addresses and no "Ready" is a bridge that never
-  answered. The three ways the step can fail, told apart in the one line the
-  runner prints. No check, timeout or expectation changed; it was shown to
-  print that line with the canvas blocked on purpose (§6.2).
-- The final commit's full suite here and its CI — a second sample on CI's
-  own browser — are the gate's (§10), and their results are in the batch's
-  report.
+**Against 15.5.25.** In the repository's CI history every Browser QA run
+before this batch is on 15.5.25. Of those that failed, none failed this way:
+`route-services`' timeline click (37879241753, 37952610450), a detached
+frame in `route-categories` (37850382078), `globals-matrix` and
+`globals-settings` waiting for their settings panel (37325868775), one
+`reusable` assertion (37237005702), `stress-diagnostics` (37141166443). In
+about thirty full runs on 15.5.25 the editor's "Ready" never timed out; on
+Next 16 it did in two of the six full runs made before the final commit (CI
+at `43216ec` and at `c53e09b`, the gate on `aa86b17`, three instrumented
+runs). The final commit's own gate and CI are in the batch's report (§10).
+
+**So the cause is not established**, and it is the reason this
+qualification does not end in "ready" (§11). What was done instead:
+`editorReady` (`tests/browser/canvas.ts`) now stands behind every "Ready"
+wait in the two probes it happened in. When the wait times out it says what
+the editor's status line showed ("Loading canvas…", "Connecting…", "Unable to
+connect"), the canvas frame's address, and whether its document loaded as an
+editor canvas — the server writes the editor's addresses only into one — in
+the one line the runner prints, which CI keeps in the job log. No check,
+timeout or expectation changed; it was shown with the canvas blocked on
+purpose (§6.2). The run's log artifact from CI could not be fetched from this
+sandbox — its storage host is outside the network policy — but would not
+have said more: the rest of that file is the PASS lines.
 
 ## 7. The build and the deployment artifact (brief §7)
 
@@ -738,13 +751,14 @@ Four commits on `batch-27-next16-qualification`, on top of `edcb4f4`:
 | `43216ec` | the upgrade and the tests that follow it (§3.1–§3.2) |
 | `c53e09b` | optimistic routing off, and `prefetch-bounded` (§3.3) — the application the matrix (§4), the Server Action runs (§5), the artifact check (§7) and the comparisons in §6 measured |
 | `ff3ba49` | `motion-15b` says what the editor showed when "Ready" does not come (§6.3) — one test file |
-| this record's commit | this record and the browser README's #418 note — documentation only |
+| `aa86b17` | this record's first version and the browser README's #418 note — documentation only; the final local gate ran on it (§6.3) |
+| `a3a3c4a` | `editorReady` in `tests/browser/canvas.ts`, used by `motion-15b` and `advanced-motion` (§6.3) — tests only |
+| this record's commit | this record, brought up to date, and the browser README's note on the editor's "Ready" — documentation only |
 
-From `c53e09b` to the final commit the diff touches
-`tests/browser/probes/motion-15b.probe.mts` and Markdown files and nothing
-else — no application source, configuration, dependency or migration — so
-the build those measurements were made on is the build the final commit
-makes.
+From `c53e09b` to the final commit the diff touches `tests/browser/canvas.ts`,
+two probes and Markdown files and nothing else — no application source,
+configuration, dependency or migration — so the build those measurements were
+made on is the build the final commit makes.
 
 The gate runs on the final commit, in order, each step from the one before,
 nothing skipped, on this machine (4 CPUs, PostgreSQL 16, Chromium 141):
@@ -770,12 +784,20 @@ here: they are in the batch's report.
   taken — the smallest bump on the 16.3 line — and this qualification run
   again on it before any deployment. This record qualifies 16.3.8 and
   nothing later.
-- **The `motion-15b` failure on CI (§6.3).** Once, on CI's Chromium 153,
-  the Visual Editor did not reach "Ready" within 60 s after opening Home; it
-  did not happen in six runs of the probe or 100 timed opens here, nor on CI
-  at `43216ec`. Its cause is not established. The probe now names what the
-  editor showed when the wait times out, so a recurrence says which part
-  failed; the final commit's CI result is in the batch's report (§10).
+- **The editor's "Ready" that did not come (§6.3) — the reason this
+  record does not say "ready".** Twice on Next 16 a Visual Editor opened by a
+  probe never became Ready: `motion-15b` on CI at `c53e09b`, `advanced-motion`
+  in the final local gate at `aa86b17`; both in full runs of the suite, and
+  neither again in 30 targeted runs (8 under heavy contention), 100 timed
+  opens or three fully instrumented runs of the suite. In about thirty full
+  runs on 15.5.25 it never happened. An editor that never connects to its
+  canvas is a regression in the product's central screen, whatever its rate,
+  and its cause is not established. Both probes now say what the editor
+  showed when the wait times out, so the next occurrence — on CI, where the
+  job log keeps the line — says which of the three ways it failed. To lift
+  this: that line from a recurrence, or a reproduction, and the fix it leads
+  to; or the same hang shown on 15.5.25, which would make it the old
+  application's and not the upgrade's.
 - **A new line in the service's log.** On Next 16, a visitor who leaves a
   page while it is still arriving — or a prefetch the router cancels —
   makes the server log `⨯ Error: The destination stream closed early.` with
