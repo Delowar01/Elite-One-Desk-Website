@@ -309,8 +309,8 @@ as a page error in the canvas. With three busy loops beside it,
 Batch 25's base `da96625`; it has not appeared without that load. **It predates Batch 25, and nothing
 in this repository causes it.** The React that runs in the browser is the copy
 Next.js vendors, not `node_modules/react-dom`. Next.js 15.5.25 (this
-repository's) and 15.5.27 (the newest 15.x) both vendor `react-dom`
-`19.2.0-canary-0bdb9206-20250818`.
+repository's until Batch 27) and 15.5.27 (the newest 15.x) both vendor
+`react-dom` `19.2.0-canary-0bdb9206-20250818`.
 
 React streams a long list's later items as rows of their own: once a row
 passes 3,200 characters, Flight writes each further element as a row of its
@@ -380,6 +380,25 @@ else running. No save was ever lost, nothing was written that nobody asked
 for, Layers always selected, no Server Action failed, nothing answered 5xx
 and the server never restarted. The numbers and the release decision they
 lead to are in `docs/release/release-hardening-batch-26.md` §5.
+
+### Batch 27: Next.js 16.3.8
+
+The repository now runs Next.js 16.3.8, which vendors `react-dom`
+`19.3.0-canary-cbb046ab-20260731`. Its `replaySuspendedUnitOfWork` makes the
+reset described above for a host element: when the replayed element is the
+one hydration was inside, the cursor goes back to its own DOM node before it
+is rendered again. The matrix ran on the upgrade under every class Batch 26
+used, and more of the condition that reproduces it best — 34 runs, 2,173
+canvas and page documents, **no #418** — with two controls: the same harness
+finds the defect on 15.5.25 on this machine (7 in 120 slow-network visits —
+Batch 26's figure), and finds a deliberate mismatch on the 16.3.8 build every
+time. Results and the classes:
+`docs/release/next16-qualification-batch-27.md` §4.
+
+On Next 16 a run on the slow or mobile profile, or under the heavy class,
+also shows `⨯ Error: The destination stream closed early.` among the server's
+failure lines: a page left while it was still arriving, which Next 16 logs
+and 15.5.25 did not (release record §4.4). It is not a failure of the page.
 
 Batch 26 changed three probes and the canvas click helper, and added no
 probe. `seo-media` S8 fetches the
