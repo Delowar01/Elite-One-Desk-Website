@@ -14,7 +14,7 @@ tracked here, with everything needed to run them from a fresh clone.
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
-| `canvas.ts` | clicking and selecting on the Visual Editor's canvas without racing it |
+| `canvas.ts` | clicking and selecting on the Visual Editor's canvas without racing it; `editorReady`, the editor's "Ready" — or an error saying what it showed instead |
 | `wait.ts` | `until`, `quietFor`, `animationsDone`, `watchNetwork` — the only waits the probes use |
 | `.env.example` | the settings a run reads, with safe defaults |
 | `../stress/` | the stress suite — see [`tests/stress/README.md`](../stress/README.md) |

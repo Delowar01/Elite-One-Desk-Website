@@ -105,6 +105,31 @@ export async function editorSettled(page: Page, timeoutMs = 30_000): Promise<boo
   }
 }
 
+/**
+ * The editor's "Ready" — or, when it does not come, an error saying what the
+ * editor showed instead (Batch 27). A bare timeout cannot tell a canvas that
+ * never loaded from one whose bridge never answered, and on Next.js 16 the
+ * wait has timed out twice, in full runs of the suite only, never when it was
+ * repeated on its own. The error names the editor's status line, the canvas
+ * frame and whether its document loaded as an editor canvas — the server
+ * writes the editor's addresses into it — in the one line the runner prints
+ * for a script that died.
+ */
+export async function editorReady(page: Page, timeoutMs = 60_000): Promise<void> {
+  try {
+    await page.getByText("Ready", { exact: true }).waitFor({ timeout: timeoutMs });
+  } catch {
+    const status = await page.locator('p[aria-live="polite"]').allInnerTexts().catch(() => []);
+    const canvas = page.frames().find((frame) => frame.url().includes("editor=1"));
+    const inside = canvas
+      ? `${canvas.url()}: ${await canvas
+          .evaluate(() => `${document.readyState}, ${document.querySelectorAll("[data-eod-address]").length} addressed nodes`)
+          .catch((error) => String(error).slice(0, 120))}`
+      : `none among ${JSON.stringify(page.frames().filter((frame) => frame !== page.mainFrame()).map((frame) => frame.url().slice(0, 120)))}`;
+    throw new Error(`the editor was not Ready within ${timeoutMs / 1000} s: it showed ${JSON.stringify(status)}; canvas ${inside}`);
+  }
+}
+
 /** The canvas document's address — every reload gives it a new nonce and bridge id. */
 export function canvasUrl(page: Page): string {
   return page.frames().find((frame) => frame.url().includes("editor=1"))?.url() ?? "";

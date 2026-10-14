@@ -14,7 +14,7 @@
  */
 import type { BrowserContext, Page } from "playwright";
 
-import { selectCanvasNode, waitForInspector } from "../canvas";
+import { editorReady, selectCanvasNode, waitForInspector } from "../canvas";
 import { callAction } from "../../helpers/action";
 import { giveFresh } from "../../helpers/fixtures";
 import { connect, dropDatabase } from "../../helpers/pg";
@@ -134,13 +134,14 @@ try {
   page.on("pageerror", (error) => console.log("   [pageerror]", error.message.slice(0, 140)));
   page.on("dialog", (dialog) => void dialog.accept());
 
+  // `editorReady` says what the editor showed when "Ready" does not come (Batch 27).
   const open = async (query: string) => {
     await page.goto(`${origin}/admin/visual-editor${query}`, { waitUntil: "load" });
-    await page.getByText("Ready", { exact: true }).waitFor({ timeout: 60_000 });
+    await editorReady(page);
   };
   const frame = () => page.frames().find((f) => f.url().includes("editor=1"))!;
   const settled = async () => {
-    await page.getByText("Ready", { exact: true }).waitFor({ timeout: 60_000 });
+    await editorReady(page);
     await page.waitForTimeout(900);
   };
   const motionTab = () => page.getByRole("tab", { name: /Motion/ });
@@ -429,7 +430,7 @@ try {
   await readerContext.addCookies([cookieOf(viewer)]);
   const reader = await readerContext.newPage();
   await reader.goto(`${origin}/admin/visual-editor?page=about&lang=en&device=desktop`, { waitUntil: "load" });
-  await reader.getByText("Ready", { exact: true }).waitFor({ timeout: 60_000 });
+  await editorReady(reader);
   const readerRow = reader.locator(`aside[aria-label='Page structure'] [data-layer-row="section:${TEXT}"]`);
   await readerRow.waitFor({ timeout: 25_000 });
   await readerRow.click();
