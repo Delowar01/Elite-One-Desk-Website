@@ -6,8 +6,8 @@
  * onto `/en/…` by the middleware — the router never settled on an Arabic page:
  * it asked for the language switch's English twin, cancelled the request and
  * asked again, about a hundred times a second for as long as the page stayed
- * open, each one a render on the server (vercel/next.js#97135; the setting and
- * the measurements are in next.config.ts and
+ * open, each one a render on the server (vercel/next.js#98345, fixed by #98998
+ * in 16.4.0; the setting and the measurements are in next.config.ts and
  * docs/release/next16-qualification-batch-27.md §3).
  *
  *   B1  an Arabic page whose switch leads to a rewritten English address: a

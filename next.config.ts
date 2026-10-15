@@ -16,8 +16,11 @@ const nextConfig: NextConfig = {
     // — `[lang]` beside a catch-all, every English address rewritten onto
     // `/en/…` — the router never settled on an Arabic page: it prefetched the
     // language switch's English twin, cancelled and asked again, ~100 times a
-    // second for as long as the page was open (vercel/next.js#97135; 16.4.0 no
-    // longer does). Off is how 16.2 routed. tests/browser/probes/prefetch-bounded.
+    // second for as long as the page was open. Upstream that is a predicted
+    // route the server rewrites (vercel/next.js#98345, fixed by #98998 in
+    // 16.4.0), and 16.4.1 with the default no longer loops here. Off is how 16.2
+    // routed and how this release was qualified; turning it back on is a change
+    // of its own. tests/browser/probes/prefetch-bounded.
     optimisticRouting: false,
   },
   async headers() {
