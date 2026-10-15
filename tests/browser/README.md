@@ -10,11 +10,12 @@ tracked here, with everything needed to run them from a fresh clone.
 
 | Path | What it is |
 |------|------------|
-| `probes/*.probe.mts` | the forty probes, one file each |
+| `probes/*.probe.mts` | the forty-one probes, one file each |
 | `probes/expected.json` | how many `PASS` lines each probe prints when it is clean |
 | `run.ts` | the runner behind `npm run test:browser` and `npm run test:stress` |
 | `harness.ts` | `launchChromium()` — the one way a probe starts a browser: the full Chromium in its new headless mode, never the separate headless shell |
 | `canvas.ts` | clicking and selecting on the Visual Editor's canvas without racing it; `editorReady`, the editor's "Ready" — or an error saying what it showed instead |
+| `editor-watch.ts` | why the editor was not "Ready" (Batch 27 Correction 1): records every context's requests, frames, errors and crashes, and turns any wait on "Ready" that runs out into one of ten answers, A–J, in the job log — see below |
 | `wait.ts` | `until`, `quietFor`, `animationsDone`, `watchNetwork` — the only waits the probes use |
 | `.env.example` | the settings a run reads, with safe defaults |
 | `../stress/` | the stress suite — see [`tests/stress/README.md`](../stress/README.md) |
@@ -46,7 +47,7 @@ cp tests/browser/.env.example tests/browser/.env       # then edit TEST_PG_URL
 set -a; . tests/browser/.env; set +a
 npm run build
 npm test                          # the tracked suite; builds the fixtures on its way
-npm run test:browser              # the forty probes, once each
+npm run test:browser              # the forty-one probes, once each
 npm run test:stress               # the stress suite (long)
 npm run test:cleanup -- --yes     # only after an interrupted run
 ```
@@ -94,8 +95,9 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,549 `PASS`
-across the forty as of Batch 27 (1,544 across thirty-eight at Batch 25,
+Every probe clean, with the counts in `probes/expected.json` — 1,563 `PASS`
+across the forty-one as of Batch 27 Correction 1 (1,549 across forty at Batch 27,
+1,544 across thirty-eight at Batch 25,
 1,527 across thirty-seven at Batch 24,
 1,425 across thirty-six at Batch 23,
 1,377 across thirty-four at Batch 22,
@@ -299,6 +301,19 @@ to a rewritten English address, and on their English twins, the router asks
 for each link a few times in the seconds after the page loads and then stops
 — with 16.3's default it asked for the English twin about a hundred times a
 second, without end.
+
+Batch 27 Correction 1 added `editor-diagnostics` (14 checks, ports 3742–3744),
+the negative control for `editor-watch.ts`: it breaks the editor on purpose,
+once for each of the watch's answers — the canvas document never answered (A),
+the editor's own scripts held (B), the canvas answering 500 or rendering
+without the editor (C), the canvas's scripts aborted (D), its "Ready" dropped
+on the way (E), an image inside the canvas held (F), the canvas document's
+stream never ended, through a proxy (G), the `pages` table locked (H), the
+status hidden from a Ready editor (I) and the renderer crashed (J) — and checks
+the watch names each one. It also checks that with `EOD_EDITOR_DIAGNOSTICS=0`,
+production's setting, neither document holds a timeline and the server prints
+nothing; a visitor's page carries nothing of it in either mode, which the
+"no editor markup reaches a visitor" tests of `npm test` hold.
 
 ## Known issue — React #418 when hydration overtakes the page's data (Batch 25)
 

@@ -4,11 +4,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { Locale } from "@/lib/i18n/config";
 import { previewPagePath, previewRoutePath } from "@/lib/page-path";
+import { EDITOR_TIMELINE, frameSnapshot, openTimeline, type Timeline } from "@/lib/visual-editor/diagnostics";
 import { describeAddress } from "@/lib/visual-editor/labels";
 import { intersectsViewport, toOverlayRect, type Rect } from "@/lib/visual-editor/overlay";
 import {
   bridgeOrigin,
   envelope,
+  envelopeVerdict,
   newBridgeId,
   readCanvasMessage,
   type EditorNodeMeta,
@@ -88,6 +90,7 @@ const GIVE_UP_AFTER_MS = 20_000;
  * coordinates and are converted once, here, where the scale is known.
  */
 export function VisualCanvas({
+  diagnostics = false,
   slug,
   publicPath,
   locale,
@@ -106,6 +109,11 @@ export function VisualCanvas({
   onReplayResult,
   onShortcut,
 }: {
+  /**
+   * The readiness timeline's switch (Batch 27 Correction 1): the server's
+   * EOD_EDITOR_DIAGNOSTICS, off unless a test or an investigation set it.
+   */
+  diagnostics?: boolean;
   slug: string;
   /**
    * A dynamic route's own public path (Batch 21) — `/services/<slug>`
@@ -166,6 +174,18 @@ export function VisualCanvas({
   const [selection, setSelection] = useState<{ node: EditorNodeMeta; rect: Rect | null } | null>(null);
 
   /**
+   * The readiness timeline (Batch 27 Correction 1, `diagnostics.ts`): each
+   * step from minting a bridge to Ready, time-stamped, for a probe whose wait
+   * runs out to read back. A recorder that does nothing unless `diagnostics`;
+   * it only observes — nothing in this component decides anything by it.
+   */
+  const timeline = useRef<Timeline | null>(null);
+  const mark = (phase: string, detail?: Record<string, unknown>) =>
+    (timeline.current ??= openTimeline(EDITOR_TIMELINE, diagnostics)).mark(phase, detail);
+  /** Whether the document now in the frame has answered — for the timeline's sampling only. */
+  const answered = useRef(false);
+
+  /**
    * A new document gets a new bridge id, every time.
    *
    * Not only for tidiness: the id is how the editor tells this canvas from the
@@ -177,6 +197,8 @@ export function VisualCanvas({
    * hydration mismatch.
    */
   useEffect(() => {
+    mark("canvas.mint", { canvasKey });
+    answered.current = false;
     setBridgeId(newBridgeId());
     setLoads(0);
     setAnnounced(0);
@@ -207,6 +229,7 @@ export function VisualCanvas({
     if (!bridgeId || loads === 0) return;
     const origin = bridgeOrigin();
     let settled = false;
+    mark("canvas.listen", { loads, bridgeId });
 
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== origin) return;
@@ -273,6 +296,45 @@ export function VisualCanvas({
 
     window.addEventListener("message", onMessage);
 
+    /**
+     * With diagnostics on, every message this window receives, read the way
+     * `onMessage` reads it — so the timeline shows what the handshake
+     * accepted and, by reason, what it refused. Beside it, never in its way:
+     * registered after it, deciding nothing.
+     */
+    const refusals = new Map<string, number>();
+    let firstPong = true;
+    let firstStructure = true;
+    const observe = (event: MessageEvent) => {
+      const refuse = (reason: string, detail?: Record<string, unknown>) => {
+        const seen = (refusals.get(reason) ?? 0) + 1;
+        refusals.set(reason, seen);
+        if (seen <= 3 || seen % 50 === 0) mark("canvas.refused", { reason, seen, ...detail });
+      };
+      if (event.origin !== origin) return refuse("origin", { origin: event.origin });
+      if (!frameRef.current || event.source !== frameRef.current.contentWindow) return refuse("source");
+      const message = readCanvasMessage(event.data, { bridgeId, slug });
+      if (!message) {
+        const verdict = envelopeVerdict(event.data, { bridgeId });
+        const inner = (event.data as { message?: Record<string, unknown> } | null)?.message;
+        return refuse(
+          verdict.startsWith("type:") ? `content:${verdict.slice(5)}` : verdict,
+          verdict === "type:canvas.ready" && inner ? { slug: inner.slug, innerWidth: inner.innerWidth } : undefined,
+        );
+      }
+      if (message.type === "canvas.ready" && !answered.current) {
+        answered.current = true;
+        mark("canvas.ready", { innerWidth: message.innerWidth, ...frameSnapshot(frameRef.current) });
+      } else if (message.type === "canvas.pong" && firstPong) {
+        firstPong = false;
+        mark("canvas.pong");
+      } else if (message.type === "canvas.structure" && firstStructure) {
+        firstStructure = false;
+        mark("canvas.structure", { sections: message.sections.length });
+      }
+    };
+    if (timeline.current?.enabled) window.addEventListener("message", observe);
+
     const ping = window.setInterval(() => {
       if (settled) return;
       frameRef.current?.contentWindow?.postMessage(
@@ -283,6 +345,7 @@ export function VisualCanvas({
 
     const giveUp = window.setTimeout(() => {
       if (settled) return;
+      mark("canvas.giveUp", frameSnapshot(frameRef.current));
       onState({
         status: "error",
         innerWidth: null,
@@ -294,11 +357,42 @@ export function VisualCanvas({
 
     return () => {
       window.removeEventListener("message", onMessage);
+      window.removeEventListener("message", observe);
       window.clearInterval(ping);
       window.clearTimeout(giveUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridgeId, slug, loads]);
+
+  /**
+   * With diagnostics on, the frame — written down when it is created, then
+   * sampled once a second until its document answers: which address it holds,
+   * how far it has loaded, whether the server wrote it as a canvas. It is the
+   * one thing a `load` event that never comes cannot say for itself. Nothing
+   * here runs with diagnostics off.
+   */
+  useEffect(() => {
+    if (!bridgeId || !(timeline.current ??= openTimeline(EDITOR_TIMELINE, diagnostics)).enabled) return;
+    if (loads === 0) mark("canvas.frame", { src: frameRef.current?.getAttribute("src") ?? null });
+    let last = "";
+    const started = Date.now();
+    const sample = () => {
+      if (answered.current || Date.now() - started > 180_000) {
+        window.clearInterval(timer);
+        return;
+      }
+      const snapshot = frameSnapshot(frameRef.current);
+      const key = JSON.stringify(snapshot);
+      if (key === last) return;
+      last = key;
+      mark("canvas.frameState", snapshot);
+    };
+    const timer = window.setInterval(sample, 1_000);
+    sample();
+    return () => window.clearInterval(timer);
+    // `diagnostics` is fixed for the life of the editor; `mark` reads a ref.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridgeId, loads]);
 
   // Selecting from the Layers panel: one message out, and the answer comes back
   // through `canvas.selection` like any other selection — so a layer click and
@@ -414,6 +508,8 @@ export function VisualCanvas({
             onLoad={() => {
               // A document arrived. Which one, only the handshake can say — so
               // this moves the status forward but never to Ready.
+              mark("canvas.load", { loads: loads + 1, ...frameSnapshot(frameRef.current) });
+              answered.current = false;
               setLoads((n) => n + 1);
               setHover(null);
               setSelection(null);

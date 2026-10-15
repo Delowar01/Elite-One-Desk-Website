@@ -11,6 +11,7 @@ import { db } from "@/lib/db";
 import { pageSections, reusableComponents } from "@/lib/db/schema";
 import { getPage, getPageComponentPreview, getPagePreview, type RenderedPage } from "@/lib/queries/content";
 import { readPageVersionStrict } from "@/lib/versions";
+import { diagnosticLine } from "@/lib/visual-editor/diagnostics-server";
 import { isBridgeId } from "@/lib/visual-editor/protocol";
 
 /**
@@ -69,16 +70,37 @@ export async function resolvePageForRender(
   const wants = flag(searchParams?.preview);
   if (!wants) return { page: await getPage(slug), isPreview: false, editor: null, compare: null };
 
+  const started = Date.now();
+  const bridgeId = searchParams?.bridge;
+  // The canvas's step on the server, for the readiness timeline: only with
+  // diagnostics on (diagnostics-server.ts), and only for a request that asked
+  // to be a canvas.
+  const asCanvas = flag(searchParams?.editor);
   const session = await getSession();
   if (!session?.permissions.has("content.view")) {
+    if (asCanvas) {
+      diagnosticLine("canvas", {
+        slug,
+        bridge: isBridgeId(bridgeId) ? bridgeId : "invalid",
+        answer: session ? "published-no-content-view" : "published-no-session",
+        ms: Date.now() - started,
+      });
+    }
     return { page: await getPage(slug), isPreview: false, editor: null, compare: null };
   }
 
-  const bridgeId = searchParams?.bridge;
-  const editor =
-    flag(searchParams?.editor) && isBridgeId(bridgeId) ? { bridgeId } : null;
+  const editor = asCanvas && isBridgeId(bridgeId) ? { bridgeId } : null;
 
-  return { page: await getPagePreview(slug), isPreview: true, editor, compare: null };
+  const page = await getPagePreview(slug);
+  if (asCanvas) {
+    diagnosticLine("canvas", {
+      slug,
+      bridge: editor ? editor.bridgeId : "invalid",
+      answer: !page ? "no-page" : editor ? "canvas" : "preview-only",
+      ms: Date.now() - started,
+    });
+  }
+  return { page, isPreview: true, editor, compare: null };
 }
 
 /**

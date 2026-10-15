@@ -26,6 +26,7 @@ import { breadcrumbJsonLd, buildMetadata, faqJsonLd } from "@/lib/seo";
 import { recordStorage } from "@/lib/seo-model";
 import { getSettings, whatsappLink } from "@/lib/settings";
 import { serviceMove } from "@/lib/taxonomy-moves";
+import { editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 type Params = {
   params: Promise<{ lang: string; category: string; service: string }>;
@@ -538,6 +539,7 @@ export default async function ServicePage({ params, searchParams }: Params) {
           pageId={documentEditorKey({ kind: "service", id })}
           slug={view.routeKey}
           locale={lang}
+          diagnostics={editorDiagnostics()}
         />
       ) : null}
     </>

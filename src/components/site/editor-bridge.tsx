@@ -3,11 +3,13 @@
 import { useEffect } from "react";
 
 import { decomposeAddress } from "@/lib/cms/address";
+import { CANVAS_TIMELINE, openTimeline } from "@/lib/visual-editor/diagnostics";
 import { isDescendantAddress } from "@/lib/visual-editor/tree";
 import type { Locale } from "@/lib/i18n/config";
 import {
   bridgeOrigin,
   envelope,
+  envelopeVerdict,
   isTextTarget,
   readEditorMessage,
   shortcutFor,
@@ -180,13 +182,28 @@ export function EditorBridge({
   pageId,
   slug,
   locale,
+  diagnostics = false,
 }: {
   bridgeId: string;
   pageId: number;
   slug: string;
   locale: Locale;
+  /**
+   * The readiness timeline's switch (Batch 27 Correction 1,
+   * lib/visual-editor/diagnostics.ts): the server's EOD_EDITOR_DIAGNOSTICS,
+   * off unless a test or an investigation set it.
+   */
+  diagnostics?: boolean;
 }) {
   useEffect(() => {
+    /**
+     * The canvas's half of the readiness timeline — a recorder that does
+     * nothing unless `diagnostics`. It observes the handshake and changes none
+     * of it.
+     */
+    const timeline = openTimeline(CANVAS_TIMELINE, diagnostics);
+    timeline.mark("bridge.mount", { bridgeId, slug, inFrame: window.parent !== window, readyState: document.readyState });
+
     // Not in a frame: there is no editor to talk to, and posting to ourselves
     // would be answering a question nobody asked.
     if (window.parent === window) return;
@@ -306,7 +323,11 @@ export function EditorBridge({
       return address ? { element, address, rect: rectOf(element) } : null;
     };
 
+    let announced = 0;
     const announce = () => {
+      if (++announced <= 3 || announced % 20 === 0) {
+        timeline.mark("bridge.announce", { announced, innerWidth: window.innerWidth, readyState: document.readyState });
+      }
       post({
         type: "canvas.ready",
         pageId,
@@ -970,6 +991,31 @@ export function EditorBridge({
     document.addEventListener("focusout", onEditBlur, true);
     document.addEventListener("submit", onSubmit, { capture: true });
 
+    /**
+     * With diagnostics on, every message from the editor read the way
+     * `onMessage` reads it — pings counted, refusals by reason — and the
+     * document's own progress. Beside the handshake, never in its way.
+     */
+    let pinged = 0;
+    let refused = 0;
+    const observe = (event: MessageEvent) => {
+      if (event.origin !== origin || event.source !== window.parent) return;
+      const message = readEditorMessage(event.data, { bridgeId });
+      if (!message) {
+        if (++refused <= 3 || refused % 50 === 0) {
+          timeline.mark("bridge.refused", { refused, reason: envelopeVerdict(event.data, { bridgeId }) });
+        }
+      } else if (message.type === "editor.ping" && (++pinged <= 3 || pinged % 20 === 0)) {
+        timeline.mark("bridge.ping", { pinged });
+      }
+    };
+    const onReadyState = () => timeline.mark("bridge.readyState", { readyState: document.readyState });
+    if (timeline.enabled) {
+      window.addEventListener("message", observe);
+      document.addEventListener("readystatechange", onReadyState);
+    }
+    timeline.mark("bridge.listen");
+
     announce();
 
     return () => {
@@ -995,8 +1041,10 @@ export function EditorBridge({
       observed.clear();
       if (frame) window.cancelAnimationFrame(frame);
       if (resizeFrame) window.cancelAnimationFrame(resizeFrame);
+      window.removeEventListener("message", observe);
+      document.removeEventListener("readystatechange", onReadyState);
     };
-  }, [bridgeId, pageId, slug, locale]);
+  }, [bridgeId, pageId, slug, locale, diagnostics]);
 
   return null;
 }

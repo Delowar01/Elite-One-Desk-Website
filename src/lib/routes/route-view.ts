@@ -4,6 +4,7 @@ import { satisfies } from "@/lib/auth/permissions";
 import { getSession } from "@/lib/auth/session";
 import { readMotionDocument, type MotionDocument } from "@/lib/cms/motion-doc";
 import { validateStyleDocument, type StyleDocument } from "@/lib/cms/styles";
+import { diagnosticLine } from "@/lib/visual-editor/diagnostics-server";
 import { isBridgeId } from "@/lib/visual-editor/protocol";
 
 import type { RouteContext, RouteData } from "./adapter";
@@ -134,6 +135,10 @@ export async function privateRender<D extends RouteData>(
 
   const bridgeId = searchParams?.bridge;
   const editor = flag(searchParams?.editor) && isBridgeId(bridgeId) ? { bridgeId } : null;
+  // The canvas's step on the server, for the readiness timeline (diagnostics on only).
+  if (flag(searchParams?.editor)) {
+    diagnosticLine("canvas", { route: routeKey, bridge: editor ? editor.bridgeId : "invalid", answer: editor ? "canvas" : "preview-only" });
+  }
 
   const hidden = new Set<string>();
   const drafted = new Set<string>();

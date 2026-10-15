@@ -21,6 +21,7 @@ import { resolveCatalogueRender } from "@/lib/routes/package-view";
 import { buildMetadata } from "@/lib/seo";
 import { PACKAGES_OVERVIEW_META } from "@/lib/seo-defaults";
 import { overviewStorage } from "@/lib/seo-model";
+import { editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 type Params = {
   params: Promise<{ lang: string }>;
@@ -250,6 +251,7 @@ export default async function PackagesPage({ params, searchParams }: Params) {
           pageId={documentEditorKey({ kind: "packageIndex", id })}
           slug={view.routeKey}
           locale={lang}
+          diagnostics={editorDiagnostics()}
         />
       ) : null}
     </>

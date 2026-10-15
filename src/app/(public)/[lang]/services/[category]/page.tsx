@@ -27,6 +27,7 @@ import { breadcrumbJsonLd, buildMetadata, faqJsonLd } from "@/lib/seo";
 import { recordStorage } from "@/lib/seo-model";
 import { getSettings, whatsappLink } from "@/lib/settings";
 import { categoryMove } from "@/lib/taxonomy-moves";
+import { editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 type Params = {
   params: Promise<{ lang: string; category: string }>;
@@ -442,6 +443,7 @@ export default async function CategoryPage({ params, searchParams }: Params) {
           pageId={documentEditorKey({ kind: "category", id })}
           slug={view.routeKey}
           locale={lang}
+          diagnostics={editorDiagnostics()}
         />
       ) : null}
     </>

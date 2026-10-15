@@ -236,6 +236,7 @@ const DOMAIN_CAPABILITY: Record<EditDomain, Capability> = {
 };
 
 export function VisualEditorShell({
+  diagnostics = false,
   pages,
   initial,
   can,
@@ -246,6 +247,12 @@ export function VisualEditorShell({
   media,
   blocks,
 }: {
+  /**
+   * The readiness timeline's switch (Batch 27 Correction 1,
+   * lib/visual-editor/diagnostics.ts) — the server's EOD_EDITOR_DIAGNOSTICS,
+   * off unless a test or an investigation set it. Passed to the canvas only.
+   */
+  diagnostics?: boolean;
   pages: EditablePage[];
   initial: { slug: string; locale: Locale; device: DeviceKey };
   /**
@@ -3781,6 +3788,7 @@ export function VisualEditorShell({
         >
           <div className="min-h-0 flex-1">
             <VisualCanvas
+              diagnostics={diagnostics}
               slug={page.slug}
               publicPath={isRoute ? page.path : undefined}
               locale={locale}

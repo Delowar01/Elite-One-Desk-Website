@@ -118,7 +118,10 @@ export async function editorSettled(page: Page, timeoutMs = 30_000): Promise<boo
 export async function editorReady(page: Page, timeoutMs = 60_000): Promise<void> {
   try {
     await page.getByText("Ready", { exact: true }).waitFor({ timeout: timeoutMs });
-  } catch {
+  } catch (error) {
+    // The editor watch's verdict (editor-watch.ts), when it ran, is the
+    // timeout's second line; it goes on the end of this one.
+    const verdict = error instanceof Error ? error.message.split("\n").find((line) => line.startsWith("editor-ready ")) : undefined;
     const status = await page.locator('p[aria-live="polite"]').allInnerTexts().catch(() => []);
     const canvas = page.frames().find((frame) => frame.url().includes("editor=1"));
     const inside = canvas
@@ -126,7 +129,10 @@ export async function editorReady(page: Page, timeoutMs = 60_000): Promise<void>
           .evaluate(() => `${document.readyState}, ${document.querySelectorAll("[data-eod-address]").length} addressed nodes`)
           .catch((error) => String(error).slice(0, 120))}`
       : `none among ${JSON.stringify(page.frames().filter((frame) => frame !== page.mainFrame()).map((frame) => frame.url().slice(0, 120)))}`;
-    throw new Error(`the editor was not Ready within ${timeoutMs / 1000} s: it showed ${JSON.stringify(status)}; canvas ${inside}`);
+    throw new Error(
+      `the editor was not Ready within ${timeoutMs / 1000} s: it showed ${JSON.stringify(status)}; canvas ${inside}` +
+        (verdict ? `\n${verdict}` : ""),
+    );
   }
 }
 

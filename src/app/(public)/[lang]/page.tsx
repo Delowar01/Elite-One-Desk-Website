@@ -7,6 +7,7 @@ import { PreviewBanner } from "@/components/site/preview-banner";
 import { isLocale } from "@/lib/i18n/config";
 import { resolvePageForRender } from "@/lib/preview";
 import { homeMetadata, organizationJsonLd } from "@/lib/seo";
+import { editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 type Params = {
   params: Promise<{ lang: string }>;
@@ -49,7 +50,13 @@ export default async function HomePage({ params, searchParams }: Params) {
         />
       </div>
       {editor ? (
-        <EditorBridge bridgeId={editor.bridgeId} pageId={page.id} slug={page.slug} locale={lang} />
+        <EditorBridge
+          bridgeId={editor.bridgeId}
+          pageId={page.id}
+          slug={page.slug}
+          locale={lang}
+          diagnostics={editorDiagnostics()}
+        />
       ) : null}
       <JsonLd
         data={[

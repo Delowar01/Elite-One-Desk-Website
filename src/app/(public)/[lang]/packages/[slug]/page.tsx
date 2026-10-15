@@ -23,6 +23,7 @@ import { resolvePackagesSlugRender } from "@/lib/routes/package-view";
 import { breadcrumbJsonLd, buildMetadata } from "@/lib/seo";
 import { recordStorage } from "@/lib/seo-model";
 import { getSettings, whatsappLink } from "@/lib/settings";
+import { editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 type Params = {
   params: Promise<{ lang: string; slug: string }>;
@@ -299,6 +300,7 @@ export default async function PackagePage({ params, searchParams }: Params) {
           pageId={documentEditorKey({ kind: "package", id })}
           slug={view.routeKey}
           locale={lang}
+          diagnostics={editorDiagnostics()}
         />
       ) : null}
     </>

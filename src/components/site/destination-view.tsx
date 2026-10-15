@@ -16,6 +16,7 @@ import { getDictionary } from "@/lib/i18n/dictionary";
 import type { MediaRef } from "@/lib/media/url";
 import { documentEditorKey } from "@/lib/routes/owners";
 import type { DestinationRender } from "@/lib/routes/package-view";
+import { editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 /**
  * One destination and the packages inside it — the middle step of
@@ -144,6 +145,7 @@ export function DestinationView({
           pageId={documentEditorKey({ kind: "destination", id })}
           slug={view.routeKey}
           locale={locale}
+          diagnostics={editorDiagnostics()}
         />
       ) : null}
     </>

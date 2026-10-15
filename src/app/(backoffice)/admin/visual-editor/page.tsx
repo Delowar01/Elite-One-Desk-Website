@@ -15,6 +15,7 @@ import { SERVICE_INDEX_PATH } from "@/lib/routes/service-index-model";
 import { indexSeoRows, overviewStorage, recordStorage, seoRowFor, type SeoStorage } from "@/lib/seo-model";
 import { globalsCapabilities } from "@/lib/visual-editor/globals";
 import { deviceOrDefault } from "@/lib/visual-editor/viewport";
+import { diagnosticLine, diagnosticTimer, editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 export const metadata = { title: "Visual Editor" };
 export const dynamic = "force-dynamic";
@@ -52,6 +53,7 @@ export default async function VisualEditorPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  const elapsed = diagnosticTimer();
   const session = await requirePermissions(AUTHORITY.openEditor, "/admin/visual-editor");
   const capabilities = globalsCapabilities(session);
   const query = await searchParams;
@@ -245,8 +247,12 @@ export default async function VisualEditorPage({
     rows.map((row) => [row.slug, blocksForPage(row.slug)]),
   );
 
+  // The editor's step on the server, for the readiness timeline (diagnostics on only).
+  diagnosticLine("editor", { page: chosen?.slug ?? "home", ms: elapsed() });
+
   return (
     <VisualEditorShell
+      diagnostics={editorDiagnostics()}
       pages={editable}
       initial={{
         slug: chosen?.slug ?? "home",

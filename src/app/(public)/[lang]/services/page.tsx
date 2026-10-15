@@ -20,6 +20,7 @@ import { buildMetadata } from "@/lib/seo";
 import { SERVICES_OVERVIEW_META } from "@/lib/seo-defaults";
 import { overviewStorage } from "@/lib/seo-model";
 import { isLegacyTaxonomy } from "@/lib/taxonomy-state";
+import { editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 type Params = {
   params: Promise<{ lang: string }>;
@@ -274,6 +275,7 @@ export default async function ServicesPage({ params, searchParams }: Params) {
           pageId={documentEditorKey({ kind: "serviceIndex", id })}
           slug={view.routeKey}
           locale={lang}
+          diagnostics={editorDiagnostics()}
         />
       ) : null}
     </>

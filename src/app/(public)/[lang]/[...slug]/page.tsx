@@ -8,6 +8,7 @@ import { getPage } from "@/lib/queries/content";
 import { resolvePageForRender } from "@/lib/preview";
 import { buildMetadata, homeMetadata } from "@/lib/seo";
 import { recordStorage } from "@/lib/seo-model";
+import { editorDiagnostics } from "@/lib/visual-editor/diagnostics-server";
 
 type Params = {
   params: Promise<{ lang: string; slug: string[] }>;
@@ -67,7 +68,13 @@ export default async function CmsPage({ params, searchParams }: Params) {
         still={Boolean(compare)}
       />
       {editor ? (
-        <EditorBridge bridgeId={editor.bridgeId} pageId={page.id} slug={page.slug} locale={lang} />
+        <EditorBridge
+          bridgeId={editor.bridgeId}
+          pageId={page.id}
+          slug={page.slug}
+          locale={lang}
+          diagnostics={editorDiagnostics()}
+        />
       ) : null}
     </>
   );

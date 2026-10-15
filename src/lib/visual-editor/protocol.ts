@@ -656,6 +656,22 @@ function openEnvelope(data: unknown, expect: { bridgeId: string }): Record<strin
 }
 
 /**
+ * Why a message would be refused at the envelope — or, past it, which type it
+ * claims to be. For the readiness timeline only (diagnostics.ts): it decides
+ * nothing, and a message is still read by `readCanvasMessage` /
+ * `readEditorMessage` and nothing else.
+ */
+export function envelopeVerdict(data: unknown, expect: { bridgeId: string }): string {
+  const outer = asRecord(data);
+  if (!outer) return "not-an-envelope";
+  if (outer.channel !== EDITOR_CHANNEL) return "other-channel";
+  if (outer.v !== PROTOCOL_VERSION) return `version-${String(outer.v).slice(0, 8)}`;
+  if (!isBridgeId(outer.bridgeId) || outer.bridgeId !== expect.bridgeId) return "other-bridge";
+  const message = asRecord(outer.message);
+  return message && typeof message.type === "string" ? `type:${message.type.slice(0, 40)}` : "no-message";
+}
+
+/**
  * A message from the canvas, as the editor should read it.
  *
  * `slug` is checked when the caller names one, because the editor asks a

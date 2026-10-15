@@ -16,7 +16,16 @@
  */
 import { chromium, type Browser, type LaunchOptions } from "playwright";
 
+import { watchBrowser } from "./editor-watch";
+
+/**
+ * Every browser comes with the editor watch (Batch 27 Correction 1): a wait on
+ * the Visual Editor's "Ready" that runs out says why, in the job log, in every
+ * probe — see editor-watch.ts. It only listens.
+ */
 export function launchChromium(options: LaunchOptions = {}): Promise<Browser> {
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE?.trim() || undefined;
-  return chromium.launch({ ...options, ...(executablePath ? { executablePath } : { channel: "chromium" }) });
+  return chromium
+    .launch({ ...options, ...(executablePath ? { executablePath } : { channel: "chromium" }) })
+    .then(watchBrowser);
 }

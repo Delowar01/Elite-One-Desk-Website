@@ -151,6 +151,20 @@ export function watchProcess(child: ChildProcess) {
   };
 }
 
+/**
+ * The servers this process is running, by origin (Batch 27 Correction 1): how
+ * the Visual Editor's readiness diagnostic (tests/browser/editor-watch.ts)
+ * finds the output and the database behind a page that is not Ready.
+ *
+ * Held on `globalThis`, not in this module: tsx can load a test helper twice —
+ * once for an `import` from a probe's `.mts`, once for a `require` from a
+ * `.ts` helper — and two modules would mean two registries, each empty to the
+ * other's reader.
+ */
+type RunningServer = { database: string; lines: () => readonly ServerLine[] };
+const registry = globalThis as unknown as { __eodRunningServers?: Map<string, RunningServer> };
+export const runningServers: Map<string, RunningServer> = (registry.__eodRunningServers ??= new Map());
+
 export async function startServer(
   database: string,
   port: number,
@@ -170,6 +184,10 @@ export async function startServer(
   const child: ChildProcess = spawn("node", [path.join(root, "server.js")], {
     cwd: root,
     env: scriptEnv(dbUrl(database), {
+      // The Visual Editor's readiness timeline (lib/visual-editor/diagnostics.ts):
+      // on for every test server, so a wait for "Ready" that runs out can say
+      // why; a test that needs it off says so in `env`. Production never sets it.
+      EOD_EDITOR_DIAGNOSTICS: "1",
       ...options.env,
       NODE_ENV: "production",
       PORT: String(port),
@@ -196,6 +214,8 @@ export async function startServer(
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
+  runningServers.set(origin, { database, lines: watched.lines });
+
   return {
     origin,
     log: watched.log,
@@ -204,6 +224,7 @@ export async function startServer(
     exit: watched.exit,
     stop: () =>
       new Promise<void>((resolve) => {
+        runningServers.delete(origin);
         // A process a signal killed has no exit code, only a signal; waiting
         // for a `close` that has already happened would hang the script and
         // hide the very exit a stress run needs to report (Batch 21A).
