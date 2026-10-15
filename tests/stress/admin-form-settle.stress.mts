@@ -108,7 +108,15 @@ async function worker(index: number): Promise<Outcome> {
       return server.origin;
     };
     const open = async () => {
-      const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      // Reduced motion, so that globals.css scrolls without animating (Batch 27 Correction 1).
+      // With `scroll-behavior: smooth`, the click straight after the fills was lost in three of
+      // fifteen runs, one create in 108 each time. Retrying, Playwright scrolls the button into
+      // view with `scrollIntoView({ block: "end" })` and no `behavior`, so the scroll is an
+      // animation that starts as the press is sent, and its hit-target check reads only the
+      // press. On a loaded machine the release came 105 ms later, after the page had moved: it
+      // landed on the form, the browser clicked the form instead of the button, and nothing was
+      // submitted. Nothing this script measures depends on motion.
+      const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: "reduce" });
       await context.addCookies([{ name: cookieName!, value: cookieValue!, domain: "127.0.0.1", path: "/" }]);
       const page = await context.newPage();
       page.on("pageerror", (error) => out.errors.push(error.message.slice(0, 160)));
