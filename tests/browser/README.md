@@ -161,6 +161,14 @@ screen shows and keeps a group's Arabic summary, which the editor can set.
   re-scroll with `element.scrollIntoView`, which glides under the site's
   `scroll-behavior: smooth` — the click then lands beside a moving node, and
   its hit check (which compares the nearest link) cannot tell.
+- **Clicking a button below the fold, under load:** the same glide can take
+  an ordinary click away. The press lands on the button and the release
+  lands after the page has moved, so the `click` goes to an ancestor.
+  Playwright reports it done, because its hit check reads only the press. A
+  script that clicks straight after filling a long form, with other servers
+  and browsers busy beside it, opens its contexts with `reducedMotion:
+  "reduce"`; `globals.css` then scrolls without gliding. `admin-form-settle`,
+  `permissions` and `layers-editing` do (Batch 27 Correction 1 §6.2).
 - **Selecting:** wait for the Inspector's answer (`waitForInspector`,
   `selectFromLayers`), not for the Motion tab, which is already on screen
   whenever anything was selected before. A Layers selection glides the canvas
@@ -446,19 +454,36 @@ after every scroll, `Unreachable` says where the node was, and the
 `layers-glide-click` stress script holds a Layers glide at its start to
 click through it every round.
 
-## Known issue — the editor's "Ready" that did not come (Batch 27)
+## The editor's "Ready" that did not come (Batch 27, fixed in Correction 1)
 
 On Next.js 16, twice, a probe's Visual Editor never showed "Ready" within
 60 s: `motion-15b` on CI (`c53e09b`) and `advanced-motion` in a local full
 run (`aa86b17`), both in full runs of the suite and never when the probe was
-repeated on its own — not in 30 targeted runs, eight of them under heavy CPU
-load, nor in three full runs with every page instrumented. In about thirty
-full runs on Next.js 15.5.25 it never happened. Its cause is not established;
-the investigation is `docs/release/next16-qualification-batch-27.md` §6.3.
+repeated on its own. Neither recorded what the editor showed.
 
-Both probes now wait through `editorReady` (`canvas.ts`). If it happens
-again, the runner's tail carries one line naming what the editor's status
-said ("Loading canvas…", "Connecting…", "Unable to connect"), the canvas
-frame, and whether that frame's document loaded as an editor canvas — the
-server writes the editor's addresses only into one. Copy that line into the
-record before re-running anything.
+Batch 27 Correction 1 found the one wait in the editor that had no end. The
+editor (`components/admin/visual-editor/canvas.tsx`) only listened for its
+canvas, pinged it and counted down once the canvas frame's `load` event had
+fired. A canvas with one picture, font or script that never finished had a
+bridge that announced itself to nobody, and the status read "Loading
+canvas…" for good. The editor now listens from the frame's creation, so a
+canvas whose bridge is up is Ready whatever is still downloading. A canvas
+that never answers says "Unable to connect" within 20 s. `editor-diagnostics`
+R1–R5 hold it. The record is
+`docs/release/next16-qualification-batch-27-correction-1.md`.
+
+Every wait on "Ready" in every probe and stress script now goes through the
+editor watch (`editor-watch.ts`). If it ever times out again, the runner's
+tail carries a `diag editor-ready <A–J> …` line: the cause, in the order a
+cause comes before its consequences — the editor's and the canvas's own
+timelines, the requests still open, the server's diagnostic lines and
+PostgreSQL's locks — plus `diag editor-ready-evidence` and a screenshot under
+`.data/test/results/diag/`. Copy those lines into the record before
+re-running anything.
+
+**One rule for the canvas.** Nothing in the editor, and nothing in a test,
+may reach into the canvas frame (`contentWindow`, `contentDocument`) before
+its first document has arrived. Doing so makes Chromium set up the frame's
+initial empty document, the canvas then inherits that window, and an init
+script a probe added runs against the empty document instead of the canvas.
+`editor-diagnostics` R5 fails if anything does.

@@ -5,6 +5,11 @@ is not authorized by this document. Batch 27 did not access the VPS or the
 production database, ran no production migration, did not change
 `deploy/previous-release` and created no tag. Its branch is not merged.
 
+**Superseded for the release's status by Batch 27 Correction 1**
+(`next16-qualification-batch-27-correction-1.md`). It moves the candidate to
+Next.js 16.4.1, the 14 October security release. It also finds and fixes the
+editor's "Ready" of §6.3. This record stands for what it measured on 16.3.8.
+
 | | |
 |---|---|
 | Base | `edcb4f4` — Batch 26 Correction 1, fast-forwarded onto `main` (`7c3a00d` → `edcb4f4`, no commit rewritten) |
