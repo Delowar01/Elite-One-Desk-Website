@@ -63,6 +63,12 @@ export function openTimeline(key: typeof EDITOR_TIMELINE | typeof CANVAS_TIMELIN
  * Same-origin by construction — the canvas is the site itself — but every read
  * is guarded, because a frame that navigated somewhere else, or is between
  * documents, is exactly the case this is for.
+ *
+ * Only once a document has loaded in the frame or spoken from it. Reaching
+ * into a frame that still holds its initial empty document makes the browser
+ * set that window up, and the canvas then inherits it: whatever runs at the
+ * start of a new document runs against the empty one instead (Batch 27
+ * Correction 1, `canvas.tsx`). A recorder must not change what it records.
  */
 export function frameSnapshot(frame: HTMLIFrameElement | null): Record<string, unknown> {
   if (!frame) return { frame: "none" };

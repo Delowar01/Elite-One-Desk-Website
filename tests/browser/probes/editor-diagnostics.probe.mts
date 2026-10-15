@@ -9,7 +9,8 @@
  * is checked is the verdict, not how long anything took.
  *
  *   D1  a healthy editor is Ready, and nothing is recorded against it
- *   D2  both timelines and the server's line record the handshake
+ *   D2  both timelines and the server's line record the handshake — and the
+ *       editor listened from its frame's creation, not from the frame's load
  *   D3  I — the editor is Ready but the status cannot be seen
  *   D4  A — the canvas document is never answered
  *   D5  B — the editor's own scripts never arrive, so no canvas is mounted
@@ -17,21 +18,44 @@
  *   D7  C — the canvas renders without the editor (no editor flag reaches it)
  *   D8  D — the canvas's scripts never run, so its bridge never starts
  *   D9  E — the bridge answers, its Ready is lost on the way
- *   D10 F — an image in the canvas never finishes, so its load never fires
- *   D11 G — the canvas document's stream is never ended
+ *   D10 F — the canvas's scripts never finish, so its bridge cannot start and
+ *       its load cannot fire
+ *   D11 G — the canvas document stops half-way through its head and never
+ *       ends
  *   D12 H — the pages table is locked while the editor opens
  *   D13 J — the page's renderer crashes
  *   D14 with diagnostics off — production's setting — nothing is recorded
  *       and nothing is printed
+ *
+ * And the fix the diagnostic led to (Correction 1: the handshake no longer
+ * waits for the frame's load event), held the same way, by breaking it:
+ *
+ *   R1  an image in the canvas never finishes: the editor is Ready anyway,
+ *       before the canvas has loaded — before the fix this was F, and the
+ *       status read "Loading canvas…" for as long as the editor was open
+ *   R2  …and when the picture does arrive, the canvas's load event changes
+ *       nothing: still Ready, the selection kept
+ *   R3  a canvas that never answers and never loads says so within the 20 s
+ *       — "Unable to connect" — instead of loading for ever
+ *   R4  a canvas document that arrives whole but whose stream is never ended
+ *       — a Suspense boundary that never resolves, from outside — is Ready
+ *       anyway: its bridge is in what did arrive
+ *   R5  nothing reaches into the canvas before its first document arrives —
+ *       not the handshake, not the timeline: with the canvas document held
+ *       for 1.5 s, a script the browser runs at the start of every document
+ *       still runs in the canvas itself. Touching the frame's window any
+ *       earlier makes the canvas inherit its empty first document's window,
+ *       and such a script then runs against that one
  */
 import http from "node:http";
 
-import type { BrowserContext, Page } from "playwright";
+import type { BrowserContext, Page, Route } from "playwright";
 
 import { giveFresh } from "../../helpers/fixtures";
 import { connect, dropDatabase } from "../../helpers/pg";
 import { runningServers, startServer, type Server } from "../../helpers/server";
 import { signIn } from "../../helpers/session";
+import { inspectorAddress, selectFromLayers } from "../canvas";
 import { explainEditorHang, recordedVerdicts, type Category, type Verdict } from "../editor-watch";
 import { launchChromium } from "../harness";
 
@@ -105,20 +129,49 @@ try {
     const canvas = canvasFrame
       ? ((await canvasFrame.evaluate("window.__eodCanvasTimeline ? window.__eodCanvasTimeline.entries : []")) as { phase: string }[])
       : [];
-    const order = ["canvas.mint", "canvas.frame", "canvas.listen", "canvas.ready"].map(
-      (phase) => editor.find((entry) => entry.phase === phase)?.at ?? Number.NaN,
-    );
-    const ordered = order.every((at, i) => Number.isFinite(at) && (i === 0 || at >= order[i - 1]!));
+    const at = (phase: string) => editor.find((entry) => entry.phase === phase)?.at ?? Number.NaN;
+    const [mint, frame, listen, ready, load] = ["canvas.mint", "canvas.frame", "canvas.listen", "canvas.ready", "canvas.load"].map(at);
+    const ordered = [mint, frame, listen, ready].every(Number.isFinite) && mint! <= frame! && mint! <= listen! && frame! <= ready! && listen! <= ready!;
+    // Correction 1: the handshake is armed with the frame, so it listens before
+    // the frame's load event — or before a load that has not happened yet.
+    const early = Number.isFinite(listen) && (!Number.isFinite(load) || listen! <= load!);
     const bridged = ["bridge.mount", "bridge.listen", "bridge.announce"].every((phase) => canvas.some((entry) => entry.phase === phase));
     const line = server.lines().some((entry) => /\[eod-diag\] canvas slug=about bridge=\S+ answer=canvas /.test(entry.text));
     say(
-      "D2 both timelines and the server's line record the handshake",
-      ordered && bridged && line,
-      `editor ${editor.map((entry) => entry.phase).join(" → ")}; canvas ${canvas.map((entry) => entry.phase).join(" → ")}; server line ${line}`,
+      "D2 both timelines and the server's line record the handshake, and the editor listened before the frame's load",
+      ordered && early && bridged && line,
+      `editor ${editor.map((entry) => entry.phase).join(" → ")}; canvas ${canvas.map((entry) => entry.phase).join(" → ")}; listened ${Number.isFinite(load) ? `${load! - listen!} ms before the load` : "with no load yet"}; server line ${line}`,
     );
 
     await page.addStyleTag({ content: 'p[aria-live="polite"] { visibility: hidden !important; }' });
     expect("D3 the editor is Ready but its status cannot be seen", await attempt(page, 2_500), "I");
+    await context.close();
+  }
+
+  /* --- R5 · nothing reaches into the canvas early ---------------------------------- */
+  {
+    const context = await fresh();
+    await context.addInitScript({ content: "window.__eodInitRuns = (window.__eodInitRuns || []).concat(location.href);" });
+    // The canvas document held for 1.5 s, so the frame keeps its empty first
+    // document for longer than one ping interval: anything that reaches into
+    // the frame too early does it while there is nothing else to reach.
+    await context.route(
+      (url) => isCanvas(url),
+      async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+        await route.continue().catch(() => undefined);
+      },
+    );
+    const page = await context.newPage();
+    await open(page);
+    const verdict = await attempt(page, 30_000);
+    const canvasFrame = page.frames().find((frame) => frame.url().includes("editor=1"));
+    const runs = canvasFrame ? ((await canvasFrame.evaluate("window.__eodInitRuns || []").catch((): string[] => [])) as string[]) : [];
+    say(
+      "R5 nothing reaches into the canvas before its document arrives: a script run at the start of every document runs in the canvas itself",
+      verdict === null && runs.length === 1 && runs[0]!.includes("editor=1"),
+      JSON.stringify(runs.map((href) => href.slice(0, 100))),
+    );
     await context.close();
   }
 
@@ -209,28 +262,90 @@ try {
     await context.close();
   }
 
-  /* --- D10 · F -------------------------------------------------------------------- */
+  /* --- D10 · F, and R3 ----------------------------------------------------------- */
+  // An unfinished image no longer keeps the editor from Ready (R1), so F is the
+  // canvas's own scripts held: its bridge cannot start and its load cannot fire,
+  // and both are waiting on the same requests.
   {
     const context = await fresh();
     await context.route(
-      (url) => /\.(?:webp|png|jpe?g|svg|avif)$/.test(url.pathname),
+      (url) => url.pathname.startsWith("/_next/static/chunks/"),
       async (route) => {
         if (!fromChild(route.request().frame())) return route.continue();
-        // an image inside the canvas: held, never answered
+        // the canvas's scripts: held, never answered
+      },
+    );
+    const page = await context.newPage();
+    const opened = Date.now();
+    await open(page);
+    expect("D10 the canvas's scripts never finish", await attempt(page), "F");
+    const gaveUp = await page
+      .getByText("Unable to connect", { exact: true })
+      .waitFor({ timeout: 30_000 })
+      .then(() => true, () => false);
+    const status = await page.locator('p[aria-live="polite"]').allInnerTexts().catch((): string[] => []);
+    say(
+      "R3 a canvas that never answers and never loads gives up within its 20 s: \"Unable to connect\", not \"Loading canvas…\" for ever",
+      gaveUp,
+      `${JSON.stringify(status)} ${Math.round((Date.now() - opened) / 1000)} s after the editor was opened`,
+    );
+    await context.close();
+  }
+
+  /* --- R1, R2 · an unfinished image -------------------------------------------------- */
+  {
+    const context = await fresh();
+    const held: Route[] = [];
+    let releasing = false;
+    await context.route(
+      (url) => /\.(?:webp|png|jpe?g|svg|avif)$/.test(url.pathname),
+      async (route) => {
+        if (releasing || !fromChild(route.request().frame())) return route.continue();
+        held.push(route); // an image inside the canvas: held until R2 lets it go
       },
     );
     const page = await context.newPage();
     await open(page);
-    expect("D10 an image in the canvas never finishes", await attempt(page), "F");
+    const verdict = await attempt(page, 30_000);
+    const canvasFrame = () => page.frames().find((frame) => frame.url().includes("editor=1"));
+    const stateOf = async () => (canvasFrame() ? await canvasFrame()!.evaluate("document.readyState").catch(() => "unreadable") : "no canvas");
+    const before = await stateOf();
+    say(
+      "R1 an image in the canvas never finishes, and the editor is Ready anyway — before the canvas has loaded",
+      verdict === null && held.length > 0 && before !== "complete",
+      `${verdict ? `${verdict.category}: ${verdict.reason.slice(0, 160)}` : "Ready"}; ${held.length} image(s) held; canvas ${before}`,
+    );
+
+    const row = page.locator("aside[aria-label='Page structure'] [data-layer-row]").first();
+    const address = (await row.getAttribute("data-layer-row", { timeout: 15_000 }).catch(() => null)) ?? "";
+    const selected = address ? await selectFromLayers(page, address, 20_000).then(() => true, () => false) : false;
+    releasing = true;
+    for (const route of held.splice(0)) await route.continue().catch(() => undefined);
+    const editorLoads = async () =>
+      ((await page.evaluate("window.__eodEditorTimeline ? window.__eodEditorTimeline.entries : []")) as { phase: string; detail?: { alreadyReady?: boolean } }[])
+        .filter((entry) => entry.phase === "canvas.load");
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline && !((await stateOf()) === "complete" && (await editorLoads()).length > 0)) await page.waitForTimeout(100);
+    const loads = await editorLoads();
+    const after = await stateOf();
+    const kept = selected && (await inspectorAddress(page)) === address;
+    const status = await page.locator('p[aria-live="polite"]').allInnerTexts().catch((): string[] => []);
+    say(
+      "R2 …and when the picture arrives, the canvas's load changes nothing: still Ready, the selection kept",
+      after === "complete" && loads.length === 1 && loads[0]!.detail?.alreadyReady === true && kept && status.includes("Ready") && !status.includes("Connecting…"),
+      `canvas ${after}; loads ${JSON.stringify(loads.map((entry) => entry.detail?.alreadyReady ?? false))}; selected ${address || "nothing"} ${selected ? (kept ? "and kept" : "and lost") : "(could not select)"}; status ${JSON.stringify(status)}`,
+    );
     await context.close();
   }
 
-  /* --- D11 · G -------------------------------------------------------------------- */
+  /* --- D11 · G, and R4 ------------------------------------------------------------ */
   {
     // The whole editor through a proxy on its own port, which passes everything
-    // on — except that a canvas document's response is never ended. The
-    // browser sees what a Suspense boundary that never resolves looks like
-    // from outside: headers, body, no end.
+    // on except a canvas document's response, which is never ended: for D11
+    // only the first 512 bytes of it are passed on, half a head with no body
+    // and no bridge; for R4 every byte is, and only the end is withheld — what
+    // a Suspense boundary that never resolves looks like from outside.
+    let whole = false;
     proxy = http.createServer((request, response) => {
       const target = new URL(request.url ?? "/", server.origin);
       const document = isCanvas(target) && !request.headers.rsc && !target.searchParams.has("_rsc");
@@ -240,8 +355,14 @@ try {
           const headers = { ...answer.headers };
           if (document) delete headers["content-length"];
           response.writeHead(answer.statusCode ?? 502, headers);
-          if (document) answer.on("data", (chunk) => response.write(chunk));
-          else answer.pipe(response);
+          if (!document) return void answer.pipe(response);
+          let budget = whole ? Number.POSITIVE_INFINITY : 512;
+          answer.on("data", (chunk: Buffer) => {
+            if (budget <= 0) return;
+            const part = chunk.length > budget ? chunk.subarray(0, budget) : chunk;
+            budget -= part.length;
+            response.write(part);
+          });
         },
       );
       upstream.on("error", () => response.destroy());
@@ -250,11 +371,28 @@ try {
     await new Promise<void>((resolve) => proxy!.listen(PROXY_PORT, "127.0.0.1", resolve));
     const proxied = `http://127.0.0.1:${PROXY_PORT}`;
     runningServers.set(proxied, { database, lines: server.lines });
-    const context = await fresh();
-    const page = await context.newPage();
-    await open(page, proxied);
-    expect("D11 the canvas document's stream is never ended", await attempt(page), "G");
-    await context.close();
+    {
+      const context = await fresh();
+      const page = await context.newPage();
+      await open(page, proxied);
+      expect("D11 the canvas document stops half-way through its head", await attempt(page), "G");
+      await context.close();
+    }
+    {
+      whole = true;
+      const context = await fresh();
+      const page = await context.newPage();
+      await open(page, proxied);
+      const verdict = await attempt(page, 30_000);
+      const canvasFrame = page.frames().find((frame) => frame.url().includes("editor=1"));
+      const state = canvasFrame ? await canvasFrame.evaluate("document.readyState").catch(() => "unreadable") : "no canvas";
+      say(
+        "R4 a canvas document that arrives whole but is never ended is Ready anyway",
+        verdict === null && state !== "complete",
+        `${verdict ? `${verdict.category}: ${verdict.reason.slice(0, 160)}` : "Ready"}; canvas ${state}`,
+      );
+      await context.close();
+    }
     runningServers.delete(proxied);
     proxy.closeAllConnections();
     await new Promise((resolve) => proxy!.close(resolve));

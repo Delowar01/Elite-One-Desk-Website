@@ -184,6 +184,11 @@ export function VisualCanvas({
     (timeline.current ??= openTimeline(EDITOR_TIMELINE, diagnostics)).mark(phase, detail);
   /** Whether the document now in the frame has answered — for the timeline's sampling only. */
   const answered = useRef(false);
+  /**
+   * The document whose bridge said Ready — so that its own `load` event, which
+   * can come after it (see the handshake), is not taken for a new document.
+   */
+  const readyDocument = useRef<Document | null>(null);
 
   /**
    * A new document gets a new bridge id, every time.
@@ -199,6 +204,7 @@ export function VisualCanvas({
   useEffect(() => {
     mark("canvas.mint", { canvasKey });
     answered.current = false;
+    readyDocument.current = null;
     setBridgeId(newBridgeId());
     setLoads(0);
     setAnnounced(0);
@@ -223,16 +229,30 @@ export function VisualCanvas({
     return () => observer.disconnect();
   }, []);
 
-  // The handshake, and everything the canvas says afterwards. Re-armed on every
-  // document the frame loads.
+  // The handshake, and everything the canvas says afterwards. Listening and
+  // counting down from the frame's creation; asking again on every document the
+  // frame loads.
+  //
+  // Not from `load` alone (Batch 27 Correction 1). It used to wait for the
+  // frame's load event before it listened or counted down, and a load event
+  // waits for every image, font and script in the page. A canvas with one
+  // picture that never finished had a bridge that announced itself to nobody,
+  // and no timer to say so: the status read "Loading canvas…" for as long as
+  // the editor stayed open. The bridge announces itself when it mounts and
+  // needs none of that, and Ready is the handshake — so this listens from the
+  // start, and its 20 seconds count from the frame's creation as well as from
+  // each load. A canvas that never answers now says so.
   useEffect(() => {
-    if (!bridgeId || loads === 0) return;
+    if (!bridgeId) return;
     const origin = bridgeOrigin();
     let settled = false;
     mark("canvas.listen", { loads, bridgeId });
 
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== origin) return;
+      // Never the canvas — and asked first, so that nothing reaches into the
+      // frame for it (see the pings below).
+      if (event.source === window) return;
       // The message has to come from the frame we are actually showing. A
       // stale iframe from a previous page or reload has a different window,
       // and its bridge id no longer matches either.
@@ -244,6 +264,7 @@ export function VisualCanvas({
       switch (message.type) {
         case "canvas.ready":
           settled = true;
+          readyDocument.current = frameRef.current?.contentDocument ?? null;
           setAnnounced((n) => n + 1);
           onState({ status: "ready", innerWidth: message.innerWidth, message: null });
           return;
@@ -312,6 +333,7 @@ export function VisualCanvas({
         if (seen <= 3 || seen % 50 === 0) mark("canvas.refused", { reason, seen, ...detail });
       };
       if (event.origin !== origin) return refuse("origin", { origin: event.origin });
+      if (event.source === window) return;
       if (!frameRef.current || event.source !== frameRef.current.contentWindow) return refuse("source");
       const message = readCanvasMessage(event.data, { bridgeId, slug });
       if (!message) {
@@ -335,17 +357,28 @@ export function VisualCanvas({
     };
     if (timeline.current?.enabled) window.addEventListener("message", observe);
 
-    const ping = window.setInterval(() => {
-      if (settled) return;
-      frameRef.current?.contentWindow?.postMessage(
-        envelope(bridgeId, { type: "editor.ping" as const, at: Date.now() }),
-        origin,
-      );
-    }, PING_EVERY_MS);
+    // Pinging asks a document that has loaded to announce itself again — for
+    // an announcement that was missed. Never before the first load: until a
+    // document arrives the frame holds its initial empty one, and reaching into
+    // the frame's window then makes the browser set that window up for good —
+    // the canvas inherits it, and whatever a browser runs at the start of a new
+    // document (an extension, a test's instrumentation) runs against the empty
+    // one instead. Nothing needs it then: the listener above is already there
+    // for the bridge's own announcement.
+    const ping =
+      loads > 0
+        ? window.setInterval(() => {
+            if (settled) return;
+            frameRef.current?.contentWindow?.postMessage(
+              envelope(bridgeId, { type: "editor.ping" as const, at: Date.now() }),
+              origin,
+            );
+          }, PING_EVERY_MS)
+        : undefined;
 
     const giveUp = window.setTimeout(() => {
       if (settled) return;
-      mark("canvas.giveUp", frameSnapshot(frameRef.current));
+      mark("canvas.giveUp", loads > 0 ? frameSnapshot(frameRef.current) : { loads, src: frameRef.current?.getAttribute("src") ?? null });
       onState({
         status: "error",
         innerWidth: null,
@@ -358,22 +391,27 @@ export function VisualCanvas({
     return () => {
       window.removeEventListener("message", onMessage);
       window.removeEventListener("message", observe);
-      window.clearInterval(ping);
+      if (ping !== undefined) window.clearInterval(ping);
       window.clearTimeout(giveUp);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridgeId, slug, loads]);
 
   /**
-   * With diagnostics on, the frame — written down when it is created, then
-   * sampled once a second until its document answers: which address it holds,
-   * how far it has loaded, whether the server wrote it as a canvas. It is the
-   * one thing a `load` event that never comes cannot say for itself. Nothing
+   * With diagnostics on, the frame — written down when it is created, by its
+   * address alone, and once a document has loaded in it sampled once a second
+   * until that document answers: which address it holds, how far it has
+   * loaded, whether the server wrote it as a canvas. Never read before the
+   * first load: reaching into the frame's initial empty document is the one
+   * thing that would change what it observes (see the pings above). Nothing
    * here runs with diagnostics off.
    */
   useEffect(() => {
     if (!bridgeId || !(timeline.current ??= openTimeline(EDITOR_TIMELINE, diagnostics)).enabled) return;
-    if (loads === 0) mark("canvas.frame", { src: frameRef.current?.getAttribute("src") ?? null });
+    if (loads === 0) {
+      mark("canvas.frame", { src: frameRef.current?.getAttribute("src") ?? null });
+      return;
+    }
     let last = "";
     const started = Date.now();
     const sample = () => {
@@ -508,8 +546,19 @@ export function VisualCanvas({
             onLoad={() => {
               // A document arrived. Which one, only the handshake can say — so
               // this moves the status forward but never to Ready.
+              //
+              // Unless it is the document that has already answered: the
+              // handshake no longer waits for `load`, so a canvas can be Ready
+              // before its last picture is, and its load event is then news
+              // about a document the editor already has — not a reason to drop
+              // the selection or show "Connecting…" under an editor at work.
+              if (readyDocument.current && frameRef.current?.contentDocument === readyDocument.current) {
+                mark("canvas.load", { loads, alreadyReady: true, ...frameSnapshot(frameRef.current) });
+                return;
+              }
               mark("canvas.load", { loads: loads + 1, ...frameSnapshot(frameRef.current) });
               answered.current = false;
+              readyDocument.current = null;
               setLoads((n) => n + 1);
               setHover(null);
               setSelection(null);

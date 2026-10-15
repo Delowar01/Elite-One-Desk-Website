@@ -95,7 +95,7 @@ runner exits 1. Logs and `summary.json` go to `.data/test/results/<suite>/`.
 
 ## Expected results
 
-Every probe clean, with the counts in `probes/expected.json` — 1,563 `PASS`
+Every probe clean, with the counts in `probes/expected.json` — 1,568 `PASS`
 across the forty-one as of Batch 27 Correction 1 (1,549 across forty at Batch 27,
 1,544 across thirty-eight at Batch 25,
 1,527 across thirty-seven at Batch 24,
@@ -302,18 +302,28 @@ for each link a few times in the seconds after the page loads and then stops
 — with 16.3's default it asked for the English twin about a hundred times a
 second, without end.
 
-Batch 27 Correction 1 added `editor-diagnostics` (14 checks, ports 3742–3744),
+Batch 27 Correction 1 added `editor-diagnostics` (19 checks, ports 3742–3744),
 the negative control for `editor-watch.ts`: it breaks the editor on purpose,
 once for each of the watch's answers — the canvas document never answered (A),
 the editor's own scripts held (B), the canvas answering 500 or rendering
 without the editor (C), the canvas's scripts aborted (D), its "Ready" dropped
-on the way (E), an image inside the canvas held (F), the canvas document's
-stream never ended, through a proxy (G), the `pages` table locked (H), the
-status hidden from a Ready editor (I) and the renderer crashed (J) — and checks
-the watch names each one. It also checks that with `EOD_EDITOR_DIAGNOSTICS=0`,
+on the way (E), the canvas's scripts held (F), the canvas document stopped
+half-way through its head, through a proxy (G), the `pages` table locked (H), the status
+hidden from a Ready editor (I) and the renderer crashed (J) — and checks the
+watch names each one. It also checks that with `EOD_EDITOR_DIAGNOSTICS=0`,
 production's setting, neither document holds a timeline and the server prints
 nothing; a visitor's page carries nothing of it in either mode, which the
-"no editor markup reaches a visitor" tests of `npm test` hold.
+"no editor markup reaches a visitor" tests of `npm test` hold. R1–R5 hold the
+fix the investigation led to — the editor's handshake no longer waits for the
+canvas's load event: an image in the canvas that never finishes no longer
+keeps the editor from Ready (R1), the load that follows changes nothing for
+an editor already at work (R2), a canvas that never answers says "Unable to
+connect" within 20 s instead of "Loading canvas…" for ever (R3), and a canvas
+document that arrives whole but is never ended is Ready anyway (R4), and
+nothing — neither the handshake nor the timeline — reaches into the frame
+before its first document has arrived, so a script the browser runs at the
+start of every document runs in the canvas itself (R5). D2 checks the same
+from a healthy run: the editor listened before the frame's load.
 
 ## Known issue — React #418 when hydration overtakes the page's data (Batch 25)
 

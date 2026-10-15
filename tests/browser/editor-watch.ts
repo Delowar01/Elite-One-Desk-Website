@@ -270,7 +270,12 @@ export type Evidence = {
   pageErrors: string[];
   consoleErrors: string[];
   frameEvents: string[];
-  server: { known: boolean; diag: string[]; failures: string[]; tail: string[] };
+  /**
+   * `canvasAnswer`: what the server said it answered the frame's own canvas
+   * request with — `canvas`, `preview-only`, `published-no-session`… — read
+   * from its `[eod-diag] canvas` line for this bridge id; null without one.
+   */
+  server: { known: boolean; diag: string[]; failures: string[]; tail: string[]; canvasAnswer: string | null };
   pg: { rows: PgRow[]; waitingLocks: number } | null;
   files: string[];
 };
@@ -370,6 +375,15 @@ export async function explainEditorHang(page: Page, options: { waitedMs?: number
   }
   const server = runningServers.get(origin);
   const lines = server ? server.lines() : [];
+  let frameBridge: string | null = null;
+  try {
+    frameBridge = canvasFrame ? new URL(canvasFrame.url()).searchParams.get("bridge") : null;
+  } catch {
+    // about:blank, or no address yet
+  }
+  const canvasAnswer = frameBridge
+    ? ([...lines].reverse().find((line) => line.text.includes("[eod-diag] canvas ") && line.text.includes(` bridge=${frameBridge} `))?.text.match(/ answer=(\S+)/)?.[1] ?? null)
+    : null;
   const pg = server ? await within(databaseActivity(server.database), 6_000, null) : null;
 
   const files: string[] = [];
@@ -413,6 +427,7 @@ export async function explainEditorHang(page: Page, options: { waitedMs?: number
       diag: lines.filter((line) => line.text.includes("[eod-diag]")).slice(-12).map((line) => line.text.slice(0, 240)),
       failures: serverFailureLines(lines).slice(-8).map((line) => `${clock(line.at)} ${line.text.slice(0, 240)}`),
       tail: lines.slice(-6).map((line) => `${clock(line.at)} ${line.text.slice(0, 200)}`),
+      canvasAnswer,
     },
     pg,
     files,
@@ -447,6 +462,7 @@ function compact(evidence: Evidence): string {
     frames: evidence.frames,
     canvas: evidence.canvas ? { ...evidence.canvas, timeline: undefined } : null,
     canvasDocument: evidence.canvasDocument,
+    canvasAnswer: evidence.server.canvasAnswer,
     pending: evidence.pending.slice(0, 8).map((net) => `${net.type} ${net.url.slice(0, 120)} ${net.status ?? "-"} ${net.ageMs}ms`),
     editor: tail(evidence.editorTimeline, 10),
     bridge: tail(evidence.canvas?.timeline ?? null, 8),
@@ -487,7 +503,15 @@ export function classify(evidence: Evidence, now: number): { category: Category;
       reason: `the status line holds "${evidence.outer.statusText}" (visible: ${JSON.stringify(evidence.outer.status)}) — the editor is Ready and the wait did not see it`,
     };
   }
-  const latest = [...(editor ?? [])].reverse().find((entry) => ["canvas.mint", "canvas.load", "canvas.ready", "canvas.giveUp"].includes(entry.phase));
+  // A load the editor recorded as news about the document that had already
+  // answered (`alreadyReady`, Correction 1) is not a new canvas.
+  const latest = [...(editor ?? [])]
+    .reverse()
+    .find(
+      (entry) =>
+        ["canvas.mint", "canvas.load", "canvas.ready", "canvas.giveUp"].includes(entry.phase) &&
+        !(entry.phase === "canvas.load" && entry.detail?.alreadyReady === true),
+    );
   if (latest?.phase === "canvas.ready") {
     return { category: "I", reason: `the editor recorded Ready at ${clock(latest.at)} and no new canvas since` };
   }
@@ -551,12 +575,20 @@ export function classify(evidence: Evidence, now: number): { category: Category;
   }
 
   const canvas = evidence.canvas;
-  if (canvas && canvas.readyState === "complete" && canvas.addressed === 0) {
-    return { category: "C", reason: "the canvas loaded as a page without editor addresses: rendered without the editor canvas (no session, no permission, or not a preview)" };
+  // Unless the server says it rendered this very canvas as one: then the
+  // addresses were there and something in the browser took them away (D).
+  if (canvas && canvas.readyState === "complete" && canvas.addressed === 0 && evidence.server.canvasAnswer !== "canvas") {
+    return {
+      category: "C",
+      reason: `the canvas loaded as a page without editor addresses: rendered without the editor canvas (${evidence.server.canvasAnswer ? `the server answered ${evidence.server.canvasAnswer}` : "no session, no permission, or not a preview"})`,
+    };
   }
 
-  // F — the document is in, a resource it waits for is not.
-  if (canvas && canvas.readyState !== "complete") {
+  // F — the document is in, a resource it waits for is not, and the bridge —
+  // which needs its scripts — has not started. Since Correction 1 the editor
+  // listens before the frame's load event, so an unfinished picture alone no
+  // longer keeps it from Ready: with the bridge up, the answer is below.
+  if (canvas && canvas.readyState !== "complete" && !(evidence.diagnostics && has(bridge, "bridge.mount"))) {
     const waiting = evidence.pending.filter((net) => !net.main && !net.navigation);
     const images = canvas.unfinishedImages.length ? `; unfinished images ${JSON.stringify(canvas.unfinishedImages)}` : "";
     const fonts = canvas.fonts === "loading" ? "; fonts still loading" : "";
@@ -568,7 +600,14 @@ export function classify(evidence: Evidence, now: number): { category: Category;
 
   // D — a canvas document, no bridge.
   if (canvas && evidence.diagnostics && !has(bridge, "bridge.mount")) {
-    return { category: "D", reason: `the canvas document is complete with ${canvas.addressed} addressed nodes, but its bridge never mounted (no hydration of the canvas)` };
+    if (canvas.addressed === 0 && evidence.server.canvasAnswer === "canvas") {
+      const failed = evidence.consoleErrors.filter((line) => line.includes("Failed to load resource")).length;
+      return {
+        category: "D",
+        reason: `the server rendered it as an editor canvas, but none of its addressed nodes is left and its bridge never mounted: the canvas's own scripts failed and took the page's content with them (${failed} failed load(s) in the console)`,
+      };
+    }
+    return { category: "D", reason: `the canvas document is ${canvas.readyState} with ${canvas.addressed} addressed nodes, but its bridge never mounted (no hydration of the canvas)` };
   }
   if (canvas && evidence.diagnostics && !has(bridge, "bridge.listen")) {
     return { category: "D", reason: "the bridge mounted but never started listening" };
@@ -576,8 +615,8 @@ export function classify(evidence: Evidence, now: number): { category: Category;
 
   // E — the bridge is there; Ready did not arrive.
   if (evidence.diagnostics && canvas) {
-    if (!has(editor, "canvas.load")) {
-      return { category: "E", reason: `the canvas is complete and its bridge is listening, but the editor never saw the frame's load event, so it never started the handshake (status ${JSON.stringify(evidence.outer.status)})` };
+    if (!has(editor, "canvas.listen")) {
+      return { category: "E", reason: `the canvas's bridge is listening, but the editor never started its handshake (status ${JSON.stringify(evidence.outer.status)})` };
     }
     if (!has(bridge, "bridge.ping")) {
       return { category: "E", reason: "the editor is pinging but no ping reached the bridge" };
